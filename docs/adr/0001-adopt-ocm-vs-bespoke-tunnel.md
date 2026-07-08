@@ -1,6 +1,6 @@
 # ADR-0001 — Adopt OCM as the substrate (vs. a bespoke tunnel/agent)
 
-**Status:** Proposed (pending Milestone-0 falsification) · **Date:** 2026-07-08
+**Status:** **Accepted** (Milestone-0 falsification **passed** 2026-07-08) · **Date:** 2026-07-08
 
 ## Context
 
@@ -73,8 +73,27 @@ The deciding experiment, its steps, exit criteria, and demo are specified in
 3. **Agentless (upload kubeconfigs to the hub).** Rejected outright: centralizes deep
    credentials — the exact anti-pattern this product exists to avoid.
 
-## Falsification evidence (to be filled after Milestone-0)
+## Falsification evidence (Milestone-0)
 
-- Result: _pending_
-- Setup time: _pending_
-- Notes / runbook link: _pending_
+- **Result: ✅ PASS.** A central OCM hub reached an in-cluster service (`nginx.sith-demo`)
+  on a managed spoke using a **scoped `managed-serviceaccount` token** — over the
+  `cluster-proxy` reverse (konnectivity) tunnel, with the spoke connecting **outbound-only**
+  and the hub holding **no admin kubeconfig** for the spoke. The scoping is real, not
+  incidental: the same token was **denied** cluster-wide `secrets` and `nodes` (403), while
+  the in-scope service/pod reads succeeded — reach and privilege are decoupled. Connection
+  tracking on the spoke showed **every** hub-directed flow originating on the spoke to the
+  hub kube-apiserver, and **zero** hub→spoke-initiated flows.
+- **Setup time: ~15 minutes** of hands-on execution (kind clusters → registration → addons →
+  passing reach-test → outbound-only verification), far inside the `≤ ~1 day` exit criterion.
+- **Environment:** two single-node `kind` clusters (k8s v1.34.0); `clusteradm` v1.3.1 / OCM
+  core v1.3.1; `cluster-proxy` **0.10.0** and `managed-serviceaccount` **0.10.0** (the pinned
+  versions above, confirmed latest as of 2026-07-08).
+- **Consequence:** the "build the transport/agent" scope is **deleted**. Sith adopts OCM as
+  the connectivity + scoped-identity substrate and builds only the federation/governance
+  layer above it. **Proceed to Phase 1.**
+- **Notes / runbook + verbatim command output:**
+  [`../experiments/M0-ocm-falsification.md`](../experiments/M0-ocm-falsification.md).
+- One upstream papercut found and worked around (does not affect the verdict): the
+  `cluster-proxy` 0.10.0 Helm chart templates a `ManagedProxyConfiguration` field
+  (`proxyAgent.additionalValues`) its own bundled CRD does not declare — see the experiment
+  doc's "Caveats" for the one-line CRD workaround. Worth filing upstream.
