@@ -1,0 +1,40 @@
+# Sith is in the planning phase — this repo holds plan-only Markdown, no product code.
+# The entries below pre-empt common local scaffolding so nothing accidental is committed.
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+*~
+
+# Secrets / local config (never commit — this is a PUBLIC repo)
+*.env
+.env*
+*.key
+*.pem
+*.pfx
+kubeconfig
+*.kubeconfig
+secrets/
+.secrets/
+
+# Local experiment / falsification-lab scratch (Milestone-0 kind/k3d clusters, etc.)
+scratch/
+tmp/
+.tmp/
+*.log
+
+# Language build artifacts (pre-empted for later implementation phases)
+# Go
+bin/
+vendor/
+*.test
+*.out
+# Node / UI
+node_modules/
+dist/
+build/
+.next/
+coverage/
