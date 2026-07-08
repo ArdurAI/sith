@@ -79,18 +79,19 @@ returns yes.
 ### The shape of each epic
 
 Every epic has an ID and name, a one-line goal, its roadmap phase, its dependencies, and a
-list of features. Each **feature** is written the same way:
+list of features. Features are numbered `F<epic>.<n>` (for example `F4.3` is the third
+feature of epic E4). Each feature is written the same way, with these labelled parts:
 
-- **(a) What it is** — one or two plain sentences.
-- **(b) How it works** — concrete, numbered steps describing the runtime behaviour.
-- **(c) Flowchart** — a Mermaid diagram (a `sequenceDiagram` when the point is
-  who-calls-whom over time, a `flowchart` when the point is branching logic and gates).
-- **(d) Acceptance criteria** — how we know the feature is done and correct.
-- **(e) Key risk / guardrail** — the one thing most likely to go wrong, and the control
-  that stops it.
+- **What it is** — one or two plain sentences.
+- **How it works** — concrete, numbered steps describing the runtime behaviour, followed by
+  a Mermaid diagram: a `sequenceDiagram` when the point is who-calls-whom over time, a
+  `flowchart` when the point is branching logic and gates.
+- **Acceptance criteria** — how we know the feature is done and correct.
+- **Key risk / guardrail** — the one thing most likely to go wrong, and the control that
+  stops it.
 
-Each epic closes with **epic-level exit criteria** — the bar the whole epic clears before
-the phase it belongs to is considered met.
+Each epic closes with epic-level exit criteria — the bar the whole epic clears before the
+phase it belongs to is considered met.
 
 ### Flowchart conventions
 
