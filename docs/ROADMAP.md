@@ -6,8 +6,14 @@ The roadmap is **falsification-first**: each phase must cheaply *disprove* its k
 assumption before the next is funded. The first thing we build is not product code — it is
 an experiment designed to delete scope.
 
-Sequencing discipline (never violated): **read before write · PR before mutation · exec
-never · prod never auto.**
+Sequencing discipline (never violated): **local before hub · read before write · PR before
+mutation · exec never · prod never auto.**
+
+**Two tracks.** The *local track* (day-0 adoption wedge) ships a single binary that federates
+the user's own kubeconfig contexts — it needs no OCM and does not gate on Milestone-0. The
+*hub track* (day-N governance) is what Milestone-0 gates. They share **one** fleet-model engine
+and **one** enforcement pipeline; the local track is Phase L below, the hub track is
+M0 → P1 → P2 → P3. Lead with adoption (Phase L); layer governance on top of the same engine.
 
 ---
 
@@ -49,12 +55,54 @@ outbound-only. Write up the result in `docs/adr/0001` as the falsification evide
 
 ---
 
+## Phase L — Local mode (the adoption wedge, day 0)  ⟵ *ships first / in parallel; needs no OCM*
+
+**Assumption under test:** engineers will install and keep a single-binary local tool that
+renders their whole kubeconfig fleet in one view — the "k9s for your whole fleet" wedge — and
+that this is the on-ramp to the governed hub. (What is being falsified here is *adoption*, not
+transport.)
+
+**Goal.** `brew install sith && sith` → every kubeconfig context detected → one aggregated,
+searchable fleet view with cross-cluster correlation, in under 10 minutes, offline, with
+nothing leaving the machine.
+
+**In scope.**
+- One Go binary: `sith` (CLI + k9s-style TUI) and `sith ui` (local web "fleet IDE" on
+  `localhost`). No account, no telemetry, no server, no agents.
+- The **source-abstract fleet model**, populated in local mode from the user's kubeconfig
+  contexts via client-side fan-out (informer/watch cache), rendered **cache-first**.
+- Cross-cluster correlation query and fleet search across all contexts.
+- Per-pod table stakes in core: logs, exec, port-forward, YAML view/edit — commodity K8s calls
+  present because their absence drove the Lens exodus, not the differentiator.
+- **Governed MCP read server** (`sith serve --mcp`): the same fleet as annotated read tools, so
+  an AI agent inherits the read surface. The shadow-MCP lesson makes this a hard requirement —
+  the sanctioned path must be easier than `npx kubernetes-mcp-server`.
+
+**Exit criteria.**
+- First run to a populated cross-cluster answer in **< 10 minutes**, offline.
+- A correlation query returns a correct answer over **≥ 2 kubeconfig contexts**.
+- No account, no telemetry, and no credential leaves the machine (verified).
+- An MCP client (e.g. Claude Code) calls the read tools and gets the same fleet answers.
+
+**Demo.** `brew install sith && sith` on a laptop with 3 kubeconfig contexts → one fleet view;
+"every context where `payments` is Degraded" answered in one query; then Claude Code queries
+the same fleet via the MCP read tools.
+
+> Phase L needs no OCM and does not wait on Milestone-0. It is the adoption wedge; the hub
+> track (M0 → P1 → P2 → P3) adds federation and governance on top of the same engine.
+
+---
+
 ## Phase 1 — read-only federation (the first vertical)
 
 **Goal.** From one governed place, assemble a **normalized fleet model** across the 2
-spokes and answer a **cross-cluster** question that single-cluster tools cannot.
+spokes and answer a **cross-cluster** question that single-cluster tools cannot. This is the
+**same fleet-model engine as Phase L**, now sourced from OCM-brokered spokes instead of local
+kubeconfigs — the read source is abstracted so hub mode and local mode share one code path.
 
 **In scope.**
+- The read source is **abstracted** (local kubeconfig *or* OCM spoke); Phase L's local path
+  and this hub path are one implementation of the same fleet model.
 - Hub read-federation service: pull inventory + health from both spokes via cluster-proxy
   + MSA tokens; normalize into the fleet model; stamp **freshness + source cluster**.
 - `Workspace` tenancy + signed-token authn + RBAC spine (reader/operator roles), with the
@@ -90,6 +138,8 @@ write**: `gitops.open-pr` — a proposal a human merges. No cluster mutation yet
 - `gitops.open-pr` executes by opening a real PR on a target repo. Git credential held via
   **KMS envelope, per-tenant** ([ADR-0006](adr/0006-credential-key-custody.md)).
 - Spoke-side (or repo-side) independent re-validation of the signed intent.
+- The `gitops.open-pr` verb is also exposed as an **MCP write tool** (elicitation-gated), so an
+  agent can propose it under the same PEP — the first governed *write* surface for agents.
 
 **Exit criteria.**
 - A `gitops.open-pr` intent flows end-to-end and opens a real PR.
@@ -118,8 +168,9 @@ a **governed MCP server** so external agents inherit the same governance.
   incomplete/stale, with an honest message.
 - First live-mutation verbs behind all of the above (`argocd.sync`, `rollout.promote`,
   `deployment.scale`) — still **never** `exec` or free-form `apply`.
-- **MCP server**: annotated read tools + write tools gated by **Elicitation**
-  (2025-06-18), all onto the same PEP.
+- **MCP server, full write surface**: the live-mutation verbs exposed as MCP write tools gated
+  by **Elicitation** (2025-06-18), onto the same PEP. (MCP *read* tools shipped in Phase L; the
+  `gitops.open-pr` write tool shipped in P2; here the fan-out write verbs reach external agents.)
 
 **Exit criteria.**
 - A wave-ordered intent across ≥ 2 spokes runs dev→canary→rest with a gate per wave; a

@@ -38,7 +38,7 @@ policy-gated, scoped, signed, and audited** — including when the actor is an A
 
 ## 2. The thesis
 
-Three claims, each independently defensible, together define Sith:
+Four claims, each independently defensible, together define Sith:
 
 1. **The transport is commodity — adopt it, do not build it.** An outbound-only
    per-cluster agent plus a central hub that reaches cluster-local services is *already*
@@ -57,11 +57,23 @@ Three claims, each independently defensible, together define Sith:
    policy decision point, the *same* closed verb vocabulary, the *same* scoped identity
    broker, the *same* audit + decision ledger. The AI never holds a cluster credential and
    never gets a shell.
+4. **Adoption is local-first; governance is the moat, not the on-ramp.** What an engineer
+   installs on day 0 is a **single binary that shows their whole fleet from the kubeconfigs
+   already on their machine** — a k9s-style CLI/TUI (plus an optional local web "fleet IDE"),
+   no account, no telemetry, no hub, no agents. The governed hub is the *same binary* run as a
+   control plane when a team outgrows kubeconfig fan-out (clusters behind NAT/VPCs, shared
+   audit, multi-approver prod). You earn the right to govern a fleet by first being the tool
+   the engineer already uses to see it. See
+   [`docs/research/USE-CASE-AND-SHAPE.md`](research/USE-CASE-AND-SHAPE.md).
 
 ## 3. Target user
 
-**Primary:** the **platform / SRE / fleet-operations engineer** at an organization
-running **tens to hundreds** of Kubernetes clusters who is accountable for *safe*
+**Top-of-funnel (day 0):** the **individual DevOps / SRE / platform engineer** juggling
+several clusters from their laptop who wants one fast local view across all of them — no
+account, no server, no telemetry. This is the adoption wedge; it is how Sith gets installed.
+
+**Primary buyer (day N):** the **platform / SRE / fleet-operations engineer** at an
+organization running **tens to hundreds** of Kubernetes clusters who is accountable for *safe*
 cross-cluster operations and for *who did what, where, and why*.
 
 **Secondary:**
@@ -71,12 +83,25 @@ cross-cluster operations and for *who did what, where, and why*.
   behind hard governance.
 
 **Explicitly not the target:** application developers wanting a self-service catalog
-(that is an IDP), or a single-cluster operator (local tools already serve them well).
+(that is an IDP). Note the nuance: Sith does **not** build *another single-cluster* console
+(Headlamp/k9s/Lens serve that well), but the **aggregated multi-cluster** local view *is*
+ours and is the day-0 on-ramp (see [`SCOPE.md`](SCOPE.md)).
 
 ## 4. The wedge (what Sith owns)
 
-Sith owns the **governed access + action federation layer**, expressed as three
-federations built on OCM-brokered connectivity:
+Sith has **two wedges**, and holding both is the strategy (conflating them is what killed the
+predecessor):
+
+**(A) The adoption wedge — the local aggregated fleet client.** A single binary that renders
+every kubeconfig context on the engineer's machine as one searchable fleet — a k9s-style
+CLI/TUI plus an optional local web "fleet IDE" — with cross-cluster correlation single-cluster
+tools cannot do. No account, no telemetry, no hub, no agents. This is how Sith gets *installed*
+(the empty OSS slot: k9s is one-context-at-a-time, Headlamp is per-cluster-centric, Lens has an
+account wall, and the only aggregated client, Aptakube, is closed and paid).
+
+**(B) The durable wedge — governed action federation (the moat).** The **governed access +
+action federation layer**, expressed as three federations over the *same fleet model* and, in
+day-N hub mode, over OCM-brokered connectivity:
 
 - **Read federation.** A tenant-scoped, normalized **fleet model** (inventory, health,
   alerts, drift) assembled from OCM-brokered reads, with **cross-cluster correlation** as
@@ -124,6 +149,10 @@ Success is defined by **falsification-first** discipline: each milestone must be
   from an OCM hub via `cluster-proxy` + `managed-serviceaccount` in **≤ 1 day of setup**.
   *If yes → the "build the transport" scope is deleted.* *If no → the whole premise is
   wrong and we stop before writing product code.*
+- **Adoption (local mode, day 0).** A new user goes from `brew install sith` to a populated,
+  searchable cross-cluster answer over their own kubeconfig contexts in **under 10 minutes**,
+  offline, with **nothing leaving their machine** — no account, no server, no telemetry. The
+  same read surface is also exposed as annotated **MCP read tools** so an AI agent inherits it.
 - **P1 (read federation).** From one place, correctly answer a cross-cluster question
   ("every cluster where deployment X is unhealthy") across **≥ 2 spokes**, tenant-scoped,
   with staleness surfaced per cluster.

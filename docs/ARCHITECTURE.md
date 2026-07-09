@@ -20,6 +20,19 @@ On top of that OCM-brokered connectivity, Sith adds **three federations** — re
 policy — and exposes the whole thing as a **governed MCP server**. **Ardur** is the policy
 decision point and identity broker for every action.
 
+**One binary, three run modes.** The same Go binary is the whole product. `sith` (CLI +
+k9s-style TUI) and `sith ui` (local web "fleet IDE" on `localhost`) are the **day-0 local
+mode**: they read the user's own kubeconfig contexts directly (client-side fan-out into an
+informer/watch cache), with no hub, no OCM, no account, no telemetry — credentials never leave
+the machine. `sith serve --mcp` exposes the same fleet as a **governed MCP server**. `sith hub`
+is the **day-N federated mode** described above (multi-user, OCM-brokered reach to NAT'd/VPC'd
+clusters, `Workspace` isolation, the governance pipeline). The **fleet model and the
+enforcement pipeline are source-abstract**: a fleet fact's source is either a local kubeconfig
+context (local mode) or an OCM-brokered spoke (hub mode), and everything above the source is
+one code path. The rest of this document describes the hub; local mode is the same components
+with the kubeconfig-direct source and single-user defaults. See
+[`research/USE-CASE-AND-SHAPE.md`](research/USE-CASE-AND-SHAPE.md).
+
 ## 2. Topology — outbound-only spokes, OCM-brokered reach
 
 ```mermaid
@@ -151,8 +164,13 @@ Notes:
 
 ### 4.1 Read federation
 
+- **The read source is abstracted.** A fleet fact comes from either a **local kubeconfig
+  context** (day-0 local mode, client-side) or an **OCM-brokered spoke** (day-N hub mode). The
+  fleet model and everything above it are identical across both; only the source adapter
+  differs. This is what makes the local client and the hub one product.
 - Each Sith spoke agent (or the hub, via `cluster-proxy` + a `managed-serviceaccount`
-  token) reports **inventory, health, alerts, drift, image/CVE facts** for its cluster.
+  token — or, in local mode, the kubeconfig-direct source) reports **inventory, health,
+  alerts, drift, image/CVE facts** for its cluster.
 - The hub assembles a **tenant-scoped, cached, normalized fleet model**. Every record
   carries a **freshness timestamp** and **source cluster**.
 - **Cross-cluster correlation is a first-class query primitive**: "all clusters where
@@ -416,3 +434,34 @@ prototype (documented, vendor-neutral, in [`THREAT-MODEL.md`](THREAT-MODEL.md) �
 - **Per-tenant key custody** via KMS envelope — not one env key that decrypts every tenant.
 - **No shared admin cluster credential** in the center — scoped, local, per-action identity.
 - **Fail-safe closed vocabulary** — not a fail-open denylist; **no shell, ever**.
+
+## 11. Reshape additions — local mode, connectors, custody, supply chain
+
+This section records the local-first dual-mode reshape (rationale in
+[`research/USE-CASE-AND-SHAPE.md`](research/USE-CASE-AND-SHAPE.md)); the epics are E11–E13 in
+[`EPICS.md`](EPICS.md).
+
+- **Four-mode connection/identity model.** (1) **Local (direct):** reads the user's kubeconfig
+  contexts on the machine; exec plugins run locally as kubectl does; any secret goes in the OS
+  keychain; nothing is uploaded. (2) **Federated (minion):** OCM klusterlet + cluster-proxy,
+  outbound-only; scoped `managed-serviceaccount` token; no admin kubeconfig in the hub. (3)
+  **Cloud IAM:** a thin per-cloud adapter enumerates clusters and mints **short-lived** tokens
+  (EKS get-token, AKS Entra+kubelogin, GKE plugin, ACK/CCE/TKE); no long-lived cloud keys at
+  rest. (4) **API key / JWT / OIDC:** for tool integrations and machine callers. One rule across
+  all four: authn from **signed token claims, never spoofable headers**; the agent identity
+  ceiling is strictly below the human's. Detail:
+  [`research/identity-connections-security.md`](research/identity-connections-security.md).
+- **Connector framework (E12).** Out-of-process gRPC, SDK-first, **one canonical connector per
+  tool**, minor-additive versioning (the Grafana/Terraform pattern; the anti-pattern is
+  Backstage's in-process unversioned sprawl). Exactly **three connector kinds**: *read adapter*
+  (pull normalized facts), *brokered read-through* (deep-link to the tool's own UI — never
+  re-skin), *typed-action adapter* (map a closed verb to the tool's API). Day-1 six: Argo CD,
+  Flux, Helm, Prometheus, Loki, GitHub.
+- **Cost read-overlay (E13).** Deploy/read OpenCost per cluster; aggregate at the hub into
+  per-workspace/team fleet rollups with GPU columns where DCGM exists. A read integration, not a
+  metering engine.
+- **Supply chain + custody.** Releases are **cosign-signed** with **SLSA L2 provenance** and an
+  **SBOM** from the first tag (now cheap; scorecards weigh these before humans read code).
+  **SPIFFE IDs / mTLS are supported** as the identity model, but Sith does **not** require users
+  to run **SPIRE** (operationally heavy). Images are **multi-arch** (`amd64`+`arm64`) and
+  **registry-relocatable** for air-gap/China from day one (E9).

@@ -1,92 +1,154 @@
-# Sith — Implementation Epics
+# Sith — Consolidated Plan (Notion)
 
-**Status:** planning · **Date:** 2026-07-08 · **License:** Apache-2.0
+**Status:** planning · **Date:** 2026-07-09 · **License:** Apache-2.0
 
-This document turns the Sith plan into a build order. It is a design artifact, not code —
-the owner reviews it before any product code is written. It is downstream of, and
-consistent with, the charter, architecture, scope, roadmap, threat model, competitive
-analysis, and ADRs 0001–0006. Where those documents and this one seem to disagree, those
-documents win and this one is wrong.
+This is the single, self-contained overview of Sith after the local-first dual-mode reshape. It
+merges the research synthesis and the reshaped plan into one page: what Sith is, the wedge, the
+form factor, the ruthlessly prioritized roadmap, the carry/discard/net-new reckoning against the
+predecessor (`devops-portal`), and then **every epic** with its features, how each works, and a
+flowchart per feature — followed by the roadmap map and the open questions for the owner.
 
-Everything here respects the sequencing discipline the roadmap fixed and never violates:
-**read before write · PR before mutation · exec never · prod never auto.**
-
----
-
-## 1. Overview
-
-**The one-sentence job:** give an operator one governed place to see and safely act across
-many Kubernetes clusters, while deep cluster access stays local to each cluster.
-
-**Local-first dual mode (the reshape).** The same single Go binary is the product in two faces:
-a **day-0 local client** (`sith` CLI/TUI + `sith ui` local web "fleet IDE") that federates the
-user's own kubeconfig contexts with no hub, OCM, account, or telemetry — the **adoption
-wedge** — and a **day-N hub** (`sith hub`) that adds OCM-brokered reach, tenancy, and governance
-— the **durable moat**. They share one **source-abstract** fleet model and one enforcement
-pipeline. New epics **E11** (local client), **E12** (connector framework), **E13** (cost
-overlay) carry the reshape; rationale in
-[`research/USE-CASE-AND-SHAPE.md`](research/USE-CASE-AND-SHAPE.md).
-
-Sith is a governed, multi-tenant, cross-cluster operations *federation* control plane for
-generic Kubernetes fleets. It is **built on Open Cluster Management (OCM)** — it does not
-re-implement cross-cluster transport, because `cluster-proxy` and `managed-serviceaccount`
-already ship that, hardened and maintained. Sith is the governance, federation, and AI/MCP
-layer on top.
-
-**Non-goals** (unchanged from `SCOPE.md`; if Sith drifts into any of these it has lost its
-reason to exist):
-
-- Not a developer portal / IDP / service catalog (Backstage, Port, Cortex, OpsLevel).
-- Not a GitOps controller / desired-state reconciler — Sith *opens PRs*, it does not
-  reconcile (Argo CD, Flux).
-- Not a multi-cluster scheduler / workload-placement engine (Karmada, OCM Placement).
-- Not a telemetry lake / metrics-logs backend — Sith *reads* health, it does not store
-  series (Prometheus, Grafana, Loki, Datadog).
-- Not a bespoke cross-cluster tunnel — that is commodity plumbing, adopted from OCM.
-
-**The three federations** are what Sith owns, all built on OCM-brokered connectivity:
-
-1. **Read federation** — a tenant-scoped, normalized fleet model with cross-cluster
-   correlation as a first-class query.
-2. **Action federation** — the only writes are typed intents from a closed verb
-   vocabulary, signed, re-validated locally by each spoke, executed with the spoke's own
-   scoped identity. No shell, no free-form apply, no secret/RBAC mutation.
-3. **Policy federation** — fan-out reasoning: environment gates, wave/canary ordering with
-   a gate per wave, partial-failure and auto-rollback, idempotency, and
-   federation-specific abstention.
-
-[Ardur](https://github.com/ArdurAI/ardur) is the policy decision point (PDP), the broker
-of scoped execution identity, and the decision-ledger (*why-allowed*) that complements
-Sith's audit-log (*what-happened*). Sith is also exposed as a governed MCP server, so
-external agents (Claude Code, Codex, kagent) become clients that inherit the same
-governance.
-
-**Status of this doc.** All eleven epics below are planned; none are built. The headline
-gate still stands: nothing in E1 onward is funded until E0 — the OCM falsification test —
-returns yes.
-
-### Epic index
-
-| Epic | Name | Phase | Depends on |
-|---|---|---|---|
-| E0 | OCM substrate & falsification | M0 | — |
-| E1 | Tenancy & identity | P1 | E0 |
-| E2 | Read federation | P1 | E0, E1 |
-| E3 | Credential & key custody | P1 → P2 | E1 |
-| E4 | Action federation | P2 → P3 | E1, E2, E3, E5 |
-| E5 | Policy federation & governance | P1 seam → P2 → P3 | E1, E2 (co-develops with E4) |
-| E6 | Audit & decision ledger | P1 seam → P2 | E1, E5 |
-| E7 | Governed MCP server | Phase L (read) → P2/P3 (write) | E2, E4, E5, E6 |
-| E8 | Operator console / UI | Phase L → P3 | E2, E5, E6 |
-| E9 | Deployment & packaging | Phase L → P3 | E0 |
-| E10 | Observability & SRE for Sith itself | P1 → P3 | E9 |
-| E11 | Local fleet client (adoption wedge) | **Phase L (day 0)** | E2 (shares the fleet model) |
-| E12 | Connector framework | fast-follow (P2 → P3) | E2, E4 |
-| E13 | Cost read-overlay | fast-follow (P3) | E2 |
+> Source of truth lives in the repo: `docs/CHARTER.md`, `docs/SCOPE.md`, `docs/ARCHITECTURE.md`,
+> `docs/ROADMAP.md`, `docs/EPICS.md`, and the research under `docs/research/`. Relative links in
+> the epics section below point at those repo files.
 
 ---
 
-## 2. How to read this
+## 1. What Sith is
+
+Sith is the tool an engineer reaches for the moment they operate **more than one** Kubernetes
+cluster. It has two faces on **one Go binary** and one shared engine:
+
+- **Day 0 — a local fleet client (the adoption wedge).** `brew install sith && sith` opens a
+  k9s-style view over every kubeconfig context on the machine — plus an optional local web
+  "fleet IDE" (`sith ui`) that is Lens-but-better. No server, no OCM, no account, no telemetry;
+  credentials never leave the laptop. This is how Sith gets installed.
+- **Day N — a governed hub (the durable moat).** The *same binary* run as `sith hub` becomes a
+  multi-tenant control plane: clusters join as outbound OCM minions, writes are typed
+  approval-gated intents through an external policy decision point (Ardur), and the fleet is a
+  governed MCP server so Claude Code / Codex / kagent inherit the same governance.
+
+**The reframing that ties it together:** *you earn the right to govern a fleet by first being the
+tool the engineer already uses to see it.* Lead with the read wedge; keep governance as the
+reason to stay.
+
+### The de-facto wedge, honestly sized
+
+The wedge is **"k9s for your whole fleet"** — cross-cluster read + correlation ("every cluster
+where `payments` is Degraded", "which clusters run image X") that no OSS tool ships. k9s users
+asked for it twice ([#1006](https://github.com/derailed/k9s/issues/1006),
+[#2730](https://github.com/derailed/k9s/issues/2730)) and both were closed *not planned*; the
+server-based options (Clusterpedia, Karpor) carry day-N install friction; the one tool that ships
+it (Aptakube) is closed paid GUI. The demand signal is a *convenience* gap, not an emergency — so
+the read view is the beachhead, and the **moat is governed action + governed agent access**, the
+position the evidence finds empty across every incumbent (OCM has no approvals/typed-verbs/audit;
+the AI-SRE tools are advise-only or autonomy-first; the MCP gateways do coarse on/off, not
+fleet-aware approval-gated action). Full evidence: `docs/research/USE-CASE-AND-SHAPE.md`.
+
+### Two wedges (why the predecessor died)
+
+- **Adoption wedge — the local aggregated fleet client.** Won by form and trust: single binary,
+  ten-minute wow, no account, no telemetry (the 2024 CNCF barriers are *complexity 46%*,
+  *abandonment 46%*, *thin docs 45%* — not governance). The Lens revolt was about an account wall
+  and logs/shell removed from the OSS build, not a missing feature.
+- **Durable wedge — governed action federation with AI as a client.** The moat and the eventual
+  reason to self-host and standardize.
+
+`devops-portal` had **neither** — no on-ramp (helm-install-a-platform cliff, 500s on fresh
+install) and no moat (it iframed tools that were already better = negative value). Sith holds both
+on one shared engine.
+
+---
+
+## 2. Form factor — one binary, three modes
+
+| Mode | Command | What it is | Who runs it | Phase |
+|---|---|---|---|---|
+| **CLI + TUI** | `sith` | k9s-style local fleet view over kubeconfig contexts; `sith get pods -A --all-clusters`, `sith correlate`. Read-only, local, zero config | The individual engineer — fastest day-0 wow | Day 0 (wedge) |
+| **Local web "fleet IDE"** | `sith ui` | Same fleet model as a local web UI on `localhost` — Lens-but-better, kubeconfig-direct, no account, no telemetry | The engineer who wants a visual surface | Day 0 (wedge) |
+| **Governed MCP server** | `sith serve --mcp` | Same fleet exposed to Claude Code / Codex / Cursor as annotated read tools + typed-intent writes | The AI-native engineer — fastest adoption vector | Day 0 / v1 |
+| **Hub (federated)** | `sith hub` | Same UI served multi-user: OCM minions reach NAT'd/VPC'd clusters, `Workspace` isolation + RLS, Ardur PDP, multi-approver prod, shared audit | The platform/SRE team | Day N (moat) |
+
+Key calls (evidence in `docs/research/market-and-form-factor.md`): a hub is **not** required to
+federate reads (Aptakube, kubernetes-mcp-server, Karpor all fan out client-side over the
+kubeconfig) — OCM is the **day-N** transport for clusters behind NAT/VPCs, not a day-0 dependency.
+Render **cache-first** from a local informer/watch cache (never spinner-first). The local mode's
+centre of gravity is the **fleet**, not the pod — it is not another single-cluster console. Ship
+the embedded web frontend in the Go binary first; a **Tauri** (not Electron) desktop shell is a
+fast-follow.
+
+---
+
+## 3. The ruthlessly prioritized roadmap
+
+Every named capability sits in exactly one bucket; "not now" is as load-bearing as the wedge.
+
+**Wedge (build first — reason to exist + on-ramp)**
+- Local fleet client — `sith` CLI/TUI (fastest wow) **and** `sith ui` (local web fleet IDE),
+  kubeconfig-direct, no account/telemetry, cache-first, fleet search, logs/exec/port-forward/YAML.
+- Source-agnostic read federation + normalized fleet model + cross-cluster correlation (the
+  shared engine; source = local kubeconfig at day-0 *or* OCM spoke at day-N).
+- Governed **MCP read server** from the same binary (`sith serve --mcp`) — v1, not Phase 3.
+- Minions (outbound OCM agents) + multi-auth (kubeconfig / API key / JWT / OIDC / short-lived
+  cloud IAM).
+- Governance spine day one: `Workspace` tenancy, signed-token authn, RBAC, forced RLS backstop,
+  audit-log + decision-ledger.
+- First governed write `gitops.open-pr` via the Ardur PDP; its MCP write tool right behind it.
+- No-god-key custody: no central admin kubeconfig; KMS-envelope per-tenant DEKs (hub), OS keychain
+  (local); cosign-signed releases + SLSA L2 + SBOM from the first tag.
+
+**Fast-follow (right after the wedge proves out)**
+- Policy federation — waves/canary, environment gates, multi-approver for prod, partial-failure /
+  auto-rollback, abstention; live-mutation verbs (`argocd.sync`, `rollout.promote|abort`,
+  `deployment.scale|restart`).
+- Connector framework — out-of-process gRPC, SDK-first, three fixed kinds — generalizing the day-1
+  six (Argo CD, Flux, Helm, Prometheus, Loki, GitHub).
+- Cost read-overlay — OpenCost rollup + GPU columns; not a metering engine.
+- Multi-cloud enumeration + short-lived token minting incl. ACK/CCE/TKE; OpenShift conformant-API.
+- Air-gap / multi-arch / registry-relocatable packaging; Tauri desktop shell.
+
+**Later (real, but not until the above lands)**
+- Long-tail read connectors (Datadog, Splunk, Elastic/OpenSearch/Kibana, Terraform state-drift);
+  ITSM typed actions (Jira/Zendesk/ServiceNow).
+- Sith as an MCP *client*; governing LangChain/LangGraph agents (as MCP clients of Sith — Sith
+  governs, it does not orchestrate).
+- MLOps typed verbs (kill zombie GPU jobs, promote model across serving clusters); OpenShift-specific
+  views.
+
+**Explicitly not now (the anti-sprawl contract)**
+- Re-skinning / proxying tool UIs · telemetry lake / metrics store · metering / optimization engine
+  · agent-orchestration framework · developer portal / IDP / catalog / scorecards / DORA · GitOps
+  reconciler · multi-cluster scheduler · Fluentd/Fluent-bit as data sources · Kustomize/Helm as
+  action targets in v1 · `exec` / free-form apply / Secret / RBAC mutation (permanently
+  inexpressible) · running SPIRE (support SPIFFE IDs/mTLS, don't force the platform).
+
+---
+
+## 4. Carry / discard / net-new vs `devops-portal`
+
+| Carry (the good bones) | Discard (the failure modes) | Net-new (what the research says Sith needs) |
+|---|---|---|
+| Action/exec broker service-layer (clean 1:1 tool→service map) — **redesigned as the PEP**, closed vocabulary, no shell | Shared central admin kubeconfig / inbound-god-kubeconfig — replaced by outbound OCM minions + scoped MSA tokens + no central admin cred | Local aggregated fleet client (CLI/TUI + web) as the adoption wedge (empty OSS slot) |
+| Per-org encrypted credential vault (AES-256-GCM key-ring) — **re-architected** as KMS-envelope per-tenant DEKs | Single god key (`TOKEN_ENCRYPTION_KEY` decrypts every tenant) | Cross-cluster correlation as a first-class query in a local tool |
+| RBAC + audit spine — kept, **hardened** with signed-token authz + separate decision-ledger | Dead/inert RLS + `x-user-role` header-trust IDOR — replaced by FORCE RLS (non-owner role) + signed-token-only authz | Typed-intent action model + signed dispatch + per-minion local allowlist (two independent blast-radius bounds) |
+| Governed AI/MCP ambition — the one salvageable idea — becomes the **core, done right** (real MCP server in v1, elicitation gates, AI-as-client) | All-heavy monolith (~48k LOC, 92 routes; iframes better tools) — replaced by one narrow Go binary + local surfaces, no re-skinning | Policy federation — waves / multi-approver / abstention (novel, empty) |
+| `Workspace`-over-clusters tenancy — kept as the isolation anchor with a **real** RLS backstop (day-N hub) | Feature sprawl (12 providers, ~7/10 pass-through) — replaced by closed vocabulary + three connector kinds + a hard scope gate | Governed MCP server as a Kubernetes-fleet-ops gateway (generic gateways aren't fleet-aware) |
+| OCM `cluster-proxy` + `managed-serviceaccount` — **re-scope to day-N server mode** | Broken onboarding (platform-install cliff; 500s on fresh install) — replaced by `brew install && sith`, ten-minute wow | Air-gap / multi-arch / registry-relocatable distribution for China/regulated |
+| Typed-intent closed vocabulary, no exec — **carry, strengthen** | Features that never ran (dead write path, mock MCP page, qwen2.5:3b) — replaced by falsification-first | Cost read-overlay with fleet rollup + GPU columns; MLOps verbs later |
+
+---
+
+## 5. The epics (features, how-each-works, and a flowchart per feature)
+
+The rest of this page is the reshaped epic set: **E0–E13**. Each epic states its goal, phase, and
+dependencies; each feature states what it is, how it works (numbered), a flowchart, its acceptance
+criteria, and its key risk / guardrail. E11 (local client), E12 (connector framework), and E13
+(cost overlay) are the reshape additions; E2 is now source-abstract and the MCP read tools ship in
+Phase L. The **roadmap map** and the **open questions for the owner** close the page.
+
+---
+
+## 6. How to read the epics
 
 ### The shape of each epic
 
@@ -156,7 +218,7 @@ not expressible in the model. Adding *any* new verb is an ADR-level decision
 7. The AI is a client of the governance, never a bypass of it. Its identity ceiling is
    strictly below the human's; it never holds a cluster credential; it never gets a shell.
 
-## 3. Epics
+## 7. Epics
 
 ---
 
@@ -3061,7 +3123,7 @@ read-only by construction; mutation is not expressible here.
   coverage + freshness; GPU columns appear where DCGM exists.
 - The overlay never writes, meters, or optimizes — cost is a read dimension of the fleet model.
 
-## 4. Roadmap map
+## 8. Roadmap map
 
 Epics are placed below at their center of gravity — the phase where the bulk of the work lands.
 Several span more than one phase: E4 (action federation) ships `gitops.open-pr` in P2 and the
@@ -3137,7 +3199,7 @@ mutation, exec never, prod never auto.
 
 ---
 
-## 5. Open questions for the owner
+## 9. Open questions for the owner
 
 These are decisions that shape the build and are the owner's (GR's) to make. Each is grounded in
 a specific epic and is left open on purpose rather than assumed.

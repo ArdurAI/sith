@@ -10,8 +10,14 @@ be *part of the wedge* (see [`CHARTER.md`](CHARTER.md) §4).
 
 ## In scope
 
-- **Read federation** across many clusters: normalized fleet inventory, health, alerts,
-  drift, and image/CVE facts, with **cross-cluster correlation** as a first-class query.
+- **Local aggregated fleet client (the adoption on-ramp).** A single binary rendering every
+  kubeconfig context as one searchable fleet — a k9s-style CLI/TUI plus an optional local web
+  "fleet IDE" — no account, no telemetry, no hub. Distinguished by fleet aggregation and
+  cross-cluster correlation, **not** per-pod parity with Headlamp/k9s.
+- **Read federation** across many clusters, **source-abstract** (local kubeconfig contexts in
+  day-0 local mode *or* OCM-brokered spokes in day-N hub mode): normalized fleet inventory,
+  health, alerts, drift, and image/CVE facts, with **cross-cluster correlation** as a
+  first-class query.
 - **Action federation**: a **closed vocabulary of typed intents** dispatched to spokes,
   signed, locally re-validated, executed with local scoped identity.
 - **Policy federation**: environment gates, multi-approver flows, wave/canary ordering,
@@ -33,7 +39,10 @@ be *part of the wedge* (see [`CHARTER.md`](CHARTER.md) §4).
 | A telemetry lake / metrics-logs backend | Sith *reads* health; it does not store series | Prometheus, Grafana, Loki, Datadog |
 | A bespoke cross-cluster tunnel / agent transport | commodity, security-sensitive plumbing | OCM `cluster-proxy`, Konnectivity, remotedialer |
 | A general policy engine | Sith *uses* one (Ardur) at the intent boundary | Ardur / OPA-class engines |
-| A single-cluster console / IDE | local tools already serve this well | Headlamp, k9s, Lens |
+| *Another* single-cluster console / IDE | Sith builds the **aggregated multi-cluster** local view, not per-cluster parity | Headlamp, k9s, Lens (per-cluster) |
+| Re-skinning / proxying another tool's own UI | pass-through of a better tool is negative value; Sith **deep-links**, never iframes | the tool's native UI (Grafana, Argo CD, …) |
+| An agent-orchestration framework | Sith **governs** the agents that touch clusters; it does not orchestrate them | LangGraph, LangChain, kagent |
+| A cost metering / optimization engine | Sith **reads** cost as a fleet overlay (OpenCost rollup); it does not meter or auto-mutate | OpenCost, Kubecost, CAST AI |
 
 ## Permanently excluded from the action model
 
@@ -49,6 +58,9 @@ Rationale and the closed vocabulary are in
 
 ## Defaults (safe by default)
 
+- **Local-first, no phone-home.** Local mode requires **no account** and sends **no
+  telemetry**; kubeconfig credentials never leave the machine. A permanent promise, not a
+  default that can be flipped.
 - **Read-only first.** New tenants and new integrations start read-only.
 - **`prod` never auto-acts.** Any intent targeting a `prod`-labelled cluster requires
   approval; multi-cluster `prod` fan-out requires multi-approver.
