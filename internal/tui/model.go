@@ -37,6 +37,7 @@ const (
 // Syncer is the narrow background-I/O seam consumed by the TUI runtime.
 type Syncer interface {
 	SyncOnce(ctx context.Context) error
+	SyncKinds(ctx context.Context, kinds ...string) error
 }
 
 // Model is a Bubble Tea model whose interaction path reads only fleetcache snapshots.
@@ -274,10 +275,18 @@ func (model *Model) applyCommand() (tea.Model, tea.Cmd) {
 			model.scopes = []string{fields[1]}
 		}
 	default:
-		if !model.setLens(fields[0]) {
+		if len(fields) != 1 {
+			model.lastError = "unknown command: " + fields[0]
+			return model, nil
+		}
+		valid, added := model.setLens(fields[0])
+		if !valid {
 			model.lastError = "unknown command: " + fields[0]
 		} else {
 			model.lastError = ""
+			if added {
+				return model, model.syncLensCommand()
+			}
 		}
 	}
 	return model, nil
@@ -332,6 +341,11 @@ func (model *Model) syncCommand() tea.Cmd {
 	return func() tea.Msg { return syncDoneMsg{err: model.syncer.SyncOnce(model.ctx)} }
 }
 
+func (model *Model) syncLensCommand() tea.Cmd {
+	kind := model.currentLens()
+	return func() tea.Msg { return syncDoneMsg{err: model.syncer.SyncKinds(model.ctx, kind)} }
+}
+
 func (model *Model) waitCommand(after uint64) tea.Cmd {
 	return func() tea.Msg {
 		version, err := model.store.WaitForChange(model.ctx, after)
@@ -347,17 +361,40 @@ func (model *Model) currentLens() string {
 	return model.lenses[model.lens]
 }
 
-func (model *Model) setLens(value string) bool {
+func (model *Model) setLens(value string) (bool, bool) {
 	for index, lens := range model.lenses {
 		if strings.HasPrefix(strings.ToLower(lens), strings.ToLower(value)) ||
 			strings.HasPrefix(strings.ToLower(value), strings.ToLower(lens)) {
 			model.lens = index
 			model.cursor = 0
 			model.filterAll = false
-			return true
+			return true, false
 		}
 	}
-	return false
+	if !validResourceToken(value) {
+		return false, false
+	}
+	canonical := strings.ToUpper(value[:1]) + strings.ToLower(value[1:])
+	model.lenses = append(model.lenses, canonical)
+	model.lens = len(model.lenses) - 1
+	model.cursor = 0
+	model.filterAll = false
+	return true, true
+}
+
+func validResourceToken(value string) bool {
+	if value == "" {
+		return false
+	}
+	for index := range len(value) {
+		character := value[index]
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' || character == '.' || character == '-' || character == '_' {
+			continue
+		}
+		return false
+	}
+	return value[0] != '.' && value[0] != '-' && value[0] != '_'
 }
 
 func (model *Model) clampCursor() {

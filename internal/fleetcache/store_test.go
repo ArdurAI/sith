@@ -106,6 +106,29 @@ func TestStoreSearchGrammarRunsOnlyOnNormalizedCache(t *testing.T) {
 	}
 }
 
+func TestStoreMapsGenericResourceAliasToAdvertisedKind(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	store := newStore(func() time.Time { return now }, time.Minute)
+	store.SetDiscovery(connector.Discovery{Scopes: []connector.Scope{{Name: "alpha", Reachable: true, ObservedAt: now}}})
+	fact := objectFact(t, "ConfigMap", map[string]any{
+		"apiVersion": "v1",
+		"kind":       "ConfigMap",
+		"metadata":   map[string]any{"name": "settings", "namespace": "apps"},
+	}, now)
+	if err := store.Replace("configmaps", fleet.QueryResult{
+		Facts: []fleet.Fact{fact}, Coverage: fleet.Coverage{Requested: 1, Reachable: 1},
+	}); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+	for _, kind := range []string{"configmaps", "ConfigMap"} {
+		snapshot := store.Query(Query{Kind: kind})
+		if len(snapshot.Records) != 1 || snapshot.Records[0].Kind != "ConfigMap" || !snapshot.Coverage.Complete() {
+			t.Fatalf("Query(%q) = %#v, want advertised ConfigMap", kind, snapshot)
+		}
+	}
+}
+
 func TestStorePauseAndChangeNotification(t *testing.T) {
 	t.Parallel()
 	store := New()

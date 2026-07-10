@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -43,6 +45,7 @@ func TestNewRejectsInvalidOptions(t *testing.T) {
 		{name: "nil clock", option: withClock(nil)},
 		{name: "nil probe", option: withProbe(nil)},
 		{name: "nil dynamic factory", option: withDynamicFactory(nil)},
+		{name: "nil resource resolver", option: withResourceResolver(nil)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -51,6 +54,60 @@ func TestNewRejectsInvalidOptions(t *testing.T) {
 				t.Fatal("New() error = nil, want invalid option error")
 			}
 		})
+	}
+}
+
+func TestGenericResourceResolutionIsCached(t *testing.T) {
+	t.Parallel()
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	client := fakeClientWithKinds(
+		map[schema.GroupVersionResource]string{gvr: "WidgetList"},
+		&unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "example.io/v1",
+			"kind":       "Widget",
+			"metadata": map[string]any{
+				"name": "sample", "namespace": "apps", "uid": "sample-uid",
+			},
+		}},
+	)
+	var resolveCalls atomic.Int32
+	adapter, err := New(
+		WithLoadingRules(testLoadingRules(t, testConfig("alpha"))),
+		withProbe(func(_ context.Context, _ *rest.Config) error { return nil }),
+		withDynamicFactory(func(_ *rest.Config) (dynamic.Interface, error) { return client, nil }),
+		withResourceResolver(func(_ context.Context, _ *rest.Config, kind string) (resourceSpec, error) {
+			resolveCalls.Add(1)
+			if kind != "widgets" {
+				return resourceSpec{}, fmt.Errorf("unexpected kind %q", kind)
+			}
+			return resourceSpec{kind: "Widget", gvr: gvr, namespaced: true}, nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	query := fleet.Query{Selector: fleet.Selector{ResourceKind: "widgets", Namespace: "apps"}}
+	var result fleet.QueryResult
+	for range 2 {
+		result, err = adapter.Query(context.Background(), query)
+		if err != nil {
+			t.Fatalf("Query() error = %v", err)
+		}
+		if len(result.Facts) != 1 || result.Facts[0].Ref.Kind != "Widget" {
+			t.Fatalf("Facts = %#v, want one Widget", result.Facts)
+		}
+	}
+	if resolveCalls.Load() != 1 {
+		t.Fatalf("resolver calls = %d, want one cached resolution", resolveCalls.Load())
+	}
+
+	evidence, err := adapter.Read(context.Background(), result.Facts[0].Ref)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if evidence.Ref.Name != "sample" || resolveCalls.Load() != 1 {
+		t.Fatalf("Read() = %#v, resolver calls = %d", evidence.Ref, resolveCalls.Load())
 	}
 }
 
@@ -389,6 +446,13 @@ func fakeClient(objects ...runtime.Object) *dynamicfake.FakeDynamicClient {
 	listKinds := map[schema.GroupVersionResource]string{
 		{Version: "v1", Resource: "pods"}: "PodList",
 	}
+	return fakeClientWithKinds(listKinds, objects...)
+}
+
+func fakeClientWithKinds(
+	listKinds map[schema.GroupVersionResource]string,
+	objects ...runtime.Object,
+) *dynamicfake.FakeDynamicClient {
 	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds, objects...)
 }
 

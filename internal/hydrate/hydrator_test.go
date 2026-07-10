@@ -96,6 +96,26 @@ func TestSyncOnceKeepsSuccessfulLensesOnPartialFailure(t *testing.T) {
 	}
 }
 
+func TestSyncKindsReconcilesGenericLens(t *testing.T) {
+	t.Parallel()
+	reader := &fakeReader{}
+	store := fleetcache.New()
+	hydrator, err := New(reader, store)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := hydrator.SyncKinds(context.Background(), "widgets", "widgets"); err != nil {
+		t.Fatalf("SyncKinds() error = %v", err)
+	}
+	snapshot := store.Query(fleetcache.Query{Kind: "Widgets"})
+	if len(snapshot.Records) != 2 || !snapshot.Coverage.Complete() {
+		t.Fatalf("generic snapshot = %#v, want two complete records", snapshot)
+	}
+	if err := hydrator.SyncKinds(context.Background()); err == nil {
+		t.Fatal("SyncKinds() error = nil, want empty-kind validation")
+	}
+}
+
 func TestSyncOnceRejectsPauseAndDuplicateRun(t *testing.T) {
 	t.Parallel()
 	reader := &fakeReader{block: make(chan struct{}), started: make(chan struct{}, 1)}

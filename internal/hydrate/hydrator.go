@@ -97,10 +97,23 @@ func (hydrator *Hydrator) Kinds() []string {
 
 // SyncOnce discovers contexts and independently reconciles each configured lens.
 func (hydrator *Hydrator) SyncOnce(ctx context.Context) error {
+	return hydrator.sync(ctx, hydrator.kinds)
+}
+
+// SyncKinds discovers contexts and reconciles an on-demand resource-kind set.
+func (hydrator *Hydrator) SyncKinds(ctx context.Context, kinds ...string) error {
+	normalized, err := normalizeKinds(kinds)
+	if err != nil {
+		return fmt.Errorf("sync hydration kinds: %w", err)
+	}
+	return hydrator.sync(ctx, normalized)
+}
+
+func (hydrator *Hydrator) sync(ctx context.Context, kinds []string) error {
 	if hydrator.store.Paused() {
 		return ErrPaused
 	}
-	if !hydrator.store.BeginSync(hydrator.kinds...) {
+	if !hydrator.store.BeginSync(kinds...) {
 		if hydrator.store.Paused() {
 			return ErrPaused
 		}
@@ -118,8 +131,8 @@ func (hydrator *Hydrator) SyncOnce(ctx context.Context) error {
 	}
 	hydrator.store.SetDiscovery(discovery)
 
-	errorsByKind := make([]error, len(hydrator.kinds))
-	workers := min(hydrator.limit, len(hydrator.kinds))
+	errorsByKind := make([]error, len(kinds))
+	workers := min(hydrator.limit, len(kinds))
 	jobs := make(chan int)
 	var waitGroup sync.WaitGroup
 	waitGroup.Add(workers)
@@ -127,7 +140,7 @@ func (hydrator *Hydrator) SyncOnce(ctx context.Context) error {
 		go func() {
 			defer waitGroup.Done()
 			for index := range jobs {
-				kind := hydrator.kinds[index]
+				kind := kinds[index]
 				result, queryErr := hydrator.reader.Query(ctx, fleet.Query{
 					Kinds:    []fleet.FactKind{fleet.FactInventory},
 					Selector: fleet.Selector{ResourceKind: kind},
@@ -142,7 +155,7 @@ func (hydrator *Hydrator) SyncOnce(ctx context.Context) error {
 			}
 		}()
 	}
-	for index := range hydrator.kinds {
+	for index := range kinds {
 		select {
 		case jobs <- index:
 		case <-ctx.Done():
@@ -162,6 +175,9 @@ func (hydrator *Hydrator) SyncOnce(ctx context.Context) error {
 }
 
 func normalizeKinds(kinds []string) ([]string, error) {
+	if len(kinds) == 0 {
+		return nil, fmt.Errorf("at least one hydration kind is required")
+	}
 	set := make(map[string]struct{}, len(kinds))
 	result := make([]string, 0, len(kinds))
 	for _, kind := range kinds {

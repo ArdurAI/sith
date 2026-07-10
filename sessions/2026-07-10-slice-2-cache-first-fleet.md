@@ -57,7 +57,17 @@ last-known stale retention after the second cluster disappears. The gate passes 
 [R] Review: The regular GitHub security audit reports zero open Dependabot alerts. Code scanning
 has no analysis configured and secret scanning is disabled; schedule a narrow post-slice security
 lane for CodeQL and repository secret-scanning/push-protection enablement. Local govulncheck is clean.
-[C] Checkpoint #5: this commit — real cache/search/staleness proof; next: generic resource lens and final review.
+[C] Checkpoint #5: 399b3bd — real cache/search/staleness proof; next: generic resource lens and final review.
+[A] Action: Added on-demand generic resource discovery through each context's Kubernetes discovery
+API, cached GVR resolution, generic-kind cache aliases, and `:<kind>` TUI hydration without adding
+network calls to ordinary interaction paths.
+[T] Test: Unit and race tests cover plural-to-advertised-Kind aliases, cached custom-resource
+resolution, and generic TUI hydration. The real two-cluster gate seeds ConfigMaps and proves the
+built CLI discovers and renders them across 2/3 contexts with honest partial coverage in 61 seconds.
+[R] Review: CodeRabbit CLI was unavailable, so the required diff review used the documented local
+fallback after a changed-file secret scan. The review found and fixed the generic alias mismatch;
+it also found that bounded background polling does not satisfy #33's explicit watch-stream contract.
+[C] Checkpoint #6: this commit — generic discovery and lens proof; next: watch-backed delta hydration.
 
 ---
 

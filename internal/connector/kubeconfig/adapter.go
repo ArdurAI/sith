@@ -43,6 +43,7 @@ var supportedKinds = []string{
 
 type probeFunc func(ctx context.Context, config *rest.Config) error
 type dynamicFactory func(config *rest.Config) (dynamic.Interface, error)
+type resourceResolver func(ctx context.Context, config *rest.Config, kind string) (resourceSpec, error)
 
 type options struct {
 	loadingRules   *clientcmd.ClientConfigLoadingRules
@@ -53,6 +54,7 @@ type options struct {
 	now            func() time.Time
 	probe          probeFunc
 	dynamic        dynamicFactory
+	resolve        resourceResolver
 }
 
 // Option configures the local kubeconfig adapter.
@@ -143,6 +145,16 @@ func withDynamicFactory(factory dynamicFactory) Option {
 	}
 }
 
+func withResourceResolver(resolver resourceResolver) Option {
+	return func(settings *options) error {
+		if resolver == nil {
+			return fmt.Errorf("resource resolver must not be nil")
+		}
+		settings.resolve = resolver
+		return nil
+	}
+}
+
 // Adapter discovers contexts and performs independent local client-go reads.
 type Adapter struct {
 	settings options
@@ -151,6 +163,8 @@ type Adapter struct {
 	discovered bool
 	scopes     map[string]connector.Scope
 	clients    map[string]dynamic.Interface
+	configs    map[string]*rest.Config
+	resources  map[string]map[string]resourceSpec
 	lastSeen   map[string]time.Time
 }
 
@@ -188,15 +202,18 @@ func defaultOptions() options {
 		dynamic: func(config *rest.Config) (dynamic.Interface, error) {
 			return dynamic.NewForConfig(config)
 		},
+		resolve: defaultResourceResolver,
 	}
 }
 
 func newAdapter(settings options) *Adapter {
 	return &Adapter{
-		settings: settings,
-		scopes:   make(map[string]connector.Scope),
-		clients:  make(map[string]dynamic.Interface),
-		lastSeen: make(map[string]time.Time),
+		settings:  settings,
+		scopes:    make(map[string]connector.Scope),
+		clients:   make(map[string]dynamic.Interface),
+		configs:   make(map[string]*rest.Config),
+		resources: make(map[string]map[string]resourceSpec),
+		lastSeen:  make(map[string]time.Time),
 	}
 }
 
@@ -246,11 +263,13 @@ func (adapter *Adapter) Discover(ctx context.Context) (connector.Discovery, erro
 	scopes := make([]connector.Scope, 0, len(results))
 	unreachable := make([]string, 0)
 	clients := make(map[string]dynamic.Interface, len(results))
+	configs := make(map[string]*rest.Config, len(results))
 	lastSeen := make(map[string]time.Time, len(results))
 	for _, result := range results {
 		scopes = append(scopes, result.scope)
 		if result.scope.Reachable {
 			clients[result.scope.Name] = result.client
+			configs[result.scope.Name] = rest.CopyConfig(result.config)
 		} else {
 			unreachable = append(unreachable, result.scope.Name)
 		}
@@ -266,6 +285,8 @@ func (adapter *Adapter) Discover(ctx context.Context) (connector.Discovery, erro
 		adapter.scopes[scope.Name] = cloneScope(scope)
 	}
 	adapter.clients = clients
+	adapter.configs = configs
+	adapter.resources = make(map[string]map[string]resourceSpec)
 	adapter.lastSeen = lastSeen
 	adapter.mu.Unlock()
 
@@ -275,6 +296,7 @@ func (adapter *Adapter) Discover(ctx context.Context) (connector.Discovery, erro
 type contextResult struct {
 	scope  connector.Scope
 	client dynamic.Interface
+	config *rest.Config
 }
 
 func (adapter *Adapter) probeContext(
@@ -318,7 +340,7 @@ func (adapter *Adapter) probeContext(
 
 	scope.Reachable = true
 	scope.ObservedAt = adapter.settings.now().UTC()
-	return contextResult{scope: scope, client: client}
+	return contextResult{scope: scope, client: client, config: requestConfig}
 }
 
 func (adapter *Adapter) runBounded(count int, operation func(index int)) {

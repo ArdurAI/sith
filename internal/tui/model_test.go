@@ -125,6 +125,29 @@ func TestFuzzyFleetSearchSpansLensesAndCanBeCleared(t *testing.T) {
 	}
 }
 
+func TestGenericLensHydratesOnDemand(t *testing.T) {
+	t.Parallel()
+	syncer := &countingSyncer{}
+	model, err := NewModel(context.Background(), populatedStore(t, 2), syncer)
+	if err != nil {
+		t.Fatalf("NewModel() error = %v", err)
+	}
+	_, _ = model.Update(keyMessage(":"))
+	_, _ = model.Update(keyMessage("configmaps"))
+	_, command := model.Update(specialKey(tea.KeyEnter))
+	if model.currentLens() != "Configmaps" || command == nil {
+		t.Fatalf("generic lens/command = %q/%v", model.currentLens(), command)
+	}
+	message := command()
+	if _, ok := message.(syncDoneMsg); !ok || syncer.kindCalls.Load() != 1 {
+		t.Fatalf("generic sync message/calls = %#v/%d", message, syncer.kindCalls.Load())
+	}
+	kinds, _ := syncer.lastKinds.Load().([]string)
+	if !slices.Equal(kinds, []string{"Configmaps"}) {
+		t.Fatalf("generic sync kinds = %v", kinds)
+	}
+}
+
 func TestWarmViewP95UnderOneHundredMilliseconds(t *testing.T) {
 	if testing.Short() {
 		t.Skip("performance acceptance test")
@@ -249,10 +272,20 @@ func TestRunHonorsCanceledContext(t *testing.T) {
 	}
 }
 
-type countingSyncer struct{ calls atomic.Int64 }
+type countingSyncer struct {
+	calls     atomic.Int64
+	kindCalls atomic.Int64
+	lastKinds atomic.Value
+}
 
 func (syncer *countingSyncer) SyncOnce(_ context.Context) error {
 	syncer.calls.Add(1)
+	return nil
+}
+
+func (syncer *countingSyncer) SyncKinds(_ context.Context, kinds ...string) error {
+	syncer.kindCalls.Add(1)
+	syncer.lastKinds.Store(append([]string(nil), kinds...))
 	return nil
 }
 

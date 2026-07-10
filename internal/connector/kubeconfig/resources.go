@@ -16,7 +16,9 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/rest"
 
 	"github.com/ArdurAI/sith/internal/connector"
 	"github.com/ArdurAI/sith/internal/fleet"
@@ -71,23 +73,27 @@ func (adapter *Adapter) Read(ctx context.Context, ref fleet.ResourceRef) (fleet.
 		return fleet.Evidence{}, fmt.Errorf("%w: scope and name are required", ErrInvalidReference)
 	}
 
-	spec, ok := lookupResource(ref.Kind)
-	if !ok {
-		return fleet.Evidence{}, fmt.Errorf("%w: %q", ErrUnsupportedResource, ref.Kind)
-	}
-	if expected := ref.Attributes["gvr"]; expected != "" && expected != spec.gvr.String() {
-		return fleet.Evidence{}, fmt.Errorf("%w: GVR %q does not match kind %q", ErrUnsupportedResource, expected, ref.Kind)
-	}
+	spec, known := lookupResource(ref.Kind)
 	if err := adapter.ensureDiscovered(ctx); err != nil {
 		return fleet.Evidence{}, err
 	}
 
-	scope, client, ok := adapter.scopeClient(ref.Scope)
+	scope, client, config, ok := adapter.scopeClient(ref.Scope)
 	if !ok {
 		return fleet.Evidence{}, fmt.Errorf("%w: %s", ErrUnknownScope, ref.Scope)
 	}
 	if !scope.Reachable || client == nil {
 		return fleet.Evidence{}, fmt.Errorf("%w: %s", ErrUnreachableScope, ref.Scope)
+	}
+	if !known {
+		var err error
+		spec, err = adapter.resolveResource(ctx, ref.Scope, config, ref.Kind)
+		if err != nil {
+			return fleet.Evidence{}, err
+		}
+	}
+	if expected := ref.Attributes["gvr"]; expected != "" && expected != spec.gvr.String() {
+		return fleet.Evidence{}, fmt.Errorf("%w: GVR %q does not match kind %q", ErrUnsupportedResource, expected, ref.Kind)
 	}
 
 	resource := resourceInterface(client, spec, ref.Namespace)
@@ -116,12 +122,10 @@ func (adapter *Adapter) Query(ctx context.Context, query fleet.Query) (fleet.Que
 	}
 	var spec resourceSpec
 	if query.Selector.ResourceKind != "" {
-		var ok bool
-		spec, ok = lookupResource(query.Selector.ResourceKind)
-		if !ok {
-			return fleet.QueryResult{}, fmt.Errorf("%w: %q", ErrUnsupportedResource, query.Selector.ResourceKind)
+		if known, ok := lookupResource(query.Selector.ResourceKind); ok {
+			spec = known
 		}
-		if !spec.namespaced && query.Selector.Namespace != "" {
+		if spec.gvr.Resource != "" && !spec.namespaced && query.Selector.Namespace != "" {
 			return fleet.QueryResult{}, fmt.Errorf("%w: namespace cannot select cluster-scoped %s", ErrUnsupportedSelector, spec.kind)
 		}
 	}
@@ -133,13 +137,13 @@ func (adapter *Adapter) Query(ctx context.Context, query fleet.Query) (fleet.Que
 		return fleet.QueryResult{}, err
 	}
 
-	scopes, clients, lastSeen := adapter.stateSnapshot()
+	scopes, clients, configs, lastSeen := adapter.stateSnapshot()
 	targets := targetScopeNames(query.Scopes, scopes)
 	results := make([]scopeQueryResult, len(targets))
 	adapter.runBounded(len(targets), func(index int) {
 		name := targets[index]
 		result, err := callWithTimeout(ctx, adapter.settings.requestTimeout, func(requestCtx context.Context) (scopeQueryResult, error) {
-			return adapter.queryScope(requestCtx, name, clients[name], spec, labelSelector.String(), query), nil
+			return adapter.queryScope(requestCtx, name, clients[name], configs[name], spec, labelSelector.String(), query), nil
 		})
 		if err != nil {
 			result = scopeQueryResult{name: name, err: err}
@@ -195,6 +199,7 @@ func (adapter *Adapter) queryScope(
 	ctx context.Context,
 	name string,
 	client dynamic.Interface,
+	config *rest.Config,
 	spec resourceSpec,
 	labelSelector string,
 	query fleet.Query,
@@ -205,6 +210,18 @@ func (adapter *Adapter) queryScope(
 		return result
 	}
 	if query.Selector.ResourceKind == "" {
+		return result
+	}
+	if spec.gvr.Resource == "" {
+		var err error
+		spec, err = adapter.resolveResource(ctx, name, config, query.Selector.ResourceKind)
+		if err != nil {
+			result.err = err
+			return result
+		}
+	}
+	if !spec.namespaced && query.Selector.Namespace != "" {
+		result.err = fmt.Errorf("%w: namespace cannot select cluster-scoped %s", ErrUnsupportedSelector, spec.kind)
 		return result
 	}
 
@@ -277,6 +294,92 @@ func lookupResource(kind string) (resourceSpec, bool) {
 	return spec, ok
 }
 
+func (adapter *Adapter) resolveResource(
+	ctx context.Context,
+	scope string,
+	config *rest.Config,
+	kind string,
+) (resourceSpec, error) {
+	key := strings.ToLower(strings.TrimSpace(kind))
+	adapter.mu.RLock()
+	if cached, ok := adapter.resources[scope][key]; ok {
+		adapter.mu.RUnlock()
+		return cached, nil
+	}
+	adapter.mu.RUnlock()
+	if config == nil {
+		return resourceSpec{}, fmt.Errorf("%w: no client config for %s", ErrUnreachableScope, scope)
+	}
+	resolved, err := callWithTimeout(ctx, adapter.settings.requestTimeout, func(resolveCtx context.Context) (resourceSpec, error) {
+		return adapter.settings.resolve(resolveCtx, rest.CopyConfig(config), kind)
+	})
+	if err != nil {
+		return resourceSpec{}, fmt.Errorf("%w: resolve %q in %s: %v", ErrUnsupportedResource, kind, scope, err)
+	}
+	adapter.mu.Lock()
+	if adapter.resources[scope] == nil {
+		adapter.resources[scope] = make(map[string]resourceSpec)
+	}
+	for _, alias := range []string{key, strings.ToLower(resolved.kind), strings.ToLower(resolved.gvr.Resource)} {
+		adapter.resources[scope][alias] = resolved
+	}
+	adapter.mu.Unlock()
+	return resolved, nil
+}
+
+func defaultResourceResolver(_ context.Context, config *rest.Config, kind string) (resourceSpec, error) {
+	client, err := discovery.NewDiscoveryClientForConfig(config)
+	if err != nil {
+		return resourceSpec{}, fmt.Errorf("create discovery client: %w", err)
+	}
+	lists, discoveryErr := client.ServerPreferredResources()
+	wanted := strings.ToLower(strings.TrimSpace(kind))
+	for _, list := range lists {
+		groupVersion, err := schema.ParseGroupVersion(list.GroupVersion)
+		if err != nil {
+			continue
+		}
+		for _, resource := range list.APIResources {
+			if strings.Contains(resource.Name, "/") || !supportsVerb(resource.Verbs, "list") {
+				continue
+			}
+			if !strings.EqualFold(resource.Kind, kind) && strings.ToLower(resource.Name) != wanted &&
+				strings.ToLower(resource.SingularName) != wanted && !containsShortName(resource.ShortNames, wanted) {
+				continue
+			}
+			return resourceSpec{
+				kind: resource.Kind,
+				gvr: schema.GroupVersionResource{
+					Group: groupVersion.Group, Version: groupVersion.Version, Resource: resource.Name,
+				},
+				namespaced: resource.Namespaced,
+			}, nil
+		}
+	}
+	if discoveryErr != nil {
+		return resourceSpec{}, fmt.Errorf("discover API resources: %w", discoveryErr)
+	}
+	return resourceSpec{}, fmt.Errorf("resource %q was not advertised by the API server", kind)
+}
+
+func supportsVerb(verbs metav1.Verbs, wanted string) bool {
+	for _, verb := range verbs {
+		if verb == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func containsShortName(names []string, wanted string) bool {
+	for _, name := range names {
+		if strings.EqualFold(name, wanted) {
+			return true
+		}
+	}
+	return false
+}
+
 func resourceInterface(client dynamic.Interface, spec resourceSpec, namespace string) dynamic.ResourceInterface {
 	resource := client.Resource(spec.gvr)
 	if spec.namespaced {
@@ -344,16 +447,21 @@ func targetScopeNames(requested []string, scopes map[string]connector.Scope) []s
 	return result
 }
 
-func (adapter *Adapter) scopeClient(name string) (connector.Scope, dynamic.Interface, bool) {
+func (adapter *Adapter) scopeClient(name string) (connector.Scope, dynamic.Interface, *rest.Config, bool) {
 	adapter.mu.RLock()
 	defer adapter.mu.RUnlock()
 	scope, exists := adapter.scopes[name]
-	return cloneScope(scope), adapter.clients[name], exists
+	var config *rest.Config
+	if adapter.configs[name] != nil {
+		config = rest.CopyConfig(adapter.configs[name])
+	}
+	return cloneScope(scope), adapter.clients[name], config, exists
 }
 
 func (adapter *Adapter) stateSnapshot() (
 	map[string]connector.Scope,
 	map[string]dynamic.Interface,
+	map[string]*rest.Config,
 	map[string]time.Time,
 ) {
 	adapter.mu.RLock()
@@ -366,11 +474,15 @@ func (adapter *Adapter) stateSnapshot() (
 	for name, client := range adapter.clients {
 		clients[name] = client
 	}
+	configs := make(map[string]*rest.Config, len(adapter.configs))
+	for name, config := range adapter.configs {
+		configs[name] = rest.CopyConfig(config)
+	}
 	lastSeen := make(map[string]time.Time, len(adapter.lastSeen))
 	for name, observed := range adapter.lastSeen {
 		lastSeen[name] = observed
 	}
-	return scopes, clients, lastSeen
+	return scopes, clients, configs, lastSeen
 }
 
 func (adapter *Adapter) recordLastSeen(name string, observed time.Time) {

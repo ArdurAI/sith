@@ -153,6 +153,34 @@ func TestKindFleetFanout(t *testing.T) {
 		t.Fatalf("get stderr = %q, want partial coverage warning", getStderr)
 	}
 
+	genericOutput, genericStderr, err := runSith(
+		ctx, binary, kubeconfigPath, "get", "configmaps", "-A", "--all-clusters", "--output", "json",
+	)
+	if err != nil {
+		t.Fatalf("run generic sith get against kind: %v\nstdout=%s\nstderr=%s", err, genericOutput, genericStderr)
+	}
+	var genericSnapshot fleetcache.Snapshot
+	if err := json.Unmarshal(genericOutput, &genericSnapshot); err != nil {
+		t.Fatalf("decode generic sith get output %q: %v", genericOutput, err)
+	}
+	genericScopes := map[string]bool{
+		"kind-" + clusterNames[0]: false,
+		"kind-" + clusterNames[1]: false,
+	}
+	for _, record := range genericSnapshot.Records {
+		if record.Kind == "ConfigMap" && record.Name == "sith-generic-sample" {
+			genericScopes[record.Cluster] = true
+		}
+	}
+	for scope, seen := range genericScopes {
+		if !seen {
+			t.Errorf("generic lens did not return a ConfigMap from %s", scope)
+		}
+	}
+	if genericSnapshot.Coverage.Reachable != 2 || !strings.Contains(genericStderr, "warning: covered 2/3 clusters") {
+		t.Fatalf("generic coverage/stderr = %#v/%q, want partial two-of-three", genericSnapshot.Coverage, genericStderr)
+	}
+
 	searchOutput, searchStderr, err := runSith(ctx, binary, kubeconfigPath, "search", "image:*log4j*", "--output", "json")
 	if err != nil {
 		t.Fatalf("run sith search against kind: %v\nstdout=%s\nstderr=%s", err, searchOutput, searchStderr)
@@ -239,6 +267,16 @@ func seedKindResources(ctx context.Context, t *testing.T, kubeconfigPath string,
 		if _, err := client.Resource(schema.GroupVersionResource{Version: "v1", Resource: "pods"}).
 			Namespace("default").Create(ctx, pod, metav1.CreateOptions{}); err != nil {
 			t.Fatalf("create pod in %s: %v", contextName, err)
+		}
+		configMap := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "v1",
+			"kind":       "ConfigMap",
+			"metadata":   map[string]any{"name": "sith-generic-sample", "namespace": "default"},
+			"data":       map[string]any{"cluster": contextName},
+		}}
+		if _, err := client.Resource(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}).
+			Namespace("default").Create(ctx, configMap, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create configmap in %s: %v", contextName, err)
 		}
 		replicas := int64(index)
 		deployment := &unstructured.Unstructured{Object: map[string]any{

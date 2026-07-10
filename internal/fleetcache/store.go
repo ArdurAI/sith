@@ -48,6 +48,7 @@ type Store struct {
 
 	records   map[string]map[string]Record
 	coverage  map[string]fleet.Coverage
+	aliases   map[string]string
 	scopes    map[string]connector.Scope
 	warmed    map[string]bool
 	expected  map[string]bool
@@ -70,6 +71,7 @@ func newStore(now func() time.Time, freshFor time.Duration) *Store {
 	return &Store{
 		records:  make(map[string]map[string]Record),
 		coverage: make(map[string]fleet.Coverage),
+		aliases:  make(map[string]string),
 		scopes:   make(map[string]connector.Scope),
 		warmed:   make(map[string]bool),
 		expected: make(map[string]bool),
@@ -91,6 +93,7 @@ func (store *Store) BeginSync(kinds ...string) bool {
 	for _, kind := range kinds {
 		if canonical := canonicalKind(kind); canonical != "" {
 			store.expected[canonical] = true
+			store.aliases[kindAlias(kind)] = canonical
 		}
 	}
 	store.notifyLocked()
@@ -139,6 +142,10 @@ func (store *Store) Replace(kind string, result fleet.QueryResult) error {
 	}
 	if store.records[canonical] == nil {
 		store.records[canonical] = make(map[string]Record)
+	}
+	store.aliases[kindAlias(kind)] = canonical
+	for _, record := range normalized {
+		store.aliases[kindAlias(record.Kind)] = canonical
 	}
 	unreachable := stringSet(result.Coverage.Unreachable)
 	for key, record := range store.records[canonical] {
@@ -193,8 +200,13 @@ func (store *Store) Query(query Query) Snapshot {
 	defer store.mu.RUnlock()
 	now := store.now().UTC()
 	records := make([]Record, 0)
+	selectedKind := store.resolveKindLocked(query.Kind)
+	matchQuery := query
+	if selectedKind != "" {
+		matchQuery.Kind = ""
+	}
 	for kind, byKey := range store.records {
-		if query.Kind != "" && canonicalKind(query.Kind) != kind {
+		if selectedKind != "" && selectedKind != kind {
 			continue
 		}
 		for _, cached := range byKey {
@@ -206,7 +218,7 @@ func (store *Store) Query(query Query) Snapshot {
 				record.Fact.Stale = true
 				record.Fact.StaleFor = age.Round(time.Second).String()
 			}
-			if query.matches(record) {
+			if matchQuery.matches(record) {
 				records = append(records, record)
 			}
 		}
@@ -228,7 +240,7 @@ func (store *Store) Query(query Query) Snapshot {
 			}
 		}
 	}
-	pending := canonicalKind(query.Kind) != "" && !store.warmed[canonicalKind(query.Kind)]
+	pending := selectedKind != "" && !store.warmed[selectedKind]
 	return Snapshot{
 		Version:   store.version,
 		State:     store.stateLocked(coverage, store.recordCountLocked(), pending),
@@ -265,7 +277,7 @@ func (store *Store) coverageLocked(query Query, records []Record, now time.Time)
 	targets := store.targetScopesLocked(query.Scopes)
 	unreachable := make(map[string]struct{})
 	stale := make(map[string]struct{})
-	kind := canonicalKind(query.Kind)
+	kind := store.resolveKindLocked(query.Kind)
 	if kind != "" {
 		if !store.warmed[kind] {
 			return fleet.Coverage{Requested: len(targets)}
@@ -312,6 +324,21 @@ func (store *Store) coverageLocked(query Query, records []Record, now time.Time)
 		}
 	}
 	return coverage
+}
+
+func (store *Store) resolveKindLocked(kind string) string {
+	canonical := canonicalKind(kind)
+	if canonical == "" {
+		return ""
+	}
+	if resolved := store.aliases[kindAlias(kind)]; resolved != "" {
+		return resolved
+	}
+	return canonical
+}
+
+func kindAlias(kind string) string {
+	return strings.ToLower(canonicalKind(kind))
 }
 
 func (store *Store) targetScopesLocked(patterns []string) []string {

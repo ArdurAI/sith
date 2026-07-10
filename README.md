@@ -37,8 +37,9 @@ artifact.
 
 The TUI opens only when stdin and stdout are terminals; redirected bare invocations remain
 script-safe and print help. Tier-1 lenses are Pods, Deployments, Events, and Nodes. Use `:` for
-lens/context commands, `/` to filter the current lens, `Ctrl-K` for whole-fleet fuzzy/structured
-search, number keys for cluster scope, `c` for coverage, and `Ctrl-R` for a non-blocking refresh.
+lens/context commands (including `:<kind>` for an API-discovered generic resource), `/` to filter
+the current lens, `Ctrl-K` for whole-fleet fuzzy/structured search, number keys for cluster scope,
+`c` for coverage, and `Ctrl-R` for a non-blocking refresh.
 The UI uses Bubble Tea v2.0.8 core only; tables and search remain local so no optional styling or
 component dependency enters the binary.
 
