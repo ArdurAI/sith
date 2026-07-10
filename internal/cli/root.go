@@ -87,8 +87,9 @@ func newRootCommand(runtime backend, stdout, stderr io.Writer) *cobra.Command {
 			return command.Help()
 		},
 		PersistentPreRunE: func(command *cobra.Command, _ []string) error {
-			if options.output != "text" && options.output != "json" && options.output != "wide" && options.output != "name" {
-				return fmt.Errorf("invalid output format %q: expected text, json, wide, or name", options.output)
+			if options.output != "text" && options.output != "json" && options.output != "yaml" &&
+				options.output != "wide" && options.output != "name" {
+				return fmt.Errorf("invalid output format %q: expected text, json, yaml, wide, or name", options.output)
 			}
 
 			resolved, err := config.Load(options.configPath, config.Overrides{
@@ -117,7 +118,7 @@ func newRootCommand(runtime backend, stdout, stderr io.Writer) *cobra.Command {
 	flags.StringVar(&options.configPath, "config", "", "path to the YAML configuration file")
 	flags.StringVar(&options.logLevel, "log-level", "", "logging level: debug, info, warn, or error (default info)")
 	flags.StringVar(&options.logFormat, "log-format", "", "logging format: text or json (default text)")
-	flags.StringVarP(&options.output, "output", "o", "text", "output format: text, json, wide, or name")
+	flags.StringVarP(&options.output, "output", "o", "text", "output format: text, json, yaml, wide, or name")
 
 	commands := []*cobra.Command{
 		newVersionCommand(options),

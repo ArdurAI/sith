@@ -1,7 +1,7 @@
 # Session — 2026-07-10 — slice-2-cache-first-fleet
 
 **Builder:** Gnani Rahul · **Model/effort:** engineering, max · **Branch:** feat/cache-first-fleet
-**Slice(s):** Slice 2 / #33 + local portion of #10 · **Status:** in-progress
+**Slice(s):** Slice 2 / #33 + local portion of #10 · **Status:** ready-for-PR
 
 ---
 
@@ -92,8 +92,19 @@ and cells. Renderer tests prove normal/wide server columns. The real two-cluster
 proves `Name/Data/Age` reach JSON and shared text rendering; the complete gate passes in 70 seconds.
 [R] Review: Red-team review treats cluster-provided print cells as untrusted terminal input. Shared
 rendering now removes escape/control characters and folds line breaks before CLI/TUI output.
-[C] Checkpoint #8: this commit — server-print generic renderer; next: final CI/security/PR review.
+[C] Checkpoint #8: ec2f089 — server-print generic renderer; next: final CI/security/PR review.
+[A] Action: Added stable YAML output beside text/JSON/wide/name for version, clusters, and all
+cache-backed read commands, closing the final scripting-format mismatch in the locked UX contract.
+[T] Test: YAML round-trip tests cover build metadata, allocated empty fleet results, and cache
+snapshots. Final `make ci` passes format, vet, lint, reachable-vulnerability scan, race/coverage,
+warm p95, binary e2e, and build gates; the digest-pinned two-cluster gate passed separately.
+[R] Review: Final GitHub security audit found zero open Dependabot alerts. Enabled Dependabot
+security updates plus secret scanning, push protection, validity checks, and non-provider patterns.
+Enabled CodeQL default setup; Actions and Go analysis run 29126732288 completed successfully.
+Changed-file secret/SPDX checks are clean and all nine commits are signed, DCO-compliant, and carry
+the exact GSTACK checkpoint trailer.
+[C] Checkpoint #9: this commit — contract and security closure; next: publish and review PR.
 
 ---
 
-**Session close:** in progress · **Open questions touched:** Q12 keeps the roadmap TUI/CLI-first default
+**Session close:** ready for PR · **Open questions touched:** Q12 keeps the roadmap TUI/CLI-first default

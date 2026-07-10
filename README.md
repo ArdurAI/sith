@@ -29,7 +29,7 @@ make build
 use the default `~/.kube/config`. Exec-credential helpers run locally, exactly as they do for
 `kubectl`; Sith does not copy kubeconfigs or credentials elsewhere.
 
-Scripted `get` calls require either `--all-clusters` or one explicit `--context`. Text, JSON,
+Scripted `get` calls require either `--all-clusters` or one explicit `--context`. Text, JSON, YAML,
 wide, and source-abstract name outputs are supported. Search and correlation run over the same
 normalized in-memory records; partial results name stale/unreachable contexts. The cache is not
 persisted to disk, so raw workload specifications do not become a new plaintext credential-adjacent

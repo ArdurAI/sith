@@ -165,6 +165,8 @@ func writeCacheSnapshot(command *cobra.Command, format, lens string, snapshot fl
 		if err := json.NewEncoder(command.OutOrStdout()).Encode(snapshot); err != nil {
 			return fmt.Errorf("write cache JSON: %w", err)
 		}
+	case "yaml":
+		return writeYAML(command.OutOrStdout(), snapshot, "cache")
 	case "name":
 		return fleetrender.WriteNames(command.OutOrStdout(), snapshot)
 	default:

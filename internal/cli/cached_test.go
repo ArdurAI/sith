@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
 	"github.com/ArdurAI/sith/internal/connector"
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/fleetcache"
@@ -55,6 +57,23 @@ func TestGetJSONUsesStableCacheSchema(t *testing.T) {
 		t.Fatalf("unmarshal output %q: %v", stdout, err)
 	}
 	if len(snapshot.Records) != 1 || snapshot.Records[0].Cluster != "alpha" || snapshot.Coverage.Requested != 1 {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+}
+
+func TestGetYAMLUsesStableCacheSchema(t *testing.T) {
+	reader := &cacheReader{}
+	stdout, stderr, exitCode := runCLIWithReader(
+		t, []string{"get", "pods", "-A", "--context", "alpha", "-o", "yaml"}, reader,
+	)
+	if exitCode != 0 {
+		t.Fatalf("exit/stderr = %d/%q", exitCode, stderr)
+	}
+	var snapshot fleetcache.Snapshot
+	if err := yaml.Unmarshal([]byte(stdout), &snapshot); err != nil {
+		t.Fatalf("unmarshal YAML output %q: %v", stdout, err)
+	}
+	if len(snapshot.Records) != 1 || snapshot.Records[0].Cluster != "alpha" {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
 }
