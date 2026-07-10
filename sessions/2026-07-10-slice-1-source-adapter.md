@@ -1,7 +1,7 @@
 # Session — 2026-07-10 — slice-1-source-adapter
 
 **Builder:** Gnani Rahul · **Model/effort:** engineering, max · **Branch:** feat/fleet-source-adapter
-**Slice(s):** Slice 1 / #38 + #32 · **Status:** in-progress
+**Slice(s):** Slice 1 / #38 + #32 · **Status:** done
 
 ---
 
@@ -37,16 +37,29 @@ last-seen timestamps when a previously reachable context becomes unavailable.
 typed label/name/image selectors, source-stamped evidence, unknown/unreachable reads, and an actual
 ExecCredential v1 subprocess authenticated request to a TLS test API. Focused race tests, lint,
 and 81.5% statement coverage pass.
-[C] Checkpoint #3: 3463c1b — local-kubeconfig discovery/read/query adapter; next: bridge the
+[C] Checkpoint #3: bad1a1f — local-kubeconfig discovery/read/query adapter; next: bridge the
 adapter into `sith clusters` and validate the real CLI path.
 [A] Action: Replaced the Slice-0 stub at the single CLI injection point with
 `connector.AsSource(kubeconfig.Default())`; default construction follows client-go's standard
 `KUBECONFIG` path-list and `~/.kube/config` resolution without doing startup network I/O.
 [A] Action: Updated the public README from the Slice-0 stub behavior to the real local-fleet
 discovery and credential-locality contract.
-[C] Checkpoint #4: this commit — production CLI bridge; next: prove two reachable kind clusters
+[C] Checkpoint #4: 87053ca — production CLI bridge; next: prove two reachable kind clusters
 plus one unreachable context through the built binary.
+[A] Action: Added a hermetic real-cluster gate that creates two uniquely named kind clusters from
+the digest-pinned Kubernetes v1.36.1 node image, merges their kubeconfigs with one deliberately
+dead context, and cleans up only the clusters it created.
+[T] Test: The gate asserts adapter discovery, a real namespace query returning source-stamped
+facts from both API servers, honest 2/3 partial coverage, and the built `sith clusters --output
+json` process over the same merged kubeconfig. CI installs pinned kind v0.32.0 before running it.
+[R] Review: Red-team analysis added hard wall-clock isolation around client-go operations because
+its exec authenticator does not itself bind helper-process lifetime to request context, rejected
+invalid references/selectors before credential work, and made partial kind cleanup observable.
+[R] Review: govulncheck v1.6.0 found two reachable `x/net` call-path vulnerabilities inherited
+through client-go. Raised `x/net` to the fixed v0.55.0 floor and added a pinned CI/local scan;
+the follow-up scan reports no reachable vulnerabilities.
+[C] Checkpoint #5: this commit — reviewed real two-cluster fan-out gate; next: publish and merge.
 
 ---
 
-**Session close:** in progress · **Open questions touched:** none
+**Session close:** implementation and review complete; publication pending · **Open questions touched:** none

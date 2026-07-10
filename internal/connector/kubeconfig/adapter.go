@@ -302,9 +302,10 @@ func (adapter *Adapter) probeContext(
 
 	probeConfig := rest.CopyConfig(restConfig)
 	probeConfig.Timeout = adapter.settings.probeTimeout
-	probeCtx, cancel := context.WithTimeout(ctx, adapter.settings.probeTimeout)
-	defer cancel()
-	if err := adapter.settings.probe(probeCtx, probeConfig); err != nil {
+	_, err = callWithTimeout(ctx, adapter.settings.probeTimeout, func(probeCtx context.Context) (struct{}, error) {
+		return struct{}{}, adapter.settings.probe(probeCtx, probeConfig)
+	})
+	if err != nil {
 		return contextResult{scope: scope}
 	}
 
@@ -341,6 +342,34 @@ func (adapter *Adapter) runBounded(count int, operation func(index int)) {
 	}
 	close(jobs)
 	waitGroup.Wait()
+}
+
+type operationResult[T any] struct {
+	value T
+	err   error
+}
+
+func callWithTimeout[T any](
+	ctx context.Context,
+	timeout time.Duration,
+	operation func(context.Context) (T, error),
+) (T, error) {
+	operationCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	result := make(chan operationResult[T], 1)
+	// client-go's exec authenticator uses exec.Command rather than CommandContext. Isolating the
+	// call keeps one auth helper that ignores cancellation from stalling the rest of the fleet.
+	go func() {
+		value, err := operation(operationCtx)
+		result <- operationResult[T]{value: value, err: err}
+	}()
+	select {
+	case completed := <-result:
+		return completed.value, completed.err
+	case <-operationCtx.Done():
+		var zero T
+		return zero, operationCtx.Err()
+	}
 }
 
 func (adapter *Adapter) ensureDiscovered(ctx context.Context) error {

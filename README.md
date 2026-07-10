@@ -23,10 +23,18 @@ make build
 use the default `~/.kube/config`. Exec-credential helpers run locally, exactly as they do for
 `kubectl`; Sith does not copy kubeconfigs or credentials elsewhere.
 
-Run the full local quality gate with a pinned golangci-lint v2.12.2 on `PATH`:
+Run the full local quality gate with golangci-lint v2.12.2 and govulncheck v1.6.0 on `PATH`:
 
 ```bash
 make ci
+```
+
+The real multi-cluster gate creates two temporary kind clusters with a digest-pinned node image,
+checks one additional unreachable context, and removes both clusters afterward. It requires a
+running Docker engine and kind v0.32.0, and consumes additional CI time, disk, and memory:
+
+```bash
+make e2e-kind
 ```
 
 The architecture, threat model, ADRs, and roadmap live under [`docs/`](docs/). Build-session

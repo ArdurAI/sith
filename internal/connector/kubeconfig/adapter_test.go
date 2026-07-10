@@ -22,6 +22,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/rest"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
@@ -116,6 +117,34 @@ func TestDiscoverIsIndependentAndPreservesLastSeen(t *testing.T) {
 	}
 }
 
+func TestDiscoverTimesOutProbeThatIgnoresContext(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	adapter, err := New(
+		WithLoadingRules(testLoadingRules(t, testConfig("blocked"))),
+		WithProbeTimeout(20*time.Millisecond),
+		withProbe(func(_ context.Context, _ *rest.Config) error {
+			<-release
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	started := time.Now()
+	discovery, err := adapter.Discover(context.Background())
+	close(release)
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Discover() took %s, want bounded probe timeout", elapsed)
+	}
+	if !slices.Equal(discovery.Unreachable, []string{"blocked"}) {
+		t.Fatalf("Unreachable = %v, want [blocked]", discovery.Unreachable)
+	}
+}
+
 func TestQueryAndReadReturnSourceStampedEvidenceWithPartialCoverage(t *testing.T) {
 	t.Parallel()
 	observedAt := time.Date(2026, time.July, 10, 13, 0, 0, 0, time.UTC)
@@ -192,6 +221,69 @@ func TestQueryAndReadReturnSourceStampedEvidenceWithPartialCoverage(t *testing.T
 	_, err = adapter.Read(context.Background(), fleet.ResourceRef{Scope: "beta", Kind: "Pod", Name: "x"})
 	if !errors.Is(err, ErrUnreachableScope) {
 		t.Fatalf("Read(unreachable) error = %v, want ErrUnreachableScope", err)
+	}
+}
+
+func TestInvalidInputsFailBeforeDiscovery(t *testing.T) {
+	t.Parallel()
+	probeCalls := 0
+	adapter, err := New(
+		WithLoadingRules(testLoadingRules(t, testConfig("alpha"))),
+		withProbe(func(_ context.Context, _ *rest.Config) error {
+			probeCalls++
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, err = adapter.Read(context.Background(), fleet.ResourceRef{Scope: "alpha", Kind: "Pod"})
+	if !errors.Is(err, ErrInvalidReference) {
+		t.Fatalf("Read(invalid) error = %v, want ErrInvalidReference", err)
+	}
+	_, err = adapter.Query(context.Background(), fleet.Query{
+		Selector: fleet.Selector{ResourceKind: "Pod", Labels: map[string]string{"bad key": "value"}},
+	})
+	if !errors.Is(err, ErrUnsupportedSelector) {
+		t.Fatalf("Query(invalid label) error = %v, want ErrUnsupportedSelector", err)
+	}
+	if probeCalls != 0 {
+		t.Fatalf("probe calls = %d, want invalid inputs rejected before credential/network work", probeCalls)
+	}
+}
+
+func TestQueryTimesOutClientThatIgnoresContext(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	client := fakeClient()
+	client.PrependReactor("list", "pods", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+		<-release
+		close(finished)
+		return true, &unstructured.UnstructuredList{}, nil
+	})
+	adapter, err := New(
+		WithLoadingRules(testLoadingRules(t, testConfig("alpha"))),
+		WithRequestTimeout(20*time.Millisecond),
+		withProbe(func(_ context.Context, _ *rest.Config) error { return nil }),
+		withDynamicFactory(func(_ *rest.Config) (dynamic.Interface, error) { return client, nil }),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	started := time.Now()
+	result, err := adapter.Query(context.Background(), fleet.Query{Selector: fleet.Selector{ResourceKind: "Pod"}})
+	close(release)
+	<-finished
+	if err != nil {
+		t.Fatalf("Query() error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Query() took %s, want bounded request timeout", elapsed)
+	}
+	if result.Coverage.Reachable != 0 || !slices.Equal(result.Coverage.Unreachable, []string{"alpha"}) {
+		t.Fatalf("Coverage = %#v, want timed-out alpha surfaced as unreachable", result.Coverage)
 	}
 }
 

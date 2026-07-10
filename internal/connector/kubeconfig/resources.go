@@ -34,6 +34,9 @@ var ErrUnsupportedResource = errors.New("resource kind is unsupported")
 // ErrUnsupportedSelector reports a selector not yet expressible by this adapter.
 var ErrUnsupportedSelector = errors.New("query selector is unsupported")
 
+// ErrInvalidReference reports a resource address that is incomplete or inconsistent.
+var ErrInvalidReference = errors.New("resource reference is invalid")
+
 type resourceSpec struct {
 	kind       string
 	gvr        schema.GroupVersionResource
@@ -61,11 +64,11 @@ var resourceSpecs = map[string]resourceSpec{
 
 // Read fetches one resource from its explicitly addressed context.
 func (adapter *Adapter) Read(ctx context.Context, ref fleet.ResourceRef) (fleet.Evidence, error) {
-	if err := adapter.ensureDiscovered(ctx); err != nil {
-		return fleet.Evidence{}, err
-	}
 	if ref.SourceKind != "" && ref.SourceKind != Kind {
 		return fleet.Evidence{}, fmt.Errorf("%w: source kind %q", ErrUnsupportedResource, ref.SourceKind)
+	}
+	if strings.TrimSpace(ref.Scope) == "" || strings.TrimSpace(ref.Name) == "" {
+		return fleet.Evidence{}, fmt.Errorf("%w: scope and name are required", ErrInvalidReference)
 	}
 
 	spec, ok := lookupResource(ref.Kind)
@@ -74,6 +77,9 @@ func (adapter *Adapter) Read(ctx context.Context, ref fleet.ResourceRef) (fleet.
 	}
 	if expected := ref.Attributes["gvr"]; expected != "" && expected != spec.gvr.String() {
 		return fleet.Evidence{}, fmt.Errorf("%w: GVR %q does not match kind %q", ErrUnsupportedResource, expected, ref.Kind)
+	}
+	if err := adapter.ensureDiscovered(ctx); err != nil {
+		return fleet.Evidence{}, err
 	}
 
 	scope, client, ok := adapter.scopeClient(ref.Scope)
@@ -85,7 +91,9 @@ func (adapter *Adapter) Read(ctx context.Context, ref fleet.ResourceRef) (fleet.
 	}
 
 	resource := resourceInterface(client, spec, ref.Namespace)
-	object, err := resource.Get(ctx, ref.Name, metav1.GetOptions{})
+	object, err := callWithTimeout(ctx, adapter.settings.requestTimeout, func(requestCtx context.Context) (*unstructured.Unstructured, error) {
+		return resource.Get(requestCtx, ref.Name, metav1.GetOptions{})
+	})
 	if err != nil {
 		return fleet.Evidence{}, fmt.Errorf("read %s: %w", ref.String(), err)
 	}
@@ -106,10 +114,6 @@ func (adapter *Adapter) Query(ctx context.Context, query fleet.Query) (fleet.Que
 	if query.Selector.CVE != "" || query.Selector.Health != "" {
 		return fleet.QueryResult{}, fmt.Errorf("%w: health and CVE predicates arrive in later slices", ErrUnsupportedSelector)
 	}
-	if err := adapter.ensureDiscovered(ctx); err != nil {
-		return fleet.QueryResult{}, err
-	}
-
 	var spec resourceSpec
 	if query.Selector.ResourceKind != "" {
 		var ok bool
@@ -121,13 +125,26 @@ func (adapter *Adapter) Query(ctx context.Context, query fleet.Query) (fleet.Que
 			return fleet.QueryResult{}, fmt.Errorf("%w: namespace cannot select cluster-scoped %s", ErrUnsupportedSelector, spec.kind)
 		}
 	}
+	labelSelector, err := labels.ValidatedSelectorFromSet(query.Selector.Labels)
+	if err != nil {
+		return fleet.QueryResult{}, fmt.Errorf("%w: invalid Kubernetes label selector: %v", ErrUnsupportedSelector, err)
+	}
+	if err := adapter.ensureDiscovered(ctx); err != nil {
+		return fleet.QueryResult{}, err
+	}
 
 	scopes, clients, lastSeen := adapter.stateSnapshot()
 	targets := targetScopeNames(query.Scopes, scopes)
 	results := make([]scopeQueryResult, len(targets))
 	adapter.runBounded(len(targets), func(index int) {
 		name := targets[index]
-		results[index] = adapter.queryScope(ctx, name, clients[name], spec, query)
+		result, err := callWithTimeout(ctx, adapter.settings.requestTimeout, func(requestCtx context.Context) (scopeQueryResult, error) {
+			return adapter.queryScope(requestCtx, name, clients[name], spec, labelSelector.String(), query), nil
+		})
+		if err != nil {
+			result = scopeQueryResult{name: name, err: err}
+		}
+		results[index] = result
 	})
 	if err := ctx.Err(); err != nil {
 		return fleet.QueryResult{}, fmt.Errorf("query kubeconfig contexts: %w", err)
@@ -179,6 +196,7 @@ func (adapter *Adapter) queryScope(
 	name string,
 	client dynamic.Interface,
 	spec resourceSpec,
+	labelSelector string,
 	query fleet.Query,
 ) scopeQueryResult {
 	result := scopeQueryResult{name: name}
@@ -191,7 +209,7 @@ func (adapter *Adapter) queryScope(
 	}
 
 	resource := resourceInterface(client, spec, query.Selector.Namespace)
-	list, err := resource.List(ctx, metav1.ListOptions{LabelSelector: labels.SelectorFromSet(query.Selector.Labels).String()})
+	list, err := resource.List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
 	if err != nil {
 		if spec.kind == "Rollout" && apierrors.IsNotFound(err) {
 			return result
