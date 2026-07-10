@@ -27,6 +27,38 @@ useful than the slice before.
 
 ---
 
+## Who this is for — the target user's daily surface
+
+Sith is weighted toward what a working DevOps engineer touches **every day**, not toward a feature
+matrix. The reference user (GR) works daily in: **Kubernetes**, **Helm**, **ArgoCD**, **Docker**,
+**Python/bash**, **Fluentd/Fluent-bit**, **Grafana/Prometheus**, across **multi-cloud AWS/Azure/GCP**,
+doing **vulnerability fixes** and **cloud networking**. The sequence below is ordered so the earliest
+slices land the highest-frequency tasks: a fast multi-cluster fleet view, pod **logs/exec/describe**,
+and cross-cluster search — then the common **observability + GitOps** integrations.
+
+**How the daily stack maps to the plan:**
+- **Fleet view + logs/exec/describe/YAML** (the minute-to-minute loop) → Slices 1–3 (this phase).
+- **Cross-cluster search + "where is X unhealthy / which clusters run image Y"** → Slice 2 (this phase).
+- **Vuln fixes** (fleet-wide "which clusters run image X with CVE Y") → Slice 2's search over the
+  F2.4 CVE facts; deeper CVE ingestion matures with E2/F2.4.
+- **ArgoCD / Grafana / Prometheus / Fluentd read overlays** (see sync state, dashboards, log
+  pipelines in-context) → **E12 connector framework (#30)** + **E13 cost overlay (#31)**, fast-follow
+  right after the wedge. The wedge deliberately ships the K8s-native loop first; these read
+  connectors layer on the same fleet model without disturbing Slices 0–6.
+- **Multi-cloud AWS/Azure/GCP** → handled at the source layer: Slice 1's local-kubeconfig adapter
+  already honors each cloud's exec-credential plugin (aws/gcloud/az) locally, so a mixed-cloud
+  kubeconfig "just works" on day 0.
+- **Governed GitOps writes** (ArgoCD sync, PR-open) are **out of Phase L** by design — read before
+  write (E4/E5, phase-2+).
+
+> **Hook — fuller GR-workflow profile (incoming).** A richer profile mined from GR's Notion + Claude
+> references will be supplied next and folded in here. When it lands, capture it as
+> `docs/GR-WORKFLOW-PROFILE.md` and refine (a) the per-slice "User-workflow fit" lines below and
+> (b) the E12/E13 connector priority order to match the real frequency data. This section is the
+> anchor for that update; do not block the current slices waiting on it.
+
+---
+
 ## The locked sequence at a glance
 
 | # | Slice | Mapped issues | Depends on | Hero outcome |
@@ -74,6 +106,9 @@ everything else attaches to.
 about the fleet yet, but the skeleton, the source seam, and the CI gate exist — so every later slice
 is additive and always-green.
 
+**User-workflow fit.** Workflow-agnostic by design — this is pure scaffold. No GR daily task maps
+here; the fit begins at Slice 1.
+
 **Open questions touched.** **None.** Slice 0 is deliberately independent of Q12–Q15.
 
 ---
@@ -108,6 +143,11 @@ day-N OCM-spoke adapter (#9) reuses unchanged.
 fleet* — every context, reachable or not — with zero config. This is the wedge's foundation; every
 later surface renders this model.
 
+**User-workflow fit.** *"Morning fleet sweep."* GR opens the laptop with AWS EKS, Azure AKS, and
+GCP GKE contexts in one kubeconfig; `sith clusters` enumerates all of them at once, running each
+cloud's exec-credential plugin locally, and flags any context that's unreachable (expired SSO,
+VPN down) — replacing a dozen `kubectl config use-context` + `get nodes` round-trips.
+
 **Open questions touched.** None blocking. (Q13 — local→hub upgrade UX — is the *seam* this model
 enables, but it is a phase-1+ concern and does not gate Slice 1.)
 
@@ -138,6 +178,12 @@ cross-cluster search/correlation), which the roadmap routes through **#10** (cor
 **Advances the bar.** This is the "**k9s for your whole fleet**" wow. The tool now does the one thing
 no OSS tool ships (cross-cluster read + correlation) and does it fast. This is the demo that earns
 adoption.
+
+**User-workflow fit.** *"Incident triage across the fleet."* A Prometheus alert fires for
+`payments`. Instead of hopping clusters, GR runs `sith` and asks once — "every context where
+`payments` is Degraded" — or `sith get pods -A --all-clusters | grep CrashLoopBackOff` from an SSH
+box, and gets a fast, cache-first answer with stale clusters flagged. Same query answers the vuln
+sweep: "which contexts run image `X`" ahead of a CVE patch (F2.4 facts).
 
 **Open questions touched.** **Q12 (local-mode hero surface).** Default locked here: **TUI/CLI first**
 (the leanest day-0 wow), `sith ui` as the fast-follow (Slice 4). Rationale: the TUI and web UI render
@@ -170,6 +216,12 @@ parallel once Slice 1 lands, but sequenced after it for a clean trunk).
 **Advances the bar.** Removes the "but it can't even tail logs" objection. After this slice a Lens/k9s
 user can *fully replace* their per-cluster tool with `sith` and additionally get the fleet view.
 
+**User-workflow fit.** *"Debug the failing pod."* Once GR spots the CrashLoop in the fleet view,
+the next reflex is `logs -f`, `exec -it` for a quick `curl`/`nslookup` (cloud-networking checks),
+`describe`/YAML to see the events and the mounted config, and `port-forward` to hit a Grafana or a
+service locally. This slice makes those work per context with GR's own identity — the exact k9s/Lens
+loop, now available across the whole fleet without switching tools.
+
 **Open questions touched.** None. (The local-vs-governed distinction is settled by `SITH-NOTION.md`
 §6 guardrails, not an open question.)
 
@@ -198,6 +250,11 @@ ops from Slice 3 surface here too).
 
 **Advances the bar.** Gives the visual audience (Lens refugees who want a GUI, not a TUI) a reason to
 adopt, without a second install or an account wall. Same engine, second face.
+
+**User-workflow fit.** *"Share a view / prefer a GUI."* When GR wants a visual surface — scanning
+many namespaces' health at a glance, reading a long YAML, or showing a teammate the fleet during an
+incident call — `sith ui` opens the same fleet model in the browser on loopback, no account, no
+second install. It's the Lens/Headlamp GUI habit, kept local and multi-cluster.
 
 **Open questions touched.** **Q12** (see Slice 2 — this slice is the "web" arm of the hero decision).
 If the owner picks web-first, this slice moves ahead of Slice 2's TUI work; the model layer is shared
@@ -229,6 +286,11 @@ persists a secret (the local MCP token, Q14).
 
 **Advances the bar.** Converts "trust us" into "here's the test that proves it". This is the exact
 promise that wins the Lens-refugee audience; making it *verifiable* is the differentiator.
+
+**User-workflow fit.** *"Run it on a work laptop without a second thought."* GR points `sith` at
+production kubeconfigs holding cloud IAM exec creds; the trust posture — no account, no phone-home
+(provable by the egress test), secrets in the OS keychain, creds read in place — is what makes that
+safe on a corp machine under security review. It removes the objection before it's raised.
 
 **Open questions touched.** **Q15 (local-mode telemetry stance).** Default locked here: **permanent
 hard no** — no telemetry, not even off-by-default opt-in, in Phase L (the Lens backlash argues for
@@ -262,6 +324,11 @@ path is the *same* one the hub uses (no privileged MCP data path).
 vector. An agent can now answer "which of my clusters run image X with CVE Y?" through governed,
 read-only, audited tools, with the exact same enforcement the hub will apply to writes later.
 
+**User-workflow fit.** *"Ask the agent about the fleet."* GR works in Claude Code / Codex daily;
+with `sith serve --mcp` the agent can answer "which clusters run image `X` with CVE `Y`?" or "where
+is `payments` unhealthy?" through governed, read-only, audited tools — turning the fleet model into
+something the AI in GR's editor can query, without ever handing it a cluster credential or a shell.
+
 **Open questions touched.** **Q14 (local MCP auth).** Default locked here: **loopback trust +
 optional short-lived local token held in the OS keychain** (Slice 5). Rationale: in single-user local
 mode the loopback boundary is the trust boundary; an optional keychain-held token defends against
@@ -291,6 +358,10 @@ public `brew install sith` announcement, not before the binary is useful locally
 **Advances the bar.** Turns "runnable today from source" into "`brew install sith && sith` in under a
 minute" — the actual adoption on-ramp (`SITH-NOTION.md` §2). Deferred just enough that we harden the
 supply chain once there is something worth shipping.
+
+**User-workflow fit.** *"Install it like any other CLI tool."* `brew install sith` (or the distro
+package) is the same muscle memory as installing `kubectl`, `helm`, `k9s`, or `argocd` — the
+frictionless on-ramp that gets Sith onto GR's machine and, later, teammates'.
 
 **Open questions touched.** None in Phase L (Q3 KMS/HSM reference is a hub/heavy-profile concern,
 not the local single-binary funnel).

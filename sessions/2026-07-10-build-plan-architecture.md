@@ -17,8 +17,24 @@ divergence from roadmap #39 (E9 packaging folded to a parallel non-gating track)
 deliverables + the GSTACK journal scaffold (`sessions/README.md`, `JOURNAL-TEMPLATE.md`).
 [T] Test: link-checked relative doc references; confirmed referenced files exist; confirmed signing
 config (SSH ED25519, gpgsign on) and branch base (`dev`, tip 6b81428). No code to run this session.
-[C] Checkpoint #1: <this commit> — build plan + Slice-0 spec + conventions + sessions scaffold on
-`docs/build-plan`; next: open PR into `dev`, hand Slice-0 spec to the Sonnet builder.
+[C] Checkpoint #1: 15def82 — build plan + Slice-0 spec + conventions + sessions scaffold on
+`docs/build-plan`; PR #40 into `dev`. next: hand Slice-0 spec to the Sonnet builder.
+
+[G] Goal: weight the build sequence toward GR's real day-to-day — K8s, Helm, ArgoCD, Docker,
+Python/bash, Fluentd/Fluent-bit, Grafana/Prometheus, multi-cloud AWS/Azure/GCP, vuln fixes, cloud
+networking — and leave a hook for a fuller GR-workflow profile supplied next.
+[S] Scope: `docs/BUILD-SEQUENCE.md` only. Slice 0 stays workflow-agnostic. No spec/convention changes.
+[A] Action: added a "Who this is for — the target user's daily surface" section (stack → plan mapping)
+with a hook to a forthcoming `docs/GR-WORKFLOW-PROFILE.md`; added a concrete "User-workflow fit"
+line to every slice (0 agnostic; 1 morning fleet sweep; 2 incident triage + vuln sweep; 3 debug the
+failing pod; 4 GUI/share; 5 run safely on a corp laptop; 6 ask the agent; P install like kubectl).
+Redone in a dedicated worktree (`/Volumes/EXTENDED/repos/sith-build-plan`) after a concurrent builder
+session force-switched the shared main worktree to `docs/f11-local-fleet-ux` and discarded the
+uncommitted first pass.
+[T] Test: grep confirms 8 per-slice fit lines + the hook; anchors/links intact.
+[C] Checkpoint #2: <this commit> — user-workflow weighting folded into BUILD-SEQUENCE; next: fold the
+fuller GR-workflow profile into `docs/GR-WORKFLOW-PROFILE.md` when GR supplies it, and re-rank E12/E13
+connectors to match.
 
 ---
 
