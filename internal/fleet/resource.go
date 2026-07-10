@@ -69,9 +69,17 @@ type Evidence struct {
 	Ref        ResourceRef     `json:"ref"`
 	Kind       FactKind        `json:"kind"`
 	Observed   json.RawMessage `json:"observed"`
+	Display    []DisplayField  `json:"display,omitempty"`
 	ObservedAt time.Time       `json:"observed_at"`
 	Source     string          `json:"source"`
 	Provenance Provenance      `json:"provenance"`
+}
+
+// DisplayField is a source-provided, read-only tabular presentation hint.
+type DisplayField struct {
+	Name     string `json:"name"`
+	Value    string `json:"value"`
+	Priority int32  `json:"priority,omitempty"`
 }
 
 // Provenance identifies how to trace an observation back to its native source.

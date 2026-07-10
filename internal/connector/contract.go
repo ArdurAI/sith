@@ -82,6 +82,37 @@ type Reader interface {
 	Query(ctx context.Context, query fleet.Query) (fleet.QueryResult, error)
 }
 
+// Watcher is an optional live-read extension to Reader. It is deliberately not an eighth
+// registry capability: watch accelerates query-backed cache reconciliation without changing the
+// locked seven-verb connector taxonomy.
+type Watcher interface {
+	Reader
+	Watch(ctx context.Context, kinds ...string) (<-chan WatchEvent, error)
+}
+
+// WatchEventType describes one cache reconciliation delta from a live reader.
+type WatchEventType string
+
+// Live-reader reconciliation event types.
+const (
+	WatchSnapshot WatchEventType = "snapshot"
+	WatchUpsert   WatchEventType = "upsert"
+	WatchDelete   WatchEventType = "delete"
+	WatchError    WatchEventType = "error"
+)
+
+// WatchEvent carries a source-stamped, per-scope reconciliation delta.
+type WatchEvent struct {
+	Type       WatchEventType
+	Kind       string
+	Scope      string
+	Facts      []fleet.Fact
+	Fact       fleet.Fact
+	Ref        fleet.ResourceRef
+	ObservedAt time.Time
+	Err        error
+}
+
 // Discovery describes the scopes a reader can currently address.
 type Discovery struct {
 	Scopes      []Scope  `json:"scopes"`

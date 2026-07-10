@@ -11,12 +11,16 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/ArdurAI/sith/internal/config"
 	"github.com/ArdurAI/sith/internal/connector"
 	"github.com/ArdurAI/sith/internal/connector/kubeconfig"
 	"github.com/ArdurAI/sith/internal/fleet"
+	"github.com/ArdurAI/sith/internal/fleetcache"
+	"github.com/ArdurAI/sith/internal/hydrate"
 	"github.com/ArdurAI/sith/internal/logging"
+	"github.com/ArdurAI/sith/internal/tui"
 )
 
 type runtimeKey struct{}
@@ -33,13 +37,30 @@ type rootOptions struct {
 	output     string
 }
 
+type backend struct {
+	source   fleet.Source
+	reader   connector.Reader
+	tuiInput io.Reader
+}
+
 // Execute builds and runs the command tree, returning a process exit code.
 func Execute() int {
-	return execute(os.Args[1:], connector.AsSource(kubeconfig.Default()), os.Stdout, os.Stderr)
+	adapter := kubeconfig.Default()
+	return executeBackend(os.Args[1:], backend{
+		source: connector.AsSource(adapter), reader: adapter, tuiInput: os.Stdin,
+	}, os.Stdout, os.Stderr)
 }
 
 func execute(args []string, source fleet.Source, stdout, stderr io.Writer) int {
-	command := newRootCommand(source, stdout, stderr)
+	return executeBackend(args, backend{source: source}, stdout, stderr)
+}
+
+func executeWithReader(args []string, reader connector.Reader, stdout, stderr io.Writer) int {
+	return executeBackend(args, backend{source: connector.AsSource(reader), reader: reader}, stdout, stderr)
+}
+
+func executeBackend(args []string, runtime backend, stdout, stderr io.Writer) int {
+	command := newRootCommand(runtime, stdout, stderr)
 	command.SetArgs(args)
 	if err := command.Execute(); err != nil {
 		if _, writeErr := fmt.Fprintln(stderr, err); writeErr != nil {
@@ -51,7 +72,7 @@ func execute(args []string, source fleet.Source, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func newRootCommand(source fleet.Source, stdout, stderr io.Writer) *cobra.Command {
+func newRootCommand(runtime backend, stdout, stderr io.Writer) *cobra.Command {
 	options := &rootOptions{output: "text"}
 	command := &cobra.Command{
 		Use:           "sith",
@@ -60,11 +81,15 @@ func newRootCommand(source fleet.Source, stdout, stderr io.Writer) *cobra.Comman
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(command *cobra.Command, _ []string) error {
+			if runtime.reader != nil && terminalIO(runtime.tuiInput, stdout) {
+				return runFleetTUI(command.Context(), runtime.reader, runtime.tuiInput, stdout)
+			}
 			return command.Help()
 		},
 		PersistentPreRunE: func(command *cobra.Command, _ []string) error {
-			if options.output != "text" && options.output != "json" {
-				return fmt.Errorf("invalid output format %q: expected text or json", options.output)
+			if options.output != "text" && options.output != "json" && options.output != "yaml" &&
+				options.output != "wide" && options.output != "name" {
+				return fmt.Errorf("invalid output format %q: expected text, json, yaml, wide, or name", options.output)
 			}
 
 			resolved, err := config.Load(options.configPath, config.Overrides{
@@ -93,14 +118,52 @@ func newRootCommand(source fleet.Source, stdout, stderr io.Writer) *cobra.Comman
 	flags.StringVar(&options.configPath, "config", "", "path to the YAML configuration file")
 	flags.StringVar(&options.logLevel, "log-level", "", "logging level: debug, info, warn, or error (default info)")
 	flags.StringVar(&options.logFormat, "log-format", "", "logging format: text or json (default text)")
-	flags.StringVarP(&options.output, "output", "o", "text", "output format: text or json")
+	flags.StringVarP(&options.output, "output", "o", "text", "output format: text, json, yaml, wide, or name")
 
-	command.AddCommand(
+	commands := []*cobra.Command{
 		newVersionCommand(options),
-		newClustersCommand(options, source),
+		newClustersCommand(options, runtime.source),
 		newUICommand(),
 		newHubCommand(),
-	)
+	}
+	if runtime.reader != nil {
+		commands = append(commands,
+			newTUICommand(runtime.reader, runtime.tuiInput, stdout),
+			newGetCommand(options, runtime.reader),
+			newSearchCommand(options, runtime.reader),
+			newCorrelateCommand(options, runtime.reader),
+		)
+	}
+	command.AddCommand(commands...)
 
 	return command
+}
+
+func newTUICommand(reader connector.Reader, input io.Reader, output io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:   "tui",
+		Short: "Open the cache-first interactive fleet view",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			if input == nil {
+				return fmt.Errorf("TUI input is unavailable")
+			}
+			return runFleetTUI(command.Context(), reader, input, output)
+		},
+	}
+}
+
+func runFleetTUI(ctx context.Context, reader connector.Reader, input io.Reader, output io.Writer) error {
+	store := fleetcache.New()
+	hydrator, err := hydrate.New(reader, store)
+	if err != nil {
+		return err
+	}
+	return tui.Run(ctx, store, hydrator, input, output)
+}
+
+func terminalIO(input io.Reader, output io.Writer) bool {
+	inputFile, inputOK := input.(*os.File)
+	outputFile, outputOK := output.(*os.File)
+	return inputOK && outputOK && term.IsTerminal(int(inputFile.Fd())) && term.IsTerminal(int(outputFile.Fd()))
 }
