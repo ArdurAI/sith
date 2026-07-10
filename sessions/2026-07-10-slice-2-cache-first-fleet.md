@@ -47,7 +47,17 @@ cluster scopes, pause/resume, async refresh, navigation, and coverage detail.
 incremental/background message handling, pause/coverage/scope/search behavior, CLI/TUI table
 parity, Unicode/bounds safety, and cancellation. TUI coverage is 87.7%; a dedicated non-race CI
 gate measures 3,000 cached pods at p95 <100 ms while race tests validate concurrency separately.
-[C] Checkpoint #4: this commit — interactive cache-first fleet view; next: real two-cluster parity and staleness proof.
+[C] Checkpoint #4: 25c14e2 — interactive cache-first fleet view; next: real two-cluster parity and staleness proof.
+[A] Action: Expanded the digest-pinned kind gate to seed deterministic Pods and Deployments in two
+clusters, exercise built-binary cache commands, and then delete one previously live cluster during
+the same in-memory session.
+[T] Test: Race-enabled real APIs prove get/search/correlate answers over 2/3 contexts, partial
+warning/JSON coverage, image and unhealthy-deployment correctness, CLI/cache parity, and immediate
+last-known stale retention after the second cluster disappears. The gate passes in 68 seconds.
+[R] Review: The regular GitHub security audit reports zero open Dependabot alerts. Code scanning
+has no analysis configured and secret scanning is disabled; schedule a narrow post-slice security
+lane for CodeQL and repository secret-scanning/push-protection enablement. Local govulncheck is clean.
+[C] Checkpoint #5: this commit — real cache/search/staleness proof; next: generic resource lens and final review.
 
 ---
 

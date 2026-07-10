@@ -218,6 +218,16 @@ func (store *Store) Query(query Query) Snapshot {
 		records = records[:query.Limit]
 	}
 	coverage := store.coverageLocked(query, records, now)
+	unreachable := stringSet(coverage.Unreachable)
+	for index := range records {
+		if _, failed := unreachable[records[index].Cluster]; failed {
+			records[index].Stale = true
+			records[index].Fact.Stale = true
+			if records[index].Fact.StaleFor == "" {
+				records[index].Fact.StaleFor = "unreachable"
+			}
+		}
+	}
 	pending := canonicalKind(query.Kind) != "" && !store.warmed[canonicalKind(query.Kind)]
 	return Snapshot{
 		Version:   store.version,

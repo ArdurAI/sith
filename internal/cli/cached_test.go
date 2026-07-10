@@ -89,6 +89,18 @@ func TestGetTotalFailureIsNonZeroAfterCoverageOutput(t *testing.T) {
 	}
 }
 
+func TestNonTerminalRootStaysScriptSafe(t *testing.T) {
+	reader := &cacheReader{}
+	stdout, stderr, exitCode := runCLIWithReader(t, nil, reader)
+	if exitCode != 0 || !strings.Contains(stdout, "Usage:") || stderr != "" {
+		t.Fatalf("root exit/stdout/stderr = %d/%q/%q", exitCode, stdout, stderr)
+	}
+	_, stderr, exitCode = runCLIWithReader(t, []string{"tui"}, reader)
+	if exitCode == 0 || !strings.Contains(stderr, "TUI input is unavailable") {
+		t.Fatalf("tui exit/stderr = %d/%q", exitCode, stderr)
+	}
+}
+
 func runCLIWithReader(t *testing.T, args []string, reader connector.Reader) (stdout, stderr string, exitCode int) {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())

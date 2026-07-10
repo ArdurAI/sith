@@ -4,6 +4,7 @@
 package e2e_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,11 +16,17 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	"github.com/ArdurAI/sith/internal/connector/kubeconfig"
 	"github.com/ArdurAI/sith/internal/fleet"
+	"github.com/ArdurAI/sith/internal/fleetcache"
+	"github.com/ArdurAI/sith/internal/hydrate"
 )
 
 const defaultKindNodeImage = "kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5"
@@ -62,6 +69,7 @@ func TestKindFleetFanout(t *testing.T) {
 	}
 
 	kubeconfigPath := mergedKindKubeconfig(ctx, t, kindBinary, clusterNames)
+	seedKindResources(ctx, t, kubeconfigPath, clusterNames)
 	adapter, err := kubeconfig.New(
 		kubeconfig.WithExplicitPath(kubeconfigPath),
 		kubeconfig.WithProbeTimeout(5*time.Second),
@@ -126,6 +134,160 @@ func TestKindFleetFanout(t *testing.T) {
 		fleetResult.Coverage.Reachable != 2 || !slices.Equal(fleetResult.Coverage.Unreachable, []string{deadContext}) {
 		t.Fatalf("sith clusters = %#v, want two live and one unreachable context", fleetResult)
 	}
+
+	getOutput, getStderr, err := runSith(ctx, binary, kubeconfigPath, "get", "pods", "-A", "--all-clusters", "--output", "json")
+	if err != nil {
+		t.Fatalf("run sith get against kind: %v\nstdout=%s\nstderr=%s", err, getOutput, getStderr)
+	}
+	var getSnapshot fleetcache.Snapshot
+	if err := json.Unmarshal(getOutput, &getSnapshot); err != nil {
+		t.Fatalf("decode sith get output %q: %v", getOutput, err)
+	}
+	if getSnapshot.Coverage.Requested != 3 || getSnapshot.Coverage.Reachable != 2 ||
+		!slices.Equal(getSnapshot.Coverage.Unreachable, []string{deadContext}) {
+		t.Fatalf("get coverage = %#v, want two of three", getSnapshot.Coverage)
+	}
+	assertCachedRecord(t, getSnapshot, "kind-"+clusterNames[0], "sith-vuln-sample", false)
+	assertCachedRecord(t, getSnapshot, "kind-"+clusterNames[1], "sith-worker-sample", false)
+	if !strings.Contains(getStderr, "warning: covered 2/3 clusters") {
+		t.Fatalf("get stderr = %q, want partial coverage warning", getStderr)
+	}
+
+	searchOutput, searchStderr, err := runSith(ctx, binary, kubeconfigPath, "search", "image:*log4j*", "--output", "json")
+	if err != nil {
+		t.Fatalf("run sith search against kind: %v\nstdout=%s\nstderr=%s", err, searchOutput, searchStderr)
+	}
+	var searchSnapshot fleetcache.Snapshot
+	if err := json.Unmarshal(searchOutput, &searchSnapshot); err != nil {
+		t.Fatalf("decode sith search output: %v", err)
+	}
+	if len(searchSnapshot.Records) != 1 || searchSnapshot.Records[0].Name != "sith-vuln-sample" ||
+		searchSnapshot.Records[0].Cluster != "kind-"+clusterNames[0] {
+		t.Fatalf("search records = %#v", searchSnapshot.Records)
+	}
+
+	correlateOutput, correlateStderr, err := runSith(
+		ctx, binary, kubeconfigPath, "correlate", "deploy/sith-payments", "status!=Healthy", "--output", "json",
+	)
+	if err != nil {
+		t.Fatalf("run sith correlate against kind: %v\nstdout=%s\nstderr=%s", err, correlateOutput, correlateStderr)
+	}
+	var correlateSnapshot fleetcache.Snapshot
+	if err := json.Unmarshal(correlateOutput, &correlateSnapshot); err != nil {
+		t.Fatalf("decode sith correlate output: %v", err)
+	}
+	if len(correlateSnapshot.Records) != 1 || correlateSnapshot.Records[0].Cluster != "kind-"+clusterNames[1] ||
+		correlateSnapshot.Records[0].Status == "Healthy" {
+		t.Fatalf("correlation records = %#v, want unhealthy beta deployment", correlateSnapshot.Records)
+	}
+
+	store := fleetcache.New()
+	hydrator, err := hydrate.New(adapter, store)
+	if err != nil {
+		t.Fatalf("construct real hydrator: %v", err)
+	}
+	if err := hydrator.SyncOnce(ctx); err != nil {
+		t.Fatalf("initial real hydration: %v", err)
+	}
+	initialCache := store.Query(fleetcache.Query{Kind: "Pod"})
+	assertCachedRecord(t, initialCache, "kind-"+clusterNames[1], "sith-worker-sample", false)
+
+	runCommand(ctx, t, "", kindBinary, "delete", "cluster", "--name", clusterNames[1])
+	created = created[:1]
+	if err := hydrator.SyncOnce(ctx); err != nil {
+		t.Fatalf("degraded real hydration: %v", err)
+	}
+	degraded := store.Query(fleetcache.Query{Kind: "Pod"})
+	assertCachedRecord(t, degraded, "kind-"+clusterNames[1], "sith-worker-sample", true)
+	if degraded.Coverage.Reachable != 1 || !slices.Contains(degraded.Coverage.Unreachable, "kind-"+clusterNames[1]) ||
+		!slices.Contains(degraded.Coverage.Unreachable, deadContext) {
+		t.Fatalf("degraded coverage = %#v, want beta and dead context unreachable", degraded.Coverage)
+	}
+}
+
+func seedKindResources(ctx context.Context, t *testing.T, kubeconfigPath string, clusters []string) {
+	t.Helper()
+	rawConfig, err := clientcmd.LoadFromFile(kubeconfigPath)
+	if err != nil {
+		t.Fatalf("load merged kubeconfig: %v", err)
+	}
+	for index, cluster := range clusters {
+		contextName := "kind-" + cluster
+		clientConfig := clientcmd.NewNonInteractiveClientConfig(
+			*rawConfig, contextName, &clientcmd.ConfigOverrides{}, &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfigPath},
+		)
+		restConfig, err := clientConfig.ClientConfig()
+		if err != nil {
+			t.Fatalf("build client config for %s: %v", contextName, err)
+		}
+		client, err := dynamic.NewForConfig(restConfig)
+		if err != nil {
+			t.Fatalf("build dynamic client for %s: %v", contextName, err)
+		}
+		podName, podImage := "sith-vuln-sample", "registry.example/log4j-demo:v1"
+		if index == 1 {
+			podName, podImage = "sith-worker-sample", "registry.example/worker:v1"
+		}
+		pod := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "v1",
+			"kind":       "Pod",
+			"metadata":   map[string]any{"name": podName, "namespace": "default", "labels": map[string]any{"app": podName}},
+			"spec": map[string]any{
+				"containers": []any{map[string]any{"name": "app", "image": podImage}},
+			},
+		}}
+		if _, err := client.Resource(schema.GroupVersionResource{Version: "v1", Resource: "pods"}).
+			Namespace("default").Create(ctx, pod, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create pod in %s: %v", contextName, err)
+		}
+		replicas := int64(index)
+		deployment := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "apps/v1",
+			"kind":       "Deployment",
+			"metadata":   map[string]any{"name": "sith-payments", "namespace": "default"},
+			"spec": map[string]any{
+				"replicas": replicas,
+				"selector": map[string]any{"matchLabels": map[string]any{"app": "sith-payments"}},
+				"template": map[string]any{
+					"metadata": map[string]any{"labels": map[string]any{"app": "sith-payments"}},
+					"spec": map[string]any{"containers": []any{map[string]any{
+						"name": "app", "image": "registry.example/does-not-exist:v1",
+					}}},
+				},
+			},
+		}}
+		if _, err := client.Resource(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}).
+			Namespace("default").Create(ctx, deployment, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create deployment in %s: %v", contextName, err)
+		}
+	}
+}
+
+func runSith(ctx context.Context, binary, kubeconfigPath string, args ...string) ([]byte, string, error) {
+	command := exec.CommandContext(ctx, binary, args...)
+	command.Env = append(os.Environ(),
+		"KUBECONFIG="+kubeconfigPath,
+		"XDG_CONFIG_HOME="+filepath.Join(filepath.Dir(kubeconfigPath), "config-home"),
+	)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	err := command.Run()
+	return stdout.Bytes(), stderr.String(), err
+}
+
+func assertCachedRecord(t *testing.T, snapshot fleetcache.Snapshot, cluster, name string, stale bool) {
+	t.Helper()
+	for _, record := range snapshot.Records {
+		if record.Cluster == cluster && record.Name == name {
+			if record.Stale != stale {
+				t.Fatalf("record %s/%s stale = %t, want %t", cluster, name, record.Stale, stale)
+			}
+			return
+		}
+	}
+	t.Fatalf("record %s/%s missing from %#v", cluster, name, snapshot.Records)
 }
 
 func mergedKindKubeconfig(ctx context.Context, t *testing.T, kindBinary string, clusters []string) string {
