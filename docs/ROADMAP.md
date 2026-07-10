@@ -1,6 +1,7 @@
 # Sith — Roadmap
 
-**Status:** planning · **Date:** 2026-07-08
+**Status:** planning · **Date:** 2026-07-10 · **Revision:** consolidated with the July-2026 market
+research (E14 Investigation Brain, integration waves, standards-alignment gates, Phase-L build sequence)
 
 The roadmap is **falsification-first**: each phase must cheaply *disprove* its key
 assumption before the next is funded. The first thing we build is not product code — it is
@@ -77,16 +78,37 @@ nothing leaving the machine.
 - **Governed MCP read server** (`sith serve --mcp`): the same fleet as annotated read tools, so
   an AI agent inherits the read surface. The shadow-MCP lesson makes this a hard requirement —
   the sanctioned path must be easier than `npx kubernetes-mcp-server`.
+- A **local advisory Investigation Brain** subset (E14) — deterministic, offline hypotheses for
+  the day-1 failure modes over the locally-reachable lenses; advisory only (a suggested
+  command / PR diff the user runs). *"k9s for your whole fleet that also tells you why payments
+  is down."*
+
+**Build sequence (locked slices — `docs/BUILD-SEQUENCE.md`).** Phase L is delivered as ordered,
+always-green slices, each leaving the binary more useful than the last:
+
+| Slice | What | Issue(s) |
+|---|---|---|
+| 0 | Foundation walking-skeleton (`fleet.Source` seam + CI) | #47 |
+| 1 | Source-abstract model + local-kubeconfig fan-out | #38, #32 |
+| 2 | Cache-first render (CLI + TUI) + cross-cluster search | #33 |
+| 3 | Per-pod table stakes (logs/exec/port-forward/YAML) | #35 |
+| 4 | Local web fleet IDE (`sith ui`) | #34 |
+| 5 | No-account / no-telemetry / keychain custody | #36 |
+| 6 | MCP read tools (`sith serve --mcp`) | #37 |
+| — | Local advisory Investigation Brain (R1–R6, reachable lenses) | #48 |
+| P | Packaging & supply chain (parallel; does not gate 1–6) | #27 |
 
 **Exit criteria.**
 - First run to a populated cross-cluster answer in **< 10 minutes**, offline.
 - A correlation query returns a correct answer over **≥ 2 kubeconfig contexts**.
-- No account, no telemetry, and no credential leaves the machine (verified).
+- No account, no telemetry, and no credential leaves the machine (verified by an egress test).
 - An MCP client (e.g. Claude Code) calls the read tools and gets the same fleet answers.
+- The advisory brain surfaces a cited hypothesis + suggested command for a degraded workload,
+  and **abstains** (naming the missing lens) when a required lens is unreachable.
 
 **Demo.** `brew install sith && sith` on a laptop with 3 kubeconfig contexts → one fleet view;
 "every context where `payments` is Degraded" answered in one query; then Claude Code queries
-the same fleet via the MCP read tools.
+the same fleet via the MCP read tools; then the brain explains *why* one is degraded.
 
 > Phase L needs no OCM and does not wait on Milestone-0. It is the adoption wedge; the hub
 > track (M0 → P1 → P2 → P3) adds federation and governance on top of the same engine.
@@ -186,12 +208,64 @@ driven from an MCP client with the same gates.
 
 ---
 
+## The Investigation Brain (E14) — deterministic root-cause across the phases
+
+The July-2026 market pass found the entire **AI-SRE / auto-triage wave** (k8sgpt, HolmesGPT,
+Robusta, Botkube, Komodor, Cleric) converging on one shape: **LLM-agentic, investigate/advise,
+read-only or action-gated**. None ships deterministic rule-based root-cause; none ships governed
+*typed* action. Sith's **E14 — Investigation Brain** occupies both openings: a **rule-based,
+transparent, abstaining** reasoner over E2's four-lens graph that *proposes, never executes*.
+
+- **Phase L** — a **local advisory subset** (hypotheses + a suggested command/PR the user runs)
+  over the locally-reachable lenses. Determinism + offline + explainability are the features the
+  LLM tools structurally cannot offer air-gapped / China / security-conscious estates.
+- **P1** — the full deterministic brain over the **four-lens operational graph** (E2 F2.6/F2.7),
+  correlated by OpenTelemetry semconv keys; the six canonical rules (R1 bad deploy · R2 OOMKilled
+  · R3 CrashLoopBackOff · R4 config drift · R5 cert expiry · R6 node pressure) reach a *confident*
+  verdict once the Wave-1 connector core is present, and **abstain** honestly otherwise.
+- **P2 / P3** — the **same** rules render a **governed typed-intent proposal** through the PEP:
+  advisory in local mode, governed in the hub. One brain, two modes. The AI-SRE tools become
+  *clients* of this governance, not competitors — their advice becomes a typed `plan` Sith gates.
+
+## Integration waves (E12) — the connector coverage the brain needs
+
+Connectors ship in four waves (`docs/specs/E2-readfed-brain-integrations.md` §4), each scored by
+verb subset, lenses fed, kind (read-adapter / brokered read-through / typed-action), effort tier,
+and mode. **Wave 1 is the daily core and is deliberately the exact coverage the six brain rules
+need:**
+
+- **W1 — daily core:** Kubernetes (the substrate) · GitHub · ArgoCD · Prometheus · Elasticsearch ·
+  AWS. With just this, R1/R2/R4/R5/R6 reach *confident* and R3 reaches *detect*.
+- **W2 — desired-state/diff:** Helm · Kustomize · kubectl-diff (readers, **not** action targets in v1).
+- **W3 — viz/tracing/clouds:** Grafana (deep-link only) · OTel (semconv key backbone) · OpenShift ·
+  Azure · GCP.
+- **W4 — long-tail:** OpenSearch · Splunk · Fluentd/FluentBit (**health-only**) · Istio/Linkerd
+  (mesh → dependency edges) · Docker.
+
+Scope discipline holds throughout: read log **sinks** not shippers; Grafana is brokered, never
+re-skinned; Helm/Kustomize expose no action verbs; telemetry is query-through, never retained.
+
+## Standards-alignment gates (cross-cutting)
+
+Not an epic — acceptance gates woven into the epics above (`standards-alignment` label):
+
+- **MCP 2026-07-28 RC** — OAuth 2.1 + **RFC 8707 audience-bound tokens**, and **enforce-at-execution
+  not just discovery** (the CVE-2026-46519 bug class, CVSS 8.8). → E7, E4. Build to the stable
+  primitives; the RC surface will churn.
+- **OpenTelemetry Kubernetes semconv** — the correlation join keys for the four-lens graph. → E2.
+- **client-go ExecCredential v1** — kubeconfig exec-plugin auth; cloud tokens never persisted. → E1, E11.
+- **SLSA L2 + Sigstore/cosign + SBOM** — from the **first tag**, a day-one release gate. → E9.
+- **Kubernetes API conventions** — the fleet model reads as idiomatic Kubernetes. → E2.
+
 ## What is deliberately *not* on this roadmap
 
 - Broad integration count, UI polish, or "autonomy level" as goals in themselves.
 - Any verb beyond the closed vocabulary; any `exec`/free-form apply; any secret/RBAC write.
 - Re-implementing OCM transport, a scheduler, a portal, or a telemetry store (see
   [`SCOPE.md`](SCOPE.md)).
+- **No LLM in the critical path for root-cause** — the Investigation Brain (E14) is deterministic;
+  an LLM is an optional *client*, never the reasoning engine.
+- **No "act from chat" free-`kubectl` surface** — the Botkube anti-pattern the threat model rejects.
 
 Each phase's design decisions are recorded as ADRs; each phase's falsification result is
 appended to the relevant ADR as evidence.
