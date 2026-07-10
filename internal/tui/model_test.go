@@ -214,11 +214,6 @@ func TestUpdateHandlesBackgroundMessagesAndCommands(t *testing.T) {
 	if model.lastError != "" {
 		t.Fatalf("last error = %q, want cleared", model.lastError)
 	}
-	_, command = model.Update(refreshTickMsg(time.Now()))
-	if command == nil {
-		t.Fatal("refresh tick command = nil")
-	}
-
 	for _, commandText := range []string{"ctx", "unknown", "ctx alpha", "refresh", "resume"} {
 		_, _ = model.Update(keyMessage(":"))
 		_, _ = model.Update(keyMessage(commandText))
@@ -273,9 +268,15 @@ func TestRunHonorsCanceledContext(t *testing.T) {
 }
 
 type countingSyncer struct {
-	calls     atomic.Int64
-	kindCalls atomic.Int64
-	lastKinds atomic.Value
+	calls      atomic.Int64
+	watchCalls atomic.Int64
+	kindCalls  atomic.Int64
+	lastKinds  atomic.Value
+}
+
+func (syncer *countingSyncer) Run(_ context.Context) error {
+	syncer.watchCalls.Add(1)
+	return nil
 }
 
 func (syncer *countingSyncer) SyncOnce(_ context.Context) error {

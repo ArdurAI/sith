@@ -181,6 +181,39 @@ func TestKindFleetFanout(t *testing.T) {
 		t.Fatalf("generic coverage/stderr = %#v/%q, want partial two-of-three", genericSnapshot.Coverage, genericStderr)
 	}
 
+	watchStore := fleetcache.New()
+	watchHydrator, err := hydrate.New(adapter, watchStore, hydrate.WithResyncInterval(10*time.Minute))
+	if err != nil {
+		t.Fatalf("construct watch hydrator: %v", err)
+	}
+	watchCtx, watchCancel := context.WithCancel(ctx)
+	watchDone := make(chan error, 1)
+	go func() { watchDone <- watchHydrator.Run(watchCtx) }()
+	waitForCacheRecord(ctx, t, watchStore, "kind-"+clusterNames[0], "sith-vuln-sample", true)
+	watchClient := dynamicClientForContext(t, kubeconfigPath, "kind-"+clusterNames[0])
+	watchPod := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Pod",
+		"metadata":   map[string]any{"name": "sith-watch-sample", "namespace": "default"},
+		"spec": map[string]any{
+			"containers": []any{map[string]any{"name": "app", "image": "registry.example/watch:v1"}},
+		},
+	}}
+	if _, err := watchClient.Resource(schema.GroupVersionResource{Version: "v1", Resource: "pods"}).
+		Namespace("default").Create(ctx, watchPod, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create watched pod: %v", err)
+	}
+	waitForCacheRecord(ctx, t, watchStore, "kind-"+clusterNames[0], "sith-watch-sample", true)
+	if err := watchClient.Resource(schema.GroupVersionResource{Version: "v1", Resource: "pods"}).
+		Namespace("default").Delete(ctx, "sith-watch-sample", metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("delete watched pod: %v", err)
+	}
+	waitForCacheRecord(ctx, t, watchStore, "kind-"+clusterNames[0], "sith-watch-sample", false)
+	watchCancel()
+	if err := <-watchDone; err != nil {
+		t.Fatalf("watch hydrator shutdown: %v", err)
+	}
+
 	searchOutput, searchStderr, err := runSith(ctx, binary, kubeconfigPath, "search", "image:*log4j*", "--output", "json")
 	if err != nil {
 		t.Fatalf("run sith search against kind: %v\nstdout=%s\nstderr=%s", err, searchOutput, searchStderr)
@@ -297,6 +330,60 @@ func seedKindResources(ctx context.Context, t *testing.T, kubeconfigPath string,
 		if _, err := client.Resource(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}).
 			Namespace("default").Create(ctx, deployment, metav1.CreateOptions{}); err != nil {
 			t.Fatalf("create deployment in %s: %v", contextName, err)
+		}
+	}
+}
+
+func dynamicClientForContext(t *testing.T, kubeconfigPath, contextName string) dynamic.Interface {
+	t.Helper()
+	rawConfig, err := clientcmd.LoadFromFile(kubeconfigPath)
+	if err != nil {
+		t.Fatalf("load kubeconfig for %s: %v", contextName, err)
+	}
+	clientConfig := clientcmd.NewNonInteractiveClientConfig(
+		*rawConfig, contextName, &clientcmd.ConfigOverrides{},
+		&clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfigPath},
+	)
+	restConfig, err := clientConfig.ClientConfig()
+	if err != nil {
+		t.Fatalf("build client config for %s: %v", contextName, err)
+	}
+	client, err := dynamic.NewForConfig(restConfig)
+	if err != nil {
+		t.Fatalf("build dynamic client for %s: %v", contextName, err)
+	}
+	return client
+}
+
+func waitForCacheRecord(
+	ctx context.Context,
+	t *testing.T,
+	store *fleetcache.Store,
+	cluster, name string,
+	want bool,
+) {
+	t.Helper()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.NewTimer(20 * time.Second)
+	defer deadline.Stop()
+	for {
+		found := false
+		for _, record := range store.Query(fleetcache.Query{Kind: "Pod"}).Records {
+			if record.Cluster == cluster && record.Name == name {
+				found = true
+				break
+			}
+		}
+		if found == want {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("wait for cached record %s/%s: %v", cluster, name, ctx.Err())
+		case <-deadline.C:
+			t.Fatalf("cached record %s/%s presence = %t, want %t", cluster, name, found, want)
+		case <-ticker.C:
 		}
 	}
 }

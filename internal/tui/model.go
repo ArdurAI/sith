@@ -23,8 +23,6 @@ import (
 	"github.com/ArdurAI/sith/internal/hydrate"
 )
 
-const defaultRefreshInterval = 15 * time.Second
-
 type inputMode uint8
 
 const (
@@ -36,6 +34,7 @@ const (
 
 // Syncer is the narrow background-I/O seam consumed by the TUI runtime.
 type Syncer interface {
+	Run(ctx context.Context) error
 	SyncOnce(ctx context.Context) error
 	SyncKinds(ctx context.Context, kinds ...string) error
 }
@@ -59,7 +58,6 @@ type Model struct {
 	coverage  bool
 	version   uint64
 	lastError string
-	refresh   time.Duration
 	now       func() time.Time
 }
 
@@ -68,7 +66,6 @@ type cacheChangedMsg struct {
 	version uint64
 	err     error
 }
-type refreshTickMsg time.Time
 
 // NewModel validates and constructs the cold first-paint model.
 func NewModel(ctx context.Context, store *fleetcache.Store, syncer Syncer) (*Model, error) {
@@ -82,14 +79,13 @@ func NewModel(ctx context.Context, store *fleetcache.Store, syncer Syncer) (*Mod
 		return nil, fmt.Errorf("construct TUI model: syncer is nil")
 	}
 	return &Model{
-		ctx:     ctx,
-		store:   store,
-		syncer:  syncer,
-		lenses:  hydrate.TierOneKinds(),
-		width:   120,
-		height:  30,
-		refresh: defaultRefreshInterval,
-		now:     time.Now,
+		ctx:    ctx,
+		store:  store,
+		syncer: syncer,
+		lenses: hydrate.TierOneKinds(),
+		width:  120,
+		height: 30,
+		now:    time.Now,
 	}, nil
 }
 
@@ -106,9 +102,9 @@ func Run(ctx context.Context, store *fleetcache.Store, syncer Syncer, input io.R
 	return nil
 }
 
-// Init starts background hydration, store notifications, and the refresh clock independently.
+// Init starts watch-backed hydration and store notifications independently.
 func (model *Model) Init() tea.Cmd {
-	return tea.Batch(model.syncCommand(), model.waitCommand(model.version), model.tickCommand())
+	return tea.Batch(model.watchCommand(), model.waitCommand(model.version))
 }
 
 // Update handles interaction entirely against cache state; only explicit sync commands call I/O.
@@ -129,8 +125,6 @@ func (model *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		} else if typed.err == nil {
 			model.lastError = ""
 		}
-	case refreshTickMsg:
-		return model, tea.Batch(model.syncCommand(), model.tickCommand())
 	case tea.KeyPressMsg:
 		return model.handleKey(typed)
 	}
@@ -184,6 +178,10 @@ func (model *Model) View() tea.View {
 	if model.lastError != "" {
 		content.WriteString("warning: ")
 		content.WriteString(model.lastError)
+		content.WriteString("\n")
+	} else if snapshot.LastError != "" {
+		content.WriteString("warning: ")
+		content.WriteString(snapshot.LastError)
 		content.WriteString("\n")
 	}
 	view := tea.NewView(limitWidth(content.String(), model.width))
@@ -341,6 +339,10 @@ func (model *Model) syncCommand() tea.Cmd {
 	return func() tea.Msg { return syncDoneMsg{err: model.syncer.SyncOnce(model.ctx)} }
 }
 
+func (model *Model) watchCommand() tea.Cmd {
+	return func() tea.Msg { return syncDoneMsg{err: model.syncer.Run(model.ctx)} }
+}
+
 func (model *Model) syncLensCommand() tea.Cmd {
 	kind := model.currentLens()
 	return func() tea.Msg { return syncDoneMsg{err: model.syncer.SyncKinds(model.ctx, kind)} }
@@ -351,10 +353,6 @@ func (model *Model) waitCommand(after uint64) tea.Cmd {
 		version, err := model.store.WaitForChange(model.ctx, after)
 		return cacheChangedMsg{version: version, err: err}
 	}
-}
-
-func (model *Model) tickCommand() tea.Cmd {
-	return tea.Tick(model.refresh, func(value time.Time) tea.Msg { return refreshTickMsg(value) })
 }
 
 func (model *Model) currentLens() string {

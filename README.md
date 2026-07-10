@@ -1,8 +1,8 @@
 # Sith
 
 **Status: Slice 2 cache-first fleet client.** The CLI discovers every context resolved by
-client-go, hydrates a local in-memory fleet cache, and serves Tier-1 reads and cross-cluster search
-from normalized snapshots with explicit freshness and coverage.
+client-go, hydrates a local in-memory fleet cache through per-context watches, and serves Tier-1
+reads and cross-cluster search from normalized snapshots with explicit freshness and coverage.
 
 Sith is ArdurAI's single-binary, local-first Kubernetes fleet tool: **k9s for your whole fleet**.
 It is designed to aggregate every kubeconfig context without an account, telemetry, or cluster
@@ -42,6 +42,11 @@ the current lens, `Ctrl-K` for whole-fleet fuzzy/structured search, number keys 
 `c` for coverage, and `Ctrl-R` for a non-blocking refresh.
 The UI uses Bubble Tea v2.0.8 core only; tables and search remain local so no optional styling or
 component dependency enters the binary.
+
+Each active lens holds one Kubernetes watch per reachable context after its initial list. A
+two-minute safety rediscovery recovers contexts that were offline at launch; it is not the primary
+resource refresh path. Very large context/lens counts therefore trade API-server connection and
+relist cost for continuous low-latency deltas.
 
 Run the full local quality gate with golangci-lint v2.12.2 and govulncheck v1.6.0 on `PATH`:
 

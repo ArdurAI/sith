@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -28,6 +29,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
+	"github.com/ArdurAI/sith/internal/connector"
 	"github.com/ArdurAI/sith/internal/fleet"
 )
 
@@ -108,6 +110,48 @@ func TestGenericResourceResolutionIsCached(t *testing.T) {
 	}
 	if evidence.Ref.Name != "sample" || resolveCalls.Load() != 1 {
 		t.Fatalf("Read() = %#v, resolver calls = %d", evidence.Ref, resolveCalls.Load())
+	}
+}
+
+func TestWatchStreamsSnapshotUpsertAndDelete(t *testing.T) {
+	t.Parallel()
+	client := fakeClient(pod("api-0", "apps", "registry/api:v1", nil))
+	adapter, err := New(
+		WithLoadingRules(testLoadingRules(t, testConfig("alpha"))),
+		withProbe(func(_ context.Context, _ *rest.Config) error { return nil }),
+		withDynamicFactory(func(_ *rest.Config) (dynamic.Interface, error) { return client, nil }),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	events, err := adapter.Watch(ctx, "Pod")
+	if err != nil {
+		t.Fatalf("Watch() error = %v", err)
+	}
+	snapshot := receiveWatchEvent(ctx, t, events)
+	if snapshot.Type != connector.WatchSnapshot || snapshot.Scope != "alpha" || len(snapshot.Facts) != 1 {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	waitForWatchAction(ctx, t, client)
+
+	created := pod("api-1", "apps", "registry/api:v2", nil)
+	if _, err := client.Resource(schema.GroupVersionResource{Version: "v1", Resource: "pods"}).
+		Namespace("apps").Create(ctx, created, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create watched pod: %v", err)
+	}
+	upsert := receiveWatchEvent(ctx, t, events)
+	if upsert.Type != connector.WatchUpsert || upsert.Fact.Ref.Name != "api-1" {
+		t.Fatalf("upsert = %#v", upsert)
+	}
+	if err := client.Resource(schema.GroupVersionResource{Version: "v1", Resource: "pods"}).
+		Namespace("apps").Delete(ctx, "api-1", metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("delete watched pod: %v", err)
+	}
+	deleted := receiveWatchEvent(ctx, t, events)
+	if deleted.Type != connector.WatchDelete || deleted.Ref.Name != "api-1" {
+		t.Fatalf("delete = %#v", deleted)
 	}
 }
 
@@ -454,6 +498,42 @@ func fakeClientWithKinds(
 	objects ...runtime.Object,
 ) *dynamicfake.FakeDynamicClient {
 	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds, objects...)
+}
+
+func receiveWatchEvent(
+	ctx context.Context,
+	t *testing.T,
+	events <-chan connector.WatchEvent,
+) connector.WatchEvent {
+	t.Helper()
+	select {
+	case event, open := <-events:
+		if !open {
+			t.Fatal("watch event channel closed")
+		}
+		return event
+	case <-ctx.Done():
+		t.Fatalf("wait for watch event: %v", ctx.Err())
+		return connector.WatchEvent{}
+	}
+}
+
+func waitForWatchAction(ctx context.Context, t *testing.T, client *dynamicfake.FakeDynamicClient) {
+	t.Helper()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		for _, action := range client.Actions() {
+			if action.GetVerb() == "watch" {
+				return
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("wait for watch action: %v", ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func pod(name, namespace, image string, labels map[string]string) *unstructured.Unstructured {

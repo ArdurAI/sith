@@ -5,7 +5,9 @@ package fleetcache
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -126,6 +128,68 @@ func TestStoreMapsGenericResourceAliasToAdvertisedKind(t *testing.T) {
 		if len(snapshot.Records) != 1 || snapshot.Records[0].Kind != "ConfigMap" || !snapshot.Coverage.Complete() {
 			t.Fatalf("Query(%q) = %#v, want advertised ConfigMap", kind, snapshot)
 		}
+	}
+}
+
+func TestStoreAppliesWatchDeltasAndPreservesFailedScopeRows(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	store := newStore(func() time.Time { return now }, time.Minute)
+	store.SetDiscovery(connector.Discovery{Scopes: []connector.Scope{
+		{Name: "alpha", Reachable: true, ObservedAt: now},
+		{Name: "beta", Reachable: true, ObservedAt: now},
+	}})
+	alpha := podFact(t, "alpha", "api-0", "Running", "image:v1", now)
+	beta := podFact(t, "beta", "api-0", "Running", "image:v1", now)
+	if err := store.Replace("Pod", fleet.QueryResult{
+		Facts: []fleet.Fact{alpha, beta}, Coverage: fleet.Coverage{Requested: 2, Reachable: 2},
+	}); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+
+	now = now.Add(time.Second)
+	updated := podFact(t, "alpha", "api-1", "Running", "image:v2", now)
+	if err := store.ApplyWatchEvent(connector.WatchEvent{
+		Type: connector.WatchSnapshot, Kind: "pods", Scope: "alpha", Facts: []fleet.Fact{updated}, ObservedAt: now,
+	}); err != nil {
+		t.Fatalf("ApplyWatchEvent(snapshot) error = %v", err)
+	}
+	if err := store.ApplyWatchEvent(connector.WatchEvent{
+		Type: connector.WatchError, Kind: "Pod", Scope: "beta", Err: errors.New("watch disconnected"),
+	}); err != nil {
+		t.Fatalf("ApplyWatchEvent(error) error = %v", err)
+	}
+	snapshot := store.Query(Query{Kind: "Pod"})
+	if len(snapshot.Records) != 2 || snapshot.Records[0].Name != "api-1" || !snapshot.Records[1].Stale {
+		t.Fatalf("snapshot after deltas = %#v", snapshot)
+	}
+	if !slices.Equal(snapshot.Coverage.Unreachable, []string{"beta"}) {
+		t.Fatalf("unreachable = %v, want beta", snapshot.Coverage.Unreachable)
+	}
+
+	if err := store.ApplyWatchEvent(connector.WatchEvent{
+		Type: connector.WatchDelete, Kind: "pods", Scope: "alpha",
+		Ref: fleet.ResourceRef{Scope: "alpha", Kind: "Pod", Namespace: "apps", Name: "api-1"}, ObservedAt: now,
+	}); err != nil {
+		t.Fatalf("ApplyWatchEvent(delete) error = %v", err)
+	}
+	if records := store.Query(Query{Kind: "Pod"}).Records; len(records) != 1 || records[0].Cluster != "beta" {
+		t.Fatalf("records after delete = %#v", records)
+	}
+}
+
+func TestStoreRejectsCrossScopeWatchFacts(t *testing.T) {
+	t.Parallel()
+	store := New()
+	wrongScope := podFact(t, "beta", "api-0", "Running", "image:v1", time.Now().UTC())
+	err := store.ApplyWatchEvent(connector.WatchEvent{
+		Type: connector.WatchUpsert, Kind: "Pod", Scope: "alpha", Fact: wrongScope,
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match stream scope") {
+		t.Fatalf("ApplyWatchEvent() error = %v, want scope rejection", err)
+	}
+	if snapshot := store.Query(Query{}); len(snapshot.Records) != 0 {
+		t.Fatalf("records = %#v, want atomic rejection", snapshot.Records)
 	}
 }
 

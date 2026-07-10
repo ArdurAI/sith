@@ -163,6 +163,129 @@ func (store *Store) Replace(kind string, result fleet.QueryResult) error {
 	return nil
 }
 
+// ApplyWatchEvent atomically reconciles one live-reader delta without network access.
+func (store *Store) ApplyWatchEvent(event connector.WatchEvent) error {
+	canonical := canonicalKind(event.Kind)
+	if canonical == "" || strings.TrimSpace(event.Scope) == "" {
+		return fmt.Errorf("apply watch event: kind and scope are required")
+	}
+	if event.Type == connector.WatchError && event.Err == nil {
+		return fmt.Errorf("apply watch event: error event has no error")
+	}
+
+	var normalized []Record
+	switch event.Type {
+	case connector.WatchSnapshot:
+		normalized = make([]Record, 0, len(event.Facts))
+		for _, fact := range event.Facts {
+			record, err := normalize(fact)
+			if err != nil {
+				return err
+			}
+			if record.Cluster != event.Scope {
+				return fmt.Errorf("apply watch event: fact scope %q does not match stream scope %q", record.Cluster, event.Scope)
+			}
+			normalized = append(normalized, record)
+		}
+	case connector.WatchUpsert:
+		record, err := normalize(event.Fact)
+		if err != nil {
+			return err
+		}
+		if record.Cluster != event.Scope {
+			return fmt.Errorf("apply watch event: fact scope %q does not match stream scope %q", record.Cluster, event.Scope)
+		}
+		normalized = []Record{record}
+	case connector.WatchDelete:
+		if event.Ref.Scope != "" && event.Ref.Scope != event.Scope {
+			return fmt.Errorf("apply watch event: delete scope %q does not match stream scope %q", event.Ref.Scope, event.Scope)
+		}
+	case connector.WatchError:
+	default:
+		return fmt.Errorf("apply watch event: unsupported type %q", event.Type)
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.paused {
+		return nil
+	}
+	store.aliases[kindAlias(event.Kind)] = canonical
+	if store.records[canonical] == nil {
+		store.records[canonical] = make(map[string]Record)
+	}
+	for _, record := range normalized {
+		store.aliases[kindAlias(record.Kind)] = canonical
+	}
+
+	switch event.Type {
+	case connector.WatchSnapshot:
+		for key, record := range store.records[canonical] {
+			if record.Cluster == event.Scope {
+				delete(store.records[canonical], key)
+			}
+		}
+		for _, record := range normalized {
+			store.records[canonical][recordKey(record)] = record
+		}
+		store.markScopeReachableLocked(canonical, event.Scope, event.ObservedAt)
+	case connector.WatchUpsert:
+		store.records[canonical][recordKey(normalized[0])] = normalized[0]
+		store.markScopeReachableLocked(canonical, event.Scope, event.ObservedAt)
+	case connector.WatchDelete:
+		for key, record := range store.records[canonical] {
+			if record.Cluster == event.Scope && record.Namespace == event.Ref.Namespace && record.Name == event.Ref.Name {
+				delete(store.records[canonical], key)
+			}
+		}
+		store.markScopeReachableLocked(canonical, event.Scope, event.ObservedAt)
+	case connector.WatchError:
+		store.markScopeUnreachableLocked(canonical, event.Scope, event.Err)
+	}
+	store.warmed[canonical] = true
+	store.updatedAt = store.now().UTC()
+	store.notifyLocked()
+	return nil
+}
+
+func (store *Store) markScopeReachableLocked(kind, scope string, observedAt time.Time) {
+	current := store.scopes[scope]
+	current.Name = scope
+	current.Reachable = true
+	if !observedAt.IsZero() {
+		current.ObservedAt = observedAt
+	}
+	store.scopes[scope] = current
+	coverage := store.coverage[kind]
+	coverage.Requested = max(coverage.Requested, len(store.scopes))
+	coverage.Unreachable = removeString(coverage.Unreachable, scope)
+	coverage.Stale = removeString(coverage.Stale, scope)
+	coverage.Reachable = max(coverage.Requested-len(coverage.Unreachable), 0)
+	store.coverage[kind] = coverage
+	if store.allCoverageCompleteLocked() {
+		store.lastError = ""
+	}
+}
+
+func (store *Store) markScopeUnreachableLocked(kind, scope string, watchErr error) {
+	coverage := store.coverage[kind]
+	coverage.Requested = max(coverage.Requested, len(store.scopes))
+	coverage.Unreachable = appendUniqueSorted(coverage.Unreachable, scope)
+	coverage.Stale = appendUniqueSorted(coverage.Stale, scope)
+	coverage.Reachable = max(coverage.Requested-len(coverage.Unreachable), 0)
+	store.coverage[kind] = coverage
+	store.lastError = fmt.Sprintf("watch %s in %s: %v", kind, scope, watchErr)
+}
+
+func (store *Store) allCoverageCompleteLocked() bool {
+	for _, coverage := range store.coverage {
+		if len(coverage.Unreachable) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // EndSync marks reconciliation complete and retains any prior data on failure.
 func (store *Store) EndSync(err error) {
 	store.mu.Lock()
@@ -428,6 +551,27 @@ func stringSet(values []string) map[string]struct{} {
 	for _, value := range values {
 		result[value] = struct{}{}
 	}
+	return result
+}
+
+func removeString(values []string, unwanted string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != unwanted {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func appendUniqueSorted(values []string, added string) []string {
+	for _, value := range values {
+		if value == added {
+			return values
+		}
+	}
+	result := append(append([]string(nil), values...), added)
+	sort.Strings(result)
 	return result
 }
 

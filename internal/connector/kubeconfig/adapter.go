@@ -28,6 +28,7 @@ const (
 	defaultRequestTimeout = 10 * time.Second
 	defaultStaleAfter     = 2 * time.Minute
 	defaultConcurrency    = 16
+	defaultWatchTimeout   = 6 * time.Minute
 )
 
 var supportedKinds = []string{
@@ -163,12 +164,16 @@ type Adapter struct {
 	discovered bool
 	scopes     map[string]connector.Scope
 	clients    map[string]dynamic.Interface
+	watchers   map[string]dynamic.Interface
 	configs    map[string]*rest.Config
 	resources  map[string]map[string]resourceSpec
 	lastSeen   map[string]time.Time
 }
 
-var _ connector.Reader = (*Adapter)(nil)
+var (
+	_ connector.Reader  = (*Adapter)(nil)
+	_ connector.Watcher = (*Adapter)(nil)
+)
 
 // Default constructs an adapter using client-go's KUBECONFIG and home-directory rules.
 func Default() *Adapter {
@@ -211,6 +216,7 @@ func newAdapter(settings options) *Adapter {
 		settings:  settings,
 		scopes:    make(map[string]connector.Scope),
 		clients:   make(map[string]dynamic.Interface),
+		watchers:  make(map[string]dynamic.Interface),
 		configs:   make(map[string]*rest.Config),
 		resources: make(map[string]map[string]resourceSpec),
 		lastSeen:  make(map[string]time.Time),
@@ -263,12 +269,14 @@ func (adapter *Adapter) Discover(ctx context.Context) (connector.Discovery, erro
 	scopes := make([]connector.Scope, 0, len(results))
 	unreachable := make([]string, 0)
 	clients := make(map[string]dynamic.Interface, len(results))
+	watchers := make(map[string]dynamic.Interface, len(results))
 	configs := make(map[string]*rest.Config, len(results))
 	lastSeen := make(map[string]time.Time, len(results))
 	for _, result := range results {
 		scopes = append(scopes, result.scope)
 		if result.scope.Reachable {
 			clients[result.scope.Name] = result.client
+			watchers[result.scope.Name] = result.watcher
 			configs[result.scope.Name] = rest.CopyConfig(result.config)
 		} else {
 			unreachable = append(unreachable, result.scope.Name)
@@ -285,6 +293,7 @@ func (adapter *Adapter) Discover(ctx context.Context) (connector.Discovery, erro
 		adapter.scopes[scope.Name] = cloneScope(scope)
 	}
 	adapter.clients = clients
+	adapter.watchers = watchers
 	adapter.configs = configs
 	adapter.resources = make(map[string]map[string]resourceSpec)
 	adapter.lastSeen = lastSeen
@@ -294,9 +303,10 @@ func (adapter *Adapter) Discover(ctx context.Context) (connector.Discovery, erro
 }
 
 type contextResult struct {
-	scope  connector.Scope
-	client dynamic.Interface
-	config *rest.Config
+	scope   connector.Scope
+	client  dynamic.Interface
+	watcher dynamic.Interface
+	config  *rest.Config
 }
 
 func (adapter *Adapter) probeContext(
@@ -337,10 +347,16 @@ func (adapter *Adapter) probeContext(
 	if err != nil {
 		return contextResult{scope: scope}
 	}
+	watchConfig := rest.CopyConfig(requestConfig)
+	watchConfig.Timeout = defaultWatchTimeout
+	watcher, err := adapter.settings.dynamic(watchConfig)
+	if err != nil {
+		return contextResult{scope: scope}
+	}
 
 	scope.Reachable = true
 	scope.ObservedAt = adapter.settings.now().UTC()
-	return contextResult{scope: scope, client: client, config: requestConfig}
+	return contextResult{scope: scope, client: client, watcher: watcher, config: requestConfig}
 }
 
 func (adapter *Adapter) runBounded(count int, operation func(index int)) {

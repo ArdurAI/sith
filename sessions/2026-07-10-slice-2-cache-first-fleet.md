@@ -68,6 +68,21 @@ built CLI discovers and renders them across 2/3 contexts with honest partial cov
 fallback after a changed-file secret scan. The review found and fixed the generic alias mismatch;
 it also found that bounded background polling does not satisfy #33's explicit watch-stream contract.
 [C] Checkpoint #6: this commit — generic discovery and lens proof; next: watch-backed delta hydration.
+[A] Action: Added the source-abstract optional live-reader extension without changing the locked
+seven-verb registry. The kubeconfig adapter now runs independent list-watch loops per reachable
+context/lens with bounded reconnects, a five-minute server watch timeout, and a two-minute safety
+rediscovery; non-watch readers retain a slow fallback. Generic lenses join the active watch set.
+[A] Action: Added atomic per-scope snapshot/upsert/delete/error application to the store. Disconnects
+retain and immediately stale last-known rows; pause drops incoming mutations and resume forces a
+full reconciliation. TUI startup now owns the long-running hydrator rather than a 15-second poll.
+[T] Test: Race tests cover adapter snapshot/upsert/delete streams, cache delta lifecycle, source-
+scope rejection, disconnect staleness, dynamic generic-kind watch restart, and shutdown. The real
+two-cluster gate creates and deletes a Pod and observes both cache deltas without manual resync; the
+complete gate passes in 72 seconds.
+[R] Review: Manual red-team review found and fixed cross-scope fact injection at the live-reader
+boundary. Continuous cost is explicit: one watch per active lens per reachable context plus bounded
+relist/recovery traffic; no credential, object, or telemetry leaves the machine.
+[C] Checkpoint #7: this commit — watch-backed fleet deltas; next: generic server-print columns and final review.
 
 ---
 
