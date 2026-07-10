@@ -17,6 +17,9 @@ func newVersionCommand(options *rootOptions) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			info := buildinfo.Get()
+			if options.output == "yaml" {
+				return writeYAML(command.OutOrStdout(), info, "version")
+			}
 			if options.output == "json" {
 				encoded, err := info.JSON()
 				if err != nil {

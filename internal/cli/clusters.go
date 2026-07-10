@@ -32,6 +32,9 @@ func newClustersCommand(options *rootOptions, source fleet.Source) *cobra.Comman
 			if result.Clusters == nil {
 				result.Clusters = []fleet.Cluster{}
 			}
+			if options.output == "yaml" {
+				return writeYAML(command.OutOrStdout(), result, "clusters")
+			}
 
 			if options.output == "json" {
 				if err := json.NewEncoder(command.OutOrStdout()).Encode(result); err != nil {

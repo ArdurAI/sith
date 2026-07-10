@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
 	"github.com/ArdurAI/sith/internal/fleet"
 )
 
@@ -63,6 +65,25 @@ func TestVersionJSON(t *testing.T) {
 		if _, ok := got[key]; !ok {
 			t.Errorf("JSON missing key %q: %#v", key, got)
 		}
+	}
+}
+
+func TestVersionAndClustersYAML(t *testing.T) {
+	stdout, stderr, exitCode := runCLI(t, []string{"version", "-o", "yaml"}, fleet.StubSource{})
+	if exitCode != 0 {
+		t.Fatalf("version exit/stderr = %d/%q", exitCode, stderr)
+	}
+	var version map[string]any
+	if err := yaml.Unmarshal([]byte(stdout), &version); err != nil || version["platform"] == nil {
+		t.Fatalf("version YAML = %q, error = %v", stdout, err)
+	}
+	stdout, stderr, exitCode = runCLI(t, []string{"clusters", "-o", "yaml"}, fleet.StubSource{})
+	if exitCode != 0 {
+		t.Fatalf("clusters exit/stderr = %d/%q", exitCode, stderr)
+	}
+	var result fleet.FleetResult
+	if err := yaml.Unmarshal([]byte(stdout), &result); err != nil || result.Clusters == nil {
+		t.Fatalf("clusters YAML = %q, result = %#v, error = %v", stdout, result, err)
 	}
 }
 
