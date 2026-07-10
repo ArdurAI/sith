@@ -24,7 +24,14 @@ objects normalize once on ingest into render/search fields.
 [T] Test: Race tests cover atomic reconciliation, failed-scope last-known retention, structured and
 fuzzy search, Tier-1 normalization, pending/offline/paused states, immutable concurrent snapshots,
 and change cancellation. Focused lint passes at 86.6% statement coverage.
-[C] Checkpoint #1: this commit — cache model and normalized query engine; next: background hydrator.
+[C] Checkpoint #1: 09d5470 — cache model and normalized query engine; next: background hydrator.
+[A] Action: Added the background hydrator as the sole connector caller. It discovers once per
+cycle, fans Tier-1 lens queries out with bounded concurrency, and publishes successful lenses
+incrementally while retaining them if a peer lens fails.
+[T] Test: Race tests prove frequency-ordered lens selection, concurrency bounds, partial-success
+retention, duplicate-sync exclusion, pause behavior, and constructor fail-safety. Focused lint
+passes at 87.2% statement coverage.
+[C] Checkpoint #2: this commit — connector-isolated background hydration; next: shared renderer and CLI.
 
 ---
 

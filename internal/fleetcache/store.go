@@ -49,6 +49,7 @@ type Store struct {
 	coverage  map[string]fleet.Coverage
 	scopes    map[string]connector.Scope
 	warmed    map[string]bool
+	expected  map[string]bool
 	syncing   bool
 	paused    bool
 	lastError string
@@ -70,6 +71,7 @@ func newStore(now func() time.Time, freshFor time.Duration) *Store {
 		coverage: make(map[string]fleet.Coverage),
 		scopes:   make(map[string]connector.Scope),
 		warmed:   make(map[string]bool),
+		expected: make(map[string]bool),
 		changed:  make(chan struct{}),
 		now:      now,
 		freshFor: freshFor,
@@ -77,7 +79,7 @@ func newStore(now func() time.Time, freshFor time.Duration) *Store {
 }
 
 // BeginSync marks background reconciliation as active without blocking readers.
-func (store *Store) BeginSync() bool {
+func (store *Store) BeginSync(kinds ...string) bool {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if store.paused || store.syncing {
@@ -85,6 +87,11 @@ func (store *Store) BeginSync() bool {
 	}
 	store.syncing = true
 	store.lastError = ""
+	for _, kind := range kinds {
+		if canonical := canonicalKind(kind); canonical != "" {
+			store.expected[canonical] = true
+		}
+	}
 	store.notifyLocked()
 	return true
 }
