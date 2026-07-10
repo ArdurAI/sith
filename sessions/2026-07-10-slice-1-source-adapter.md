@@ -37,8 +37,15 @@ last-seen timestamps when a previously reachable context becomes unavailable.
 typed label/name/image selectors, source-stamped evidence, unknown/unreachable reads, and an actual
 ExecCredential v1 subprocess authenticated request to a TLS test API. Focused race tests, lint,
 and 81.5% statement coverage pass.
-[C] Checkpoint #3: this commit — local-kubeconfig discovery/read/query adapter; next: bridge the
+[C] Checkpoint #3: 3463c1b — local-kubeconfig discovery/read/query adapter; next: bridge the
 adapter into `sith clusters` and validate the real CLI path.
+[A] Action: Replaced the Slice-0 stub at the single CLI injection point with
+`connector.AsSource(kubeconfig.Default())`; default construction follows client-go's standard
+`KUBECONFIG` path-list and `~/.kube/config` resolution without doing startup network I/O.
+[A] Action: Updated the public README from the Slice-0 stub behavior to the real local-fleet
+discovery and credential-locality contract.
+[C] Checkpoint #4: this commit — production CLI bridge; next: prove two reachable kind clusters
+plus one unreachable context through the built binary.
 
 ---
 

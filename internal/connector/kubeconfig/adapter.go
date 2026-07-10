@@ -156,9 +156,28 @@ type Adapter struct {
 
 var _ connector.Reader = (*Adapter)(nil)
 
+// Default constructs an adapter using client-go's KUBECONFIG and home-directory rules.
+func Default() *Adapter {
+	return newAdapter(defaultOptions())
+}
+
 // New constructs a local kubeconfig adapter without performing network I/O.
 func New(opts ...Option) (*Adapter, error) {
-	settings := options{
+	settings := defaultOptions()
+	for _, option := range opts {
+		if option == nil {
+			return nil, fmt.Errorf("configure local kubeconfig adapter: option is nil")
+		}
+		if err := option(&settings); err != nil {
+			return nil, fmt.Errorf("configure local kubeconfig adapter: %w", err)
+		}
+	}
+
+	return newAdapter(settings), nil
+}
+
+func defaultOptions() options {
+	return options{
 		loadingRules:   clientcmd.NewDefaultClientConfigLoadingRules(),
 		probeTimeout:   defaultProbeTimeout,
 		requestTimeout: defaultRequestTimeout,
@@ -170,21 +189,15 @@ func New(opts ...Option) (*Adapter, error) {
 			return dynamic.NewForConfig(config)
 		},
 	}
-	for _, option := range opts {
-		if option == nil {
-			return nil, fmt.Errorf("configure local kubeconfig adapter: option is nil")
-		}
-		if err := option(&settings); err != nil {
-			return nil, fmt.Errorf("configure local kubeconfig adapter: %w", err)
-		}
-	}
+}
 
+func newAdapter(settings options) *Adapter {
 	return &Adapter{
 		settings: settings,
 		scopes:   make(map[string]connector.Scope),
 		clients:  make(map[string]dynamic.Interface),
 		lastSeen: make(map[string]time.Time),
-	}, nil
+	}
 }
 
 // Kind identifies this connector in the registry and resource address space.

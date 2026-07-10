@@ -13,6 +13,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ArdurAI/sith/internal/config"
+	"github.com/ArdurAI/sith/internal/connector"
+	"github.com/ArdurAI/sith/internal/connector/kubeconfig"
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/logging"
 )
@@ -33,7 +35,7 @@ type rootOptions struct {
 
 // Execute builds and runs the command tree, returning a process exit code.
 func Execute() int {
-	return execute(os.Args[1:], fleet.StubSource{}, os.Stdout, os.Stderr)
+	return execute(os.Args[1:], connector.AsSource(kubeconfig.Default()), os.Stdout, os.Stderr)
 }
 
 func execute(args []string, source fleet.Source, stdout, stderr io.Writer) int {
