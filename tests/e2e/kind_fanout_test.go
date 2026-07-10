@@ -169,7 +169,11 @@ func TestKindFleetFanout(t *testing.T) {
 	}
 	for _, record := range genericSnapshot.Records {
 		if record.Kind == "ConfigMap" && record.Name == "sith-generic-sample" {
-			genericScopes[record.Cluster] = true
+			for _, field := range record.Display {
+				if field.Name == "Data" {
+					genericScopes[record.Cluster] = true
+				}
+			}
 		}
 	}
 	for scope, seen := range genericScopes {
@@ -179,6 +183,10 @@ func TestKindFleetFanout(t *testing.T) {
 	}
 	if genericSnapshot.Coverage.Reachable != 2 || !strings.Contains(genericStderr, "warning: covered 2/3 clusters") {
 		t.Fatalf("generic coverage/stderr = %#v/%q, want partial two-of-three", genericSnapshot.Coverage, genericStderr)
+	}
+	genericText, _, err := runSith(ctx, binary, kubeconfigPath, "get", "configmaps", "-A", "--all-clusters")
+	if err != nil || !strings.Contains(string(genericText), "DATA") || !strings.Contains(string(genericText), "sith-generic-sample") {
+		t.Fatalf("generic server-column text/error = %q/%v", genericText, err)
 	}
 
 	watchStore := fleetcache.New()

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
 
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/fleetcache"
@@ -39,16 +40,26 @@ func Build(snapshot fleetcache.Snapshot, options Options) Table {
 		lens = canonicalLens(snapshot.Records[0].Kind)
 	}
 	columns := columnsFor(lens, options.Wide)
+	if !isTierOneLens(lens) {
+		columns = genericColumns(snapshot.Records, options.Wide)
+	}
 	rows := make([][]string, 0, len(snapshot.Records))
 	now := options.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
 	for _, record := range snapshot.Records {
-		rows = append(rows, rowFor(record, lens, options.Wide, now))
+		row := rowFor(record, lens, columns, options.Wide, now)
+		for index := range row {
+			row[index] = safeCell(row[index])
+		}
+		rows = append(rows, row)
 		if options.MaxRows > 0 && len(rows) == options.MaxRows {
 			break
 		}
+	}
+	for index := range columns {
+		columns[index] = safeCell(columns[index])
 	}
 	return Table{Columns: columns, Rows: rows, Coverage: snapshot.Coverage, State: snapshot.State}
 }
@@ -129,7 +140,7 @@ func columnsFor(lens string, wide bool) []string {
 	return columns
 }
 
-func rowFor(record fleetcache.Record, lens string, wide bool, now time.Time) []string {
+func rowFor(record fleetcache.Record, lens string, columns []string, wide bool, now time.Time) []string {
 	cluster := record.Cluster
 	if record.Stale {
 		cluster = "~" + cluster
@@ -153,8 +164,63 @@ func rowFor(record fleetcache.Record, lens string, wide bool, now time.Time) []s
 		}
 		return row
 	default:
+		if len(record.Display) > 0 {
+			return genericRow(record, columns, cluster)
+		}
 		return []string{cluster, record.Namespace, record.Kind, record.Name, record.Status, age}
 	}
+}
+
+func isTierOneLens(lens string) bool {
+	switch lens {
+	case "Pod", "Deployment", "Event", "Node":
+		return true
+	default:
+		return false
+	}
+}
+
+func genericColumns(records []fleetcache.Record, wide bool) []string {
+	columns := []string{"CLUSTER"}
+	hasNamespace := false
+	seen := map[string]bool{"cluster": true}
+	for _, record := range records {
+		if record.Namespace != "" {
+			hasNamespace = true
+		}
+		for _, field := range record.Display {
+			if field.Name == "" || field.Priority > 0 && !wide {
+				continue
+			}
+			key := strings.ToLower(field.Name)
+			if key == "namespace" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			columns = append(columns, strings.ToUpper(field.Name))
+		}
+	}
+	if hasNamespace {
+		columns = append(columns[:1], append([]string{"NAMESPACE"}, columns[1:]...)...)
+	}
+	if len(columns) == 1 || len(columns) == 2 && hasNamespace {
+		return columnsFor("", wide)
+	}
+	return columns
+}
+
+func genericRow(record fleetcache.Record, columns []string, cluster string) []string {
+	values := make(map[string]string, len(record.Display)+2)
+	values["cluster"] = cluster
+	values["namespace"] = record.Namespace
+	for _, field := range record.Display {
+		values[strings.ToLower(field.Name)] = field.Value
+	}
+	row := make([]string, len(columns))
+	for index, column := range columns {
+		row[index] = values[strings.ToLower(column)]
+	}
+	return row
 }
 
 func humanAge(now, then time.Time) string {
@@ -186,6 +252,22 @@ func truncate(value string, limit int) string {
 		return string(runes[:limit])
 	}
 	return string(runes[:limit-1]) + "…"
+}
+
+func safeCell(value string) string {
+	var result strings.Builder
+	result.Grow(len(value))
+	for _, character := range value {
+		switch {
+		case character == '\n' || character == '\r' || character == '\t':
+			result.WriteByte(' ')
+		case unicode.IsControl(character):
+			continue
+		default:
+			result.WriteRune(character)
+		}
+	}
+	return result.String()
 }
 
 func canonicalLens(lens string) string {

@@ -17,6 +17,7 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	"github.com/ArdurAI/sith/internal/connector"
+	"github.com/ArdurAI/sith/internal/fleet"
 )
 
 const (
@@ -45,6 +46,12 @@ var supportedKinds = []string{
 type probeFunc func(ctx context.Context, config *rest.Config) error
 type dynamicFactory func(config *rest.Config) (dynamic.Interface, error)
 type resourceResolver func(ctx context.Context, config *rest.Config, kind string) (resourceSpec, error)
+type tablePrinter func(
+	ctx context.Context,
+	spec resourceSpec,
+	namespace, name, labelSelector string,
+) (map[string][]fleet.DisplayField, error)
+type tableFactory func(config *rest.Config) (tablePrinter, error)
 
 type options struct {
 	loadingRules   *clientcmd.ClientConfigLoadingRules
@@ -56,6 +63,7 @@ type options struct {
 	probe          probeFunc
 	dynamic        dynamicFactory
 	resolve        resourceResolver
+	table          tableFactory
 }
 
 // Option configures the local kubeconfig adapter.
@@ -156,6 +164,16 @@ func withResourceResolver(resolver resourceResolver) Option {
 	}
 }
 
+func withTableFactory(factory tableFactory) Option {
+	return func(settings *options) error {
+		if factory == nil {
+			return fmt.Errorf("table factory must not be nil")
+		}
+		settings.table = factory
+		return nil
+	}
+}
+
 // Adapter discovers contexts and performs independent local client-go reads.
 type Adapter struct {
 	settings options
@@ -167,6 +185,7 @@ type Adapter struct {
 	watchers   map[string]dynamic.Interface
 	configs    map[string]*rest.Config
 	resources  map[string]map[string]resourceSpec
+	tables     map[string]tablePrinter
 	lastSeen   map[string]time.Time
 }
 
@@ -208,6 +227,7 @@ func defaultOptions() options {
 			return dynamic.NewForConfig(config)
 		},
 		resolve: defaultResourceResolver,
+		table:   newTablePrinter,
 	}
 }
 
@@ -219,6 +239,7 @@ func newAdapter(settings options) *Adapter {
 		watchers:  make(map[string]dynamic.Interface),
 		configs:   make(map[string]*rest.Config),
 		resources: make(map[string]map[string]resourceSpec),
+		tables:    make(map[string]tablePrinter),
 		lastSeen:  make(map[string]time.Time),
 	}
 }
@@ -271,6 +292,7 @@ func (adapter *Adapter) Discover(ctx context.Context) (connector.Discovery, erro
 	clients := make(map[string]dynamic.Interface, len(results))
 	watchers := make(map[string]dynamic.Interface, len(results))
 	configs := make(map[string]*rest.Config, len(results))
+	tables := make(map[string]tablePrinter, len(results))
 	lastSeen := make(map[string]time.Time, len(results))
 	for _, result := range results {
 		scopes = append(scopes, result.scope)
@@ -278,6 +300,7 @@ func (adapter *Adapter) Discover(ctx context.Context) (connector.Discovery, erro
 			clients[result.scope.Name] = result.client
 			watchers[result.scope.Name] = result.watcher
 			configs[result.scope.Name] = rest.CopyConfig(result.config)
+			tables[result.scope.Name] = result.table
 		} else {
 			unreachable = append(unreachable, result.scope.Name)
 		}
@@ -296,6 +319,7 @@ func (adapter *Adapter) Discover(ctx context.Context) (connector.Discovery, erro
 	adapter.watchers = watchers
 	adapter.configs = configs
 	adapter.resources = make(map[string]map[string]resourceSpec)
+	adapter.tables = tables
 	adapter.lastSeen = lastSeen
 	adapter.mu.Unlock()
 
@@ -307,6 +331,7 @@ type contextResult struct {
 	client  dynamic.Interface
 	watcher dynamic.Interface
 	config  *rest.Config
+	table   tablePrinter
 }
 
 func (adapter *Adapter) probeContext(
@@ -353,10 +378,14 @@ func (adapter *Adapter) probeContext(
 	if err != nil {
 		return contextResult{scope: scope}
 	}
+	table, err := adapter.settings.table(requestConfig)
+	if err != nil {
+		return contextResult{scope: scope}
+	}
 
 	scope.Reachable = true
 	scope.ObservedAt = adapter.settings.now().UTC()
-	return contextResult{scope: scope, client: client, watcher: watcher, config: requestConfig}
+	return contextResult{scope: scope, client: client, watcher: watcher, config: requestConfig, table: table}
 }
 
 func (adapter *Adapter) runBounded(count int, operation func(index int)) {

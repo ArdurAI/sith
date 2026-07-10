@@ -82,7 +82,17 @@ complete gate passes in 72 seconds.
 [R] Review: Manual red-team review found and fixed cross-scope fact injection at the live-reader
 boundary. Continuous cost is explicit: one watch per active lens per reachable context plus bounded
 relist/recovery traffic; no credential, object, or telemetry leaves the machine.
-[C] Checkpoint #7: this commit — watch-backed fleet deltas; next: generic server-print columns and final review.
+[C] Checkpoint #7: 998d26e — watch-backed fleet deltas; next: generic server-print columns and final review.
+[A] Action: Added source-abstract display fields backed by Kubernetes `meta.k8s.io/v1` Table
+responses. Generic list/watch evidence now carries the API server's column names, priorities, and
+cells into the normalized store; the shared renderer adds cluster/namespace identity and honors
+priority columns in wide mode. Tier-1 bespoke lenses are unchanged.
+[T] Test: HTTP contract tests verify the Table Accept header, URL, selector, identity, priorities,
+and cells. Renderer tests prove normal/wide server columns. The real two-cluster ConfigMap path
+proves `Name/Data/Age` reach JSON and shared text rendering; the complete gate passes in 70 seconds.
+[R] Review: Red-team review treats cluster-provided print cells as untrusted terminal input. Shared
+rendering now removes escape/control characters and folds line breaks before CLI/TUI output.
+[C] Checkpoint #8: this commit — server-print generic renderer; next: final CI/security/PR review.
 
 ---
 

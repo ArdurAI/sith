@@ -137,13 +137,15 @@ func (adapter *Adapter) Query(ctx context.Context, query fleet.Query) (fleet.Que
 		return fleet.QueryResult{}, err
 	}
 
-	scopes, clients, configs, lastSeen := adapter.stateSnapshot()
+	scopes, clients, configs, tables, lastSeen := adapter.stateSnapshot()
 	targets := targetScopeNames(query.Scopes, scopes)
 	results := make([]scopeQueryResult, len(targets))
 	adapter.runBounded(len(targets), func(index int) {
 		name := targets[index]
 		result, err := callWithTimeout(ctx, adapter.settings.requestTimeout, func(requestCtx context.Context) (scopeQueryResult, error) {
-			return adapter.queryScope(requestCtx, name, clients[name], configs[name], spec, labelSelector.String(), query), nil
+			return adapter.queryScope(
+				requestCtx, name, clients[name], configs[name], tables[name], spec, labelSelector.String(), query,
+			), nil
 		})
 		if err != nil {
 			result = scopeQueryResult{name: name, err: err}
@@ -200,6 +202,7 @@ func (adapter *Adapter) queryScope(
 	name string,
 	client dynamic.Interface,
 	config *rest.Config,
+	table tablePrinter,
 	spec resourceSpec,
 	labelSelector string,
 	query fleet.Query,
@@ -212,7 +215,8 @@ func (adapter *Adapter) queryScope(
 	if query.Selector.ResourceKind == "" {
 		return result
 	}
-	if spec.gvr.Resource == "" {
+	generic := spec.gvr.Resource == ""
+	if generic {
 		var err error
 		spec, err = adapter.resolveResource(ctx, name, config, query.Selector.ResourceKind)
 		if err != nil {
@@ -241,6 +245,19 @@ func (adapter *Adapter) queryScope(
 		return result
 	}
 	result.facts = make([]fleet.Fact, 0, len(list.Items))
+	display := map[string][]fleet.DisplayField{}
+	if generic {
+		if table == nil {
+			result.err = fmt.Errorf("server table client is unavailable for %s", name)
+			return result
+		}
+		var err error
+		display, err = table(ctx, spec, query.Selector.Namespace, "", labelSelector)
+		if err != nil {
+			result.err = err
+			return result
+		}
+	}
 	for _, object := range list.Items {
 		if query.Selector.NamePrefix != "" && !strings.HasPrefix(object.GetName(), query.Selector.NamePrefix) {
 			continue
@@ -253,6 +270,7 @@ func (adapter *Adapter) queryScope(
 			result.err = err
 			return result
 		}
+		evidence.Display = append([]fleet.DisplayField(nil), display[tableObjectKey(object.GetNamespace(), object.GetName())]...)
 		result.facts = append(result.facts, fleet.Fact{Evidence: evidence, Workspace: fleet.LocalWorkspace})
 	}
 	return result
@@ -462,6 +480,7 @@ func (adapter *Adapter) stateSnapshot() (
 	map[string]connector.Scope,
 	map[string]dynamic.Interface,
 	map[string]*rest.Config,
+	map[string]tablePrinter,
 	map[string]time.Time,
 ) {
 	adapter.mu.RLock()
@@ -478,11 +497,15 @@ func (adapter *Adapter) stateSnapshot() (
 	for name, config := range adapter.configs {
 		configs[name] = rest.CopyConfig(config)
 	}
+	tables := make(map[string]tablePrinter, len(adapter.tables))
+	for name, table := range adapter.tables {
+		tables[name] = table
+	}
 	lastSeen := make(map[string]time.Time, len(adapter.lastSeen))
 	for name, observed := range adapter.lastSeen {
 		lastSeen[name] = observed
 	}
-	return scopes, clients, configs, lastSeen
+	return scopes, clients, configs, tables, lastSeen
 }
 
 func (adapter *Adapter) recordLastSeen(name string, observed time.Time) {

@@ -48,6 +48,7 @@ func TestNewRejectsInvalidOptions(t *testing.T) {
 		{name: "nil probe", option: withProbe(nil)},
 		{name: "nil dynamic factory", option: withDynamicFactory(nil)},
 		{name: "nil resource resolver", option: withResourceResolver(nil)},
+		{name: "nil table factory", option: withTableFactory(nil)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -84,6 +85,15 @@ func TestGenericResourceResolutionIsCached(t *testing.T) {
 			}
 			return resourceSpec{kind: "Widget", gvr: gvr, namespaced: true}, nil
 		}),
+		withTableFactory(func(_ *rest.Config) (tablePrinter, error) {
+			return func(
+				_ context.Context, _ resourceSpec, _, _, _ string,
+			) (map[string][]fleet.DisplayField, error) {
+				return map[string][]fleet.DisplayField{
+					tableObjectKey("apps", "sample"): {{Name: "Name", Value: "sample"}, {Name: "Ready", Value: "1/1"}},
+				}, nil
+			}, nil
+		}),
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -96,7 +106,7 @@ func TestGenericResourceResolutionIsCached(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Query() error = %v", err)
 		}
-		if len(result.Facts) != 1 || result.Facts[0].Ref.Kind != "Widget" {
+		if len(result.Facts) != 1 || result.Facts[0].Ref.Kind != "Widget" || len(result.Facts[0].Display) != 2 {
 			t.Fatalf("Facts = %#v, want one Widget", result.Facts)
 		}
 	}

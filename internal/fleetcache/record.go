@@ -18,24 +18,25 @@ import (
 
 // Record is a render-ready projection of one cached fleet fact.
 type Record struct {
-	Fact       fleet.Fact        `json:"fact"`
-	Kind       string            `json:"kind"`
-	Cluster    string            `json:"cluster"`
-	Namespace  string            `json:"namespace,omitempty"`
-	Name       string            `json:"name"`
-	Ready      string            `json:"ready,omitempty"`
-	Status     string            `json:"status,omitempty"`
-	Reason     string            `json:"reason,omitempty"`
-	Message    string            `json:"message,omitempty"`
-	Node       string            `json:"node,omitempty"`
-	Version    string            `json:"version,omitempty"`
-	Restarts   int64             `json:"restarts,omitempty"`
-	Images     []string          `json:"images,omitempty"`
-	Labels     map[string]string `json:"labels,omitempty"`
-	CreatedAt  time.Time         `json:"created_at,omitempty"`
-	ObservedAt time.Time         `json:"observed_at"`
-	Stale      bool              `json:"stale"`
-	StaleFor   time.Duration     `json:"stale_for,omitempty"`
+	Fact       fleet.Fact           `json:"fact"`
+	Kind       string               `json:"kind"`
+	Cluster    string               `json:"cluster"`
+	Namespace  string               `json:"namespace,omitempty"`
+	Name       string               `json:"name"`
+	Ready      string               `json:"ready,omitempty"`
+	Status     string               `json:"status,omitempty"`
+	Reason     string               `json:"reason,omitempty"`
+	Message    string               `json:"message,omitempty"`
+	Node       string               `json:"node,omitempty"`
+	Version    string               `json:"version,omitempty"`
+	Restarts   int64                `json:"restarts,omitempty"`
+	Images     []string             `json:"images,omitempty"`
+	Labels     map[string]string    `json:"labels,omitempty"`
+	Display    []fleet.DisplayField `json:"display,omitempty"`
+	CreatedAt  time.Time            `json:"created_at,omitempty"`
+	ObservedAt time.Time            `json:"observed_at"`
+	Stale      bool                 `json:"stale"`
+	StaleFor   time.Duration        `json:"stale_for,omitempty"`
 }
 
 func normalize(fact fleet.Fact) (Record, error) {
@@ -53,6 +54,7 @@ func normalize(fact fleet.Fact) (Record, error) {
 		CreatedAt:  object.GetCreationTimestamp().Time,
 		ObservedAt: fact.ObservedAt,
 		Images:     objectImages(*object),
+		Display:    append([]fleet.DisplayField(nil), fact.Display...),
 		Stale:      fact.Stale,
 	}
 	if record.Labels == nil {
@@ -249,6 +251,7 @@ func canonicalKind(kind string) string {
 
 func cloneFact(fact fleet.Fact) fleet.Fact {
 	fact.Observed = append(json.RawMessage(nil), fact.Observed...)
+	fact.Display = append([]fleet.DisplayField(nil), fact.Display...)
 	if fact.Ref.Attributes != nil {
 		fact.Ref.Attributes = cloneMap(fact.Ref.Attributes)
 	}

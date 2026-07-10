@@ -120,3 +120,36 @@ func TestBuildRespectsRowLimitAndGenericLens(t *testing.T) {
 		t.Fatalf("table = %#v", table)
 	}
 }
+
+func TestBuildUsesServerDisplayFieldsForGenericLens(t *testing.T) {
+	t.Parallel()
+	snapshot := fleetcache.Snapshot{Records: []fleetcache.Record{{
+		Cluster: "alpha", Namespace: "apps", Kind: "Widget", Name: "sample",
+		Display: []fleet.DisplayField{
+			{Name: "Name", Value: "sample"},
+			{Name: "Ready", Value: "3/3"},
+			{Name: "Image", Value: "registry/widget:v1", Priority: 1},
+		},
+	}}}
+	table := Build(snapshot, Options{Lens: "Widget"})
+	if !slices.Equal(table.Columns, []string{"CLUSTER", "NAMESPACE", "NAME", "READY"}) ||
+		!slices.Equal(table.Rows[0], []string{"alpha", "apps", "sample", "3/3"}) {
+		t.Fatalf("generic table = %#v", table)
+	}
+	wide := Build(snapshot, Options{Lens: "Widget", Wide: true})
+	if !slices.Equal(wide.Columns, []string{"CLUSTER", "NAMESPACE", "NAME", "READY", "IMAGE"}) {
+		t.Fatalf("wide columns = %v", wide.Columns)
+	}
+}
+
+func TestBuildStripsTerminalControlSequences(t *testing.T) {
+	t.Parallel()
+	table := Build(fleetcache.Snapshot{Records: []fleetcache.Record{{
+		Cluster: "alpha\x1b[31m", Kind: "Widget",
+		Display: []fleet.DisplayField{{Name: "Message\n", Value: "unsafe\x1b[2J\nnext"}},
+	}}}, Options{Lens: "Widget"})
+	if strings.ContainsAny(table.Columns[1], "\n\x1b") || strings.ContainsAny(table.Rows[0][0], "\n\x1b") ||
+		strings.ContainsAny(table.Rows[0][1], "\n\x1b") {
+		t.Fatalf("table contains terminal controls: %#v", table)
+	}
+}

@@ -37,7 +37,7 @@ func (adapter *Adapter) Watch(ctx context.Context, kinds ...string) (<-chan conn
 	if err := adapter.ensureDiscovered(ctx); err != nil {
 		return nil, err
 	}
-	scopes, clients, configs := adapter.watchStateSnapshot()
+	scopes, clients, configs, tables := adapter.watchStateSnapshot()
 	events := make(chan connector.WatchEvent, watchBuffer)
 	var waitGroup sync.WaitGroup
 	for name, scope := range scopes {
@@ -52,10 +52,15 @@ func (adapter *Adapter) Watch(ctx context.Context, kinds ...string) (<-chan conn
 				}(name, kind)
 				continue
 			}
-			go func(scopeName, resourceKind string, client dynamic.Interface, config *rest.Config) {
+			go func(
+				scopeName, resourceKind string,
+				client dynamic.Interface,
+				config *rest.Config,
+				table tablePrinter,
+			) {
 				defer waitGroup.Done()
-				adapter.watchScope(ctx, events, scopeName, resourceKind, client, config)
-			}(name, kind, clients[name], configs[name])
+				adapter.watchScope(ctx, events, scopeName, resourceKind, client, config, table)
+			}(name, kind, clients[name], configs[name], tables[name])
 		}
 	}
 	go func() {
@@ -71,10 +76,12 @@ func (adapter *Adapter) watchScope(
 	scope, kind string,
 	client dynamic.Interface,
 	config *rest.Config,
+	table tablePrinter,
 ) {
 	backoff := initialWatchBackoff
 	for ctx.Err() == nil {
 		spec, known := lookupResource(kind)
+		generic := !known
 		if !known {
 			var err error
 			spec, err = adapter.resolveResource(ctx, scope, config, kind)
@@ -99,7 +106,24 @@ func (adapter *Adapter) watchScope(
 			continue
 		}
 		observedAt := adapter.settings.now().UTC()
-		facts, err := factsFromObjects(list.Items, spec, scope, observedAt)
+		display := map[string][]fleet.DisplayField{}
+		if generic {
+			if table == nil {
+				if !adapter.reportWatchError(ctx, events, kind, scope, errors.New("server table client is unavailable")) {
+					return
+				}
+				return
+			}
+			display, err = table(ctx, spec, "", "", "")
+			if err != nil {
+				if !adapter.reportWatchError(ctx, events, kind, scope, err) || !waitForWatchRetry(ctx, backoff) {
+					return
+				}
+				backoff = min(backoff*2, maximumWatchBackoff)
+				continue
+			}
+		}
+		facts, err := factsFromObjects(list.Items, spec, scope, observedAt, display)
 		if err != nil {
 			if !adapter.reportWatchError(ctx, events, kind, scope, err) {
 				return
@@ -125,7 +149,7 @@ func (adapter *Adapter) watchScope(
 			backoff = min(backoff*2, maximumWatchBackoff)
 			continue
 		}
-		watchErr := adapter.consumeWatch(ctx, events, stream, kind, scope, spec)
+		watchErr := adapter.consumeWatch(ctx, events, stream, kind, scope, spec, table, generic)
 		stream.Stop()
 		if ctx.Err() != nil {
 			return
@@ -148,6 +172,8 @@ func (adapter *Adapter) consumeWatch(
 	stream watch.Interface,
 	kind, scope string,
 	spec resourceSpec,
+	table tablePrinter,
+	generic bool,
 ) error {
 	for {
 		select {
@@ -177,6 +203,15 @@ func (adapter *Adapter) consumeWatch(
 			}
 			switch event.Type {
 			case watch.Added, watch.Modified:
+				if generic {
+					display, tableErr := table(ctx, spec, object.GetNamespace(), object.GetName(), "")
+					if tableErr != nil {
+						return tableErr
+					}
+					evidence.Display = append(
+						[]fleet.DisplayField(nil), display[tableObjectKey(object.GetNamespace(), object.GetName())]...,
+					)
+				}
 				watchEvent.Type = connector.WatchUpsert
 				watchEvent.Fact = fleet.Fact{Evidence: evidence, Workspace: fleet.LocalWorkspace}
 			case watch.Deleted:
@@ -207,6 +242,7 @@ func (adapter *Adapter) watchStateSnapshot() (
 	map[string]connector.Scope,
 	map[string]dynamic.Interface,
 	map[string]*rest.Config,
+	map[string]tablePrinter,
 ) {
 	adapter.mu.RLock()
 	defer adapter.mu.RUnlock()
@@ -222,7 +258,11 @@ func (adapter *Adapter) watchStateSnapshot() (
 	for name, config := range adapter.configs {
 		configs[name] = rest.CopyConfig(config)
 	}
-	return scopes, clients, configs
+	tables := make(map[string]tablePrinter, len(adapter.tables))
+	for name, table := range adapter.tables {
+		tables[name] = table
+	}
+	return scopes, clients, configs, tables
 }
 
 func normalizeWatchKinds(kinds []string) ([]string, error) {
@@ -251,6 +291,7 @@ func factsFromObjects(
 	spec resourceSpec,
 	scope string,
 	observedAt time.Time,
+	display map[string][]fleet.DisplayField,
 ) ([]fleet.Fact, error) {
 	facts := make([]fleet.Fact, 0, len(objects))
 	for _, object := range objects {
@@ -258,6 +299,7 @@ func factsFromObjects(
 		if err != nil {
 			return nil, err
 		}
+		evidence.Display = append([]fleet.DisplayField(nil), display[tableObjectKey(object.GetNamespace(), object.GetName())]...)
 		facts = append(facts, fleet.Fact{Evidence: evidence, Workspace: fleet.LocalWorkspace})
 	}
 	return facts, nil
