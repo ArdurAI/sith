@@ -32,8 +32,14 @@ packages.
 [C] Checkpoint #3: 35f1190 — runnable Cobra walking skeleton and binary e2e suite; next: CI.
 [C] Checkpoint #4: ab9f59b — least-privilege, SHA-pinned GitHub Actions merge gates; next: session
 documentation and PR publication.
-[C] Checkpoint #5: this commit — README and GSTACK session record; next: push, PR into `dev`, and
+[C] Checkpoint #5: 5a488ed — README and GSTACK session record; next: push, PR into `dev`, and
 remote CI/review.
+[T] Test: PR #50's first CI run failed in the lint action because current action v9 supplies the
+`run` subcommand itself; `args: run ./...` became `run run ./...` and treated `run/` as a package.
+The product build and local lint remained green.
+[A] Action: Corrected the action input to `args: ./...`, matching the current official action
+contract while preserving the exact local `golangci-lint run ./...` gate.
+[C] Checkpoint #6: this commit — repair the remote lint-action invocation; next: push and re-run CI.
 
 ---
 
