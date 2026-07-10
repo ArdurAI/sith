@@ -38,7 +38,16 @@ coverage warns with exit 0 and total failure is non-zero after coverage output.
 [T] Test: Renderer golden tests cover every Tier-1 lens, wide/name modes, truncation, and mandatory
 coverage. CLI tests prove pre-I/O validation, JSON schema, partial/total exit semantics, image
 search, and deployment-health correlation across two contexts. Focused lint and race tests pass.
-[C] Checkpoint #3: this commit — shared cache renderer and scriptable fleet reads; next: Bubble Tea TUI.
+[C] Checkpoint #3: 3227387 — shared cache renderer and scriptable fleet reads; next: Bubble Tea TUI.
+[A] Action: Added the Bubble Tea v2.0.8 cache-first TUI. Bare terminal launches enter the fleet
+view while redirected invocations remain help-only; `sith tui` is the explicit entrypoint. The
+view supports Tier-1 lens commands, live filter, whole-fleet structured/fuzzy search, numeric
+cluster scopes, pause/resume, async refresh, navigation, and coverage detail.
+[T] Test: Model tests prove cold first paint under 250 ms, no syncer calls on interactions,
+incremental/background message handling, pause/coverage/scope/search behavior, CLI/TUI table
+parity, Unicode/bounds safety, and cancellation. TUI coverage is 87.7%; a dedicated non-race CI
+gate measures 3,000 cached pods at p95 <100 ms while race tests validate concurrency separately.
+[C] Checkpoint #4: this commit — interactive cache-first fleet view; next: real two-cluster parity and staleness proof.
 
 ---
 

@@ -20,7 +20,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/buildinfo.Commit=$(COMMIT) \
 	-X $(PKG)/internal/buildinfo.Date=$(DATE)
 
-.PHONY: all build test e2e e2e-kind lint vuln fmt fmt-check vet tidy clean run ci help
+.PHONY: all build test perf e2e e2e-kind lint vuln fmt fmt-check vet tidy clean run ci help
 
 all: build
 
@@ -30,6 +30,9 @@ build: ## Build the sith binary into bin/
 
 test: ## Run unit tests with the race detector and report coverage
 	go test -race -count=1 -coverprofile=coverage.out ./...
+
+perf: ## Enforce the warm-cache TUI p95 latency budget without race overhead
+	go test -count=1 -run '^TestWarmViewP95UnderOneHundredMilliseconds$$' ./internal/tui
 
 e2e: ## Build and exercise the real binary as a subprocess
 	go test -race -count=1 -tags=e2e ./tests/e2e
@@ -64,7 +67,7 @@ clean: ## Remove build and coverage artifacts
 run: build ## Build then run sith version
 	$(BIN_DIR)/$(BINARY) version
 
-ci: fmt-check vet lint vuln test e2e build ## Run the full CI gate locally
+ci: fmt-check vet lint vuln test perf e2e build ## Run the full CI gate locally
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \

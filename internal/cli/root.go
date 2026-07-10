@@ -11,12 +11,16 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/ArdurAI/sith/internal/config"
 	"github.com/ArdurAI/sith/internal/connector"
 	"github.com/ArdurAI/sith/internal/connector/kubeconfig"
 	"github.com/ArdurAI/sith/internal/fleet"
+	"github.com/ArdurAI/sith/internal/fleetcache"
+	"github.com/ArdurAI/sith/internal/hydrate"
 	"github.com/ArdurAI/sith/internal/logging"
+	"github.com/ArdurAI/sith/internal/tui"
 )
 
 type runtimeKey struct{}
@@ -34,14 +38,17 @@ type rootOptions struct {
 }
 
 type backend struct {
-	source fleet.Source
-	reader connector.Reader
+	source   fleet.Source
+	reader   connector.Reader
+	tuiInput io.Reader
 }
 
 // Execute builds and runs the command tree, returning a process exit code.
 func Execute() int {
 	adapter := kubeconfig.Default()
-	return executeBackend(os.Args[1:], backend{source: connector.AsSource(adapter), reader: adapter}, os.Stdout, os.Stderr)
+	return executeBackend(os.Args[1:], backend{
+		source: connector.AsSource(adapter), reader: adapter, tuiInput: os.Stdin,
+	}, os.Stdout, os.Stderr)
 }
 
 func execute(args []string, source fleet.Source, stdout, stderr io.Writer) int {
@@ -74,6 +81,9 @@ func newRootCommand(runtime backend, stdout, stderr io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(command *cobra.Command, _ []string) error {
+			if runtime.reader != nil && terminalIO(runtime.tuiInput, stdout) {
+				return runFleetTUI(command.Context(), runtime.reader, runtime.tuiInput, stdout)
+			}
 			return command.Help()
 		},
 		PersistentPreRunE: func(command *cobra.Command, _ []string) error {
@@ -117,6 +127,7 @@ func newRootCommand(runtime backend, stdout, stderr io.Writer) *cobra.Command {
 	}
 	if runtime.reader != nil {
 		commands = append(commands,
+			newTUICommand(runtime.reader, runtime.tuiInput, stdout),
 			newGetCommand(options, runtime.reader),
 			newSearchCommand(options, runtime.reader),
 			newCorrelateCommand(options, runtime.reader),
@@ -125,4 +136,33 @@ func newRootCommand(runtime backend, stdout, stderr io.Writer) *cobra.Command {
 	command.AddCommand(commands...)
 
 	return command
+}
+
+func newTUICommand(reader connector.Reader, input io.Reader, output io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:   "tui",
+		Short: "Open the cache-first interactive fleet view",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			if input == nil {
+				return fmt.Errorf("TUI input is unavailable")
+			}
+			return runFleetTUI(command.Context(), reader, input, output)
+		},
+	}
+}
+
+func runFleetTUI(ctx context.Context, reader connector.Reader, input io.Reader, output io.Writer) error {
+	store := fleetcache.New()
+	hydrator, err := hydrate.New(reader, store)
+	if err != nil {
+		return err
+	}
+	return tui.Run(ctx, store, hydrator, input, output)
+}
+
+func terminalIO(input io.Reader, output io.Writer) bool {
+	inputFile, inputOK := input.(*os.File)
+	outputFile, outputOK := output.(*os.File)
+	return inputOK && outputOK && term.IsTerminal(int(inputFile.Fd())) && term.IsTerminal(int(outputFile.Fd()))
 }

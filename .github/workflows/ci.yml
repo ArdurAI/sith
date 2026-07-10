@@ -71,6 +71,9 @@ jobs:
       - name: Unit tests with race detector
         run: go test -race -count=1 -coverprofile=coverage.out ./...
 
+      - name: Warm-cache TUI p95 latency
+        run: make perf
+
       - name: Binary integration smoke test
         run: go test -race -count=1 -tags=e2e ./tests/e2e
 

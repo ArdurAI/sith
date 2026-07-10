@@ -15,6 +15,8 @@ Sith requires a supported Go 1.26 toolchain.
 
 ```bash
 make build
+./bin/sith                       # interactive terminal: cache-first fleet view
+./bin/sith tui                   # explicit equivalent
 ./bin/sith version
 ./bin/sith version --output json
 ./bin/sith clusters
@@ -32,6 +34,13 @@ wide, and source-abstract name outputs are supported. Search and correlation run
 normalized in-memory records; partial results name stale/unreachable contexts. The cache is not
 persisted to disk, so raw workload specifications do not become a new plaintext credential-adjacent
 artifact.
+
+The TUI opens only when stdin and stdout are terminals; redirected bare invocations remain
+script-safe and print help. Tier-1 lenses are Pods, Deployments, Events, and Nodes. Use `:` for
+lens/context commands, `/` to filter the current lens, `Ctrl-K` for whole-fleet fuzzy/structured
+search, number keys for cluster scope, `c` for coverage, and `Ctrl-R` for a non-blocking refresh.
+The UI uses Bubble Tea v2.0.8 core only; tables and search remain local so no optional styling or
+component dependency enters the binary.
 
 Run the full local quality gate with golangci-lint v2.12.2 and govulncheck v1.6.0 on `PATH`:
 

@@ -11,18 +11,19 @@ import (
 
 // Query is a cache-only filter over normalized records.
 type Query struct {
-	Kind        string
-	Name        string
-	Namespace   string
-	Scopes      []string
-	Text        []string
-	Status      string
-	StatusNot   string
-	Image       string
-	Node        string
-	Labels      map[string]string
-	MinRestarts *int64
-	Limit       int
+	Kind         string
+	Name         string
+	Namespace    string
+	Scopes       []string
+	Text         []string
+	Status       string
+	StatusNot    string
+	Image        string
+	Node         string
+	Labels       map[string]string
+	MinRestarts  *int64
+	Limit        int
+	MetadataOnly bool
 }
 
 // ParseSearch parses the composable cache-served search grammar.

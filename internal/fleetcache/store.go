@@ -31,14 +31,15 @@ const (
 
 // Snapshot is an immutable cache-only answer for one render interaction.
 type Snapshot struct {
-	Version   uint64         `json:"version"`
-	State     State          `json:"state"`
-	Syncing   bool           `json:"syncing"`
-	Paused    bool           `json:"paused"`
-	Records   []Record       `json:"records"`
-	Coverage  fleet.Coverage `json:"coverage"`
-	UpdatedAt time.Time      `json:"updated_at,omitempty"`
-	LastError string         `json:"last_error,omitempty"`
+	Version   uint64            `json:"version"`
+	State     State             `json:"state"`
+	Syncing   bool              `json:"syncing"`
+	Paused    bool              `json:"paused"`
+	Records   []Record          `json:"records"`
+	Coverage  fleet.Coverage    `json:"coverage"`
+	UpdatedAt time.Time         `json:"updated_at,omitempty"`
+	LastError string            `json:"last_error,omitempty"`
+	Scopes    []connector.Scope `json:"scopes"`
 }
 
 // Store owns normalized last-known fleet state and never performs network I/O.
@@ -197,7 +198,7 @@ func (store *Store) Query(query Query) Snapshot {
 			continue
 		}
 		for _, cached := range byKey {
-			record := cloneRecord(cached)
+			record := cloneRecord(cached, !query.MetadataOnly)
 			age := now.Sub(record.ObservedAt)
 			if age > store.freshFor {
 				record.Stale = true
@@ -227,6 +228,7 @@ func (store *Store) Query(query Query) Snapshot {
 		Coverage:  coverage,
 		UpdatedAt: store.updatedAt,
 		LastError: store.lastError,
+		Scopes:    store.scopesLocked(query.Scopes),
 	}
 }
 
@@ -330,6 +332,19 @@ func (store *Store) targetScopesLocked(patterns []string) []string {
 	return result
 }
 
+func (store *Store) scopesLocked(patterns []string) []connector.Scope {
+	names := store.targetScopesLocked(patterns)
+	result := make([]connector.Scope, 0, len(names))
+	for _, name := range names {
+		scope, exists := store.scopes[name]
+		if !exists {
+			scope = connector.Scope{Name: name}
+		}
+		result = append(result, cloneScope(scope))
+	}
+	return result
+}
+
 func (store *Store) stateLocked(coverage fleet.Coverage, recordCount int, pending bool) State {
 	switch {
 	case store.paused:
@@ -379,8 +394,12 @@ func stringSet(values []string) map[string]struct{} {
 	return result
 }
 
-func cloneRecord(record Record) Record {
-	record.Fact = cloneFact(record.Fact)
+func cloneRecord(record Record, includeEvidence bool) Record {
+	if includeEvidence {
+		record.Fact = cloneFact(record.Fact)
+	} else {
+		record.Fact = fleet.Fact{}
+	}
 	record.Images = append([]string(nil), record.Images...)
 	record.Labels = cloneMap(record.Labels)
 	return record
