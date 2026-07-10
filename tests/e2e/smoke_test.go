@@ -19,6 +19,10 @@ import (
 func TestBinarySmoke(t *testing.T) {
 	root := repositoryRoot(t)
 	binary := filepath.Join(t.TempDir(), "sith")
+	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
+	if err := os.WriteFile(kubeconfig, []byte("apiVersion: v1\nkind: Config\n"), 0o600); err != nil {
+		t.Fatalf("write empty kubeconfig: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
@@ -36,7 +40,7 @@ func TestBinarySmoke(t *testing.T) {
 	}{
 		{name: "version text", args: []string{"version"}, contains: "sith dev"},
 		{name: "version JSON", args: []string{"version", "-o", "json"}, validJSON: true},
-		{name: "clusters text", args: []string{"clusters"}, contains: "No clusters found"},
+		{name: "clusters text", args: []string{"clusters"}, contains: "No clusters found (source: local-kubeconfig)."},
 		{name: "clusters JSON", args: []string{"clusters", "-o", "json"}, validJSON: true},
 		{name: "ui stub", args: []string{"ui"}, contains: "not yet implemented"},
 		{name: "hub stub", args: []string{"hub"}, contains: "phase-1+"},
@@ -48,7 +52,7 @@ func TestBinarySmoke(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			command := exec.CommandContext(ctx, binary, test.args...)
-			command.Env = append(os.Environ(), "XDG_CONFIG_HOME="+t.TempDir())
+			command.Env = append(os.Environ(), "XDG_CONFIG_HOME="+t.TempDir(), "KUBECONFIG="+kubeconfig)
 			output, err := command.CombinedOutput()
 			if err != nil {
 				t.Fatalf("run %v: %v\n%s", test.args, err, output)

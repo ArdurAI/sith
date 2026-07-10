@@ -27,4 +27,10 @@ type Coverage struct {
 	Requested   int      `json:"requested"`
 	Reachable   int      `json:"reachable"`
 	Unreachable []string `json:"unreachable,omitempty"`
+	Stale       []string `json:"stale,omitempty"`
+}
+
+// Complete reports whether every requested scope answered with fresh data.
+func (c Coverage) Complete() bool {
+	return c.Requested == c.Reachable && len(c.Stale) == 0
 }
