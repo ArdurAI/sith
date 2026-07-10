@@ -87,6 +87,51 @@ func TestUnknownCommandFails(t *testing.T) {
 	}
 }
 
+func TestMakeBuildInjectsMetadata(t *testing.T) {
+	root := repositoryRoot(t)
+	binDir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	const (
+		version = "v0.0.0-e2e"
+		commit  = "abc1234"
+		date    = "2026-07-10T19:00:00Z"
+	)
+	build := exec.CommandContext(
+		ctx,
+		"make",
+		"build",
+		"BIN_DIR="+binDir,
+		"VERSION="+version,
+		"COMMIT="+commit,
+		"DATE="+date,
+	)
+	build.Dir = root
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("make build: %v\n%s", err, output)
+	}
+
+	binary := filepath.Join(binDir, "sith")
+	command := exec.CommandContext(ctx, binary, "version", "-o", "json")
+	output, err := command.Output()
+	if err != nil {
+		t.Fatalf("run built binary: %v", err)
+	}
+
+	var got struct {
+		Version string `json:"version"`
+		Commit  string `json:"commit"`
+		Date    string `json:"date"`
+	}
+	if err := json.Unmarshal(output, &got); err != nil {
+		t.Fatalf("unmarshal version output %q: %v", output, err)
+	}
+	if got.Version != version || got.Commit != commit || got.Date != date {
+		t.Fatalf("metadata = %#v, want version=%q commit=%q date=%q", got, version, commit, date)
+	}
+}
+
 func repositoryRoot(t *testing.T) string {
 	t.Helper()
 

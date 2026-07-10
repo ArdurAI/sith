@@ -39,7 +39,14 @@ remote CI/review.
 The product build and local lint remained green.
 [A] Action: Corrected the action input to `args: ./...`, matching the current official action
 contract while preserving the exact local `golangci-lint run ./...` gate.
-[C] Checkpoint #6: this commit — repair the remote lint-action invocation; next: push and re-run CI.
+[C] Checkpoint #6: dd738d7 — repair the remote lint-action invocation; next: push and re-run CI.
+[T] Test: PR #50's repaired CI run 29116977271 passed all remote gates. A requirement audit then
+identified that ldflags injection through `make build` had only manual evidence, not an automated
+assertion.
+[A] Action: Added a subprocess integration test that invokes the real Makefile with deterministic
+version, commit, and date values, then parses `sith version -o json` and asserts all three fields.
+[C] Checkpoint #7: this commit — automate the Makefile metadata acceptance criterion; next: push,
+re-run CI, and await independent review.
 
 ---
 
