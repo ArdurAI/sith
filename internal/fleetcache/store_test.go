@@ -279,6 +279,23 @@ func TestParseSearchRejectsUnsafeGrammar(t *testing.T) {
 	}
 }
 
+func TestParseCorrelationSupportsHealthAndImageForms(t *testing.T) {
+	t.Parallel()
+	query, err := ParseCorrelation("deploy/payments status!=Healthy")
+	if err != nil || query.Kind != "Deployment" || query.Name != "payments" || query.StatusNot != "Healthy" {
+		t.Fatalf("ParseCorrelation(health) = %#v, %v", query, err)
+	}
+	query, err = ParseCorrelation("image:*log4j*")
+	if err != nil || query.Image != "*log4j*" {
+		t.Fatalf("ParseCorrelation(image) = %#v, %v", query, err)
+	}
+	for _, expression := range []string{"", "payments", "deploy/payments", "deploy/payments in:1h"} {
+		if _, err := ParseCorrelation(expression); err == nil {
+			t.Errorf("ParseCorrelation(%q) error = nil", expression)
+		}
+	}
+}
+
 func podFact(t *testing.T, cluster, name, status, image string, observed time.Time) fleet.Fact {
 	t.Helper()
 	object := map[string]any{

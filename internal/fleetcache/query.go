@@ -74,6 +74,38 @@ func ParseSearch(expression string) (Query, error) {
 	return query, nil
 }
 
+// ParseCorrelation parses the initial deployment-health and image correlation forms.
+func ParseCorrelation(expression string) (Query, error) {
+	fields := strings.Fields(strings.TrimSpace(expression))
+	if len(fields) == 0 {
+		return Query{}, fmt.Errorf("correlation expression is empty")
+	}
+	if strings.Contains(fields[0], ":") {
+		return ParseSearch(expression)
+	}
+	kind, name, ok := strings.Cut(fields[0], "/")
+	if !ok || kind == "" || name == "" {
+		return Query{}, fmt.Errorf("correlation target %q must be kind/name", fields[0])
+	}
+	query := Query{Kind: canonicalKind(kind), Name: name, Labels: map[string]string{}}
+	for _, predicate := range fields[1:] {
+		switch {
+		case strings.HasPrefix(predicate, "status!="):
+			query.StatusNot = strings.TrimPrefix(predicate, "status!=")
+		case strings.HasPrefix(predicate, "status="):
+			query.Status = strings.TrimPrefix(predicate, "status=")
+		case strings.HasPrefix(predicate, "image:"):
+			query.Image = strings.TrimPrefix(predicate, "image:")
+		default:
+			return Query{}, fmt.Errorf("unsupported correlation predicate %q", predicate)
+		}
+	}
+	if query.Status == "" && query.StatusNot == "" && query.Image == "" {
+		return Query{}, fmt.Errorf("correlation expression requires a status or image predicate")
+	}
+	return query, nil
+}
+
 func (query Query) matches(record Record) bool {
 	if query.Kind != "" && canonicalKind(record.Kind) != canonicalKind(query.Kind) {
 		return false

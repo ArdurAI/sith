@@ -31,7 +31,14 @@ incrementally while retaining them if a peer lens fails.
 [T] Test: Race tests prove frequency-ordered lens selection, concurrency bounds, partial-success
 retention, duplicate-sync exclusion, pause behavior, and constructor fail-safety. Focused lint
 passes at 87.2% statement coverage.
-[C] Checkpoint #2: this commit — connector-isolated background hydration; next: shared renderer and CLI.
+[C] Checkpoint #2: ef8f828 — connector-isolated background hydration; next: shared renderer and CLI.
+[A] Action: Added the shared Tier-1 table/coverage renderer and cache-backed `get`, `search`, and
+`correlate` commands. Scripted get requires an explicit context or `--all-clusters`; partial
+coverage warns with exit 0 and total failure is non-zero after coverage output.
+[T] Test: Renderer golden tests cover every Tier-1 lens, wide/name modes, truncation, and mandatory
+coverage. CLI tests prove pre-I/O validation, JSON schema, partial/total exit semantics, image
+search, and deployment-health correlation across two contexts. Focused lint and race tests pass.
+[C] Checkpoint #3: this commit — shared cache renderer and scriptable fleet reads; next: Bubble Tea TUI.
 
 ---
 

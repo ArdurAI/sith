@@ -33,13 +33,27 @@ type rootOptions struct {
 	output     string
 }
 
+type backend struct {
+	source fleet.Source
+	reader connector.Reader
+}
+
 // Execute builds and runs the command tree, returning a process exit code.
 func Execute() int {
-	return execute(os.Args[1:], connector.AsSource(kubeconfig.Default()), os.Stdout, os.Stderr)
+	adapter := kubeconfig.Default()
+	return executeBackend(os.Args[1:], backend{source: connector.AsSource(adapter), reader: adapter}, os.Stdout, os.Stderr)
 }
 
 func execute(args []string, source fleet.Source, stdout, stderr io.Writer) int {
-	command := newRootCommand(source, stdout, stderr)
+	return executeBackend(args, backend{source: source}, stdout, stderr)
+}
+
+func executeWithReader(args []string, reader connector.Reader, stdout, stderr io.Writer) int {
+	return executeBackend(args, backend{source: connector.AsSource(reader), reader: reader}, stdout, stderr)
+}
+
+func executeBackend(args []string, runtime backend, stdout, stderr io.Writer) int {
+	command := newRootCommand(runtime, stdout, stderr)
 	command.SetArgs(args)
 	if err := command.Execute(); err != nil {
 		if _, writeErr := fmt.Fprintln(stderr, err); writeErr != nil {
@@ -51,7 +65,7 @@ func execute(args []string, source fleet.Source, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func newRootCommand(source fleet.Source, stdout, stderr io.Writer) *cobra.Command {
+func newRootCommand(runtime backend, stdout, stderr io.Writer) *cobra.Command {
 	options := &rootOptions{output: "text"}
 	command := &cobra.Command{
 		Use:           "sith",
@@ -63,8 +77,8 @@ func newRootCommand(source fleet.Source, stdout, stderr io.Writer) *cobra.Comman
 			return command.Help()
 		},
 		PersistentPreRunE: func(command *cobra.Command, _ []string) error {
-			if options.output != "text" && options.output != "json" {
-				return fmt.Errorf("invalid output format %q: expected text or json", options.output)
+			if options.output != "text" && options.output != "json" && options.output != "wide" && options.output != "name" {
+				return fmt.Errorf("invalid output format %q: expected text, json, wide, or name", options.output)
 			}
 
 			resolved, err := config.Load(options.configPath, config.Overrides{
@@ -93,14 +107,22 @@ func newRootCommand(source fleet.Source, stdout, stderr io.Writer) *cobra.Comman
 	flags.StringVar(&options.configPath, "config", "", "path to the YAML configuration file")
 	flags.StringVar(&options.logLevel, "log-level", "", "logging level: debug, info, warn, or error (default info)")
 	flags.StringVar(&options.logFormat, "log-format", "", "logging format: text or json (default text)")
-	flags.StringVarP(&options.output, "output", "o", "text", "output format: text or json")
+	flags.StringVarP(&options.output, "output", "o", "text", "output format: text, json, wide, or name")
 
-	command.AddCommand(
+	commands := []*cobra.Command{
 		newVersionCommand(options),
-		newClustersCommand(options, source),
+		newClustersCommand(options, runtime.source),
 		newUICommand(),
 		newHubCommand(),
-	)
+	}
+	if runtime.reader != nil {
+		commands = append(commands,
+			newGetCommand(options, runtime.reader),
+			newSearchCommand(options, runtime.reader),
+			newCorrelateCommand(options, runtime.reader),
+		)
+	}
+	command.AddCommand(commands...)
 
 	return command
 }
