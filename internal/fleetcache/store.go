@@ -1,0 +1,391 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package fleetcache
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/ArdurAI/sith/internal/connector"
+	"github.com/ArdurAI/sith/internal/fleet"
+)
+
+const defaultFreshFor = 15 * time.Second
+
+// State describes the user-visible lifecycle of the local store.
+type State string
+
+// Store lifecycle states.
+const (
+	StateCold     State = "cold"
+	StateWarming  State = "warming"
+	StateWarm     State = "warm"
+	StateDegraded State = "degraded"
+	StateOffline  State = "offline"
+	StatePaused   State = "paused"
+)
+
+// Snapshot is an immutable cache-only answer for one render interaction.
+type Snapshot struct {
+	Version   uint64         `json:"version"`
+	State     State          `json:"state"`
+	Syncing   bool           `json:"syncing"`
+	Paused    bool           `json:"paused"`
+	Records   []Record       `json:"records"`
+	Coverage  fleet.Coverage `json:"coverage"`
+	UpdatedAt time.Time      `json:"updated_at,omitempty"`
+	LastError string         `json:"last_error,omitempty"`
+}
+
+// Store owns normalized last-known fleet state and never performs network I/O.
+type Store struct {
+	mu sync.RWMutex
+
+	records   map[string]map[string]Record
+	coverage  map[string]fleet.Coverage
+	scopes    map[string]connector.Scope
+	warmed    map[string]bool
+	syncing   bool
+	paused    bool
+	lastError string
+	updatedAt time.Time
+	version   uint64
+	changed   chan struct{}
+	now       func() time.Time
+	freshFor  time.Duration
+}
+
+// New creates an empty cold store.
+func New() *Store {
+	return newStore(time.Now, defaultFreshFor)
+}
+
+func newStore(now func() time.Time, freshFor time.Duration) *Store {
+	return &Store{
+		records:  make(map[string]map[string]Record),
+		coverage: make(map[string]fleet.Coverage),
+		scopes:   make(map[string]connector.Scope),
+		warmed:   make(map[string]bool),
+		changed:  make(chan struct{}),
+		now:      now,
+		freshFor: freshFor,
+	}
+}
+
+// BeginSync marks background reconciliation as active without blocking readers.
+func (store *Store) BeginSync() bool {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.paused || store.syncing {
+		return false
+	}
+	store.syncing = true
+	store.lastError = ""
+	store.notifyLocked()
+	return true
+}
+
+// SetDiscovery refreshes the known context set while preserving last-known facts.
+func (store *Store) SetDiscovery(discovery connector.Discovery) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.paused {
+		return
+	}
+	known := make(map[string]connector.Scope, len(discovery.Scopes)+len(discovery.Unreachable))
+	for _, scope := range discovery.Scopes {
+		known[scope.Name] = cloneScope(scope)
+	}
+	for _, name := range discovery.Unreachable {
+		if _, exists := known[name]; !exists {
+			known[name] = connector.Scope{Name: name}
+		}
+	}
+	store.scopes = known
+	store.notifyLocked()
+}
+
+// Replace reconciles one resource kind while preserving last-known rows for failed scopes.
+func (store *Store) Replace(kind string, result fleet.QueryResult) error {
+	canonical := canonicalKind(kind)
+	if canonical == "" {
+		return fmt.Errorf("replace cache records: resource kind is required")
+	}
+	normalized := make([]Record, 0, len(result.Facts))
+	for _, fact := range result.Facts {
+		record, err := normalize(fact)
+		if err != nil {
+			return err
+		}
+		normalized = append(normalized, record)
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.paused {
+		return nil
+	}
+	if store.records[canonical] == nil {
+		store.records[canonical] = make(map[string]Record)
+	}
+	unreachable := stringSet(result.Coverage.Unreachable)
+	for key, record := range store.records[canonical] {
+		if _, failed := unreachable[record.Cluster]; !failed {
+			delete(store.records[canonical], key)
+		}
+	}
+	for _, record := range normalized {
+		store.records[canonical][recordKey(record)] = record
+	}
+	store.coverage[canonical] = cloneCoverage(result.Coverage)
+	store.warmed[canonical] = true
+	store.updatedAt = store.now().UTC()
+	store.notifyLocked()
+	return nil
+}
+
+// EndSync marks reconciliation complete and retains any prior data on failure.
+func (store *Store) EndSync(err error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.syncing = false
+	if err != nil {
+		store.lastError = err.Error()
+	} else {
+		store.lastError = ""
+	}
+	store.notifyLocked()
+}
+
+// SetPaused freezes or resumes background mutations while keeping snapshots available.
+func (store *Store) SetPaused(paused bool) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.paused == paused {
+		return
+	}
+	store.paused = paused
+	store.notifyLocked()
+}
+
+// Paused reports whether background reconciliation is frozen.
+func (store *Store) Paused() bool {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	return store.paused
+}
+
+// Query returns a deterministic immutable answer without connector or network access.
+func (store *Store) Query(query Query) Snapshot {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	now := store.now().UTC()
+	records := make([]Record, 0)
+	for kind, byKey := range store.records {
+		if query.Kind != "" && canonicalKind(query.Kind) != kind {
+			continue
+		}
+		for _, cached := range byKey {
+			record := cloneRecord(cached)
+			age := now.Sub(record.ObservedAt)
+			if age > store.freshFor {
+				record.Stale = true
+				record.StaleFor = age
+				record.Fact.Stale = true
+				record.Fact.StaleFor = age.Round(time.Second).String()
+			}
+			if query.matches(record) {
+				records = append(records, record)
+			}
+		}
+	}
+	sort.Slice(records, func(left, right int) bool {
+		return recordKey(records[left]) < recordKey(records[right])
+	})
+	if query.Limit > 0 && len(records) > query.Limit {
+		records = records[:query.Limit]
+	}
+	coverage := store.coverageLocked(query, records, now)
+	pending := canonicalKind(query.Kind) != "" && !store.warmed[canonicalKind(query.Kind)]
+	return Snapshot{
+		Version:   store.version,
+		State:     store.stateLocked(coverage, store.recordCountLocked(), pending),
+		Syncing:   store.syncing,
+		Paused:    store.paused,
+		Records:   records,
+		Coverage:  coverage,
+		UpdatedAt: store.updatedAt,
+		LastError: store.lastError,
+	}
+}
+
+// WaitForChange blocks until the store advances beyond a known version or the context ends.
+func (store *Store) WaitForChange(ctx context.Context, after uint64) (uint64, error) {
+	for {
+		store.mu.RLock()
+		if store.version > after {
+			version := store.version
+			store.mu.RUnlock()
+			return version, nil
+		}
+		changed := store.changed
+		store.mu.RUnlock()
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+func (store *Store) coverageLocked(query Query, records []Record, now time.Time) fleet.Coverage {
+	targets := store.targetScopesLocked(query.Scopes)
+	unreachable := make(map[string]struct{})
+	stale := make(map[string]struct{})
+	kind := canonicalKind(query.Kind)
+	if kind != "" {
+		if !store.warmed[kind] {
+			return fleet.Coverage{Requested: len(targets)}
+		}
+		for _, name := range store.coverage[kind].Unreachable {
+			unreachable[name] = struct{}{}
+		}
+		for _, name := range store.coverage[kind].Stale {
+			stale[name] = struct{}{}
+		}
+	} else {
+		for _, coverage := range store.coverage {
+			for _, name := range coverage.Unreachable {
+				unreachable[name] = struct{}{}
+			}
+			for _, name := range coverage.Stale {
+				stale[name] = struct{}{}
+			}
+		}
+	}
+	for _, name := range targets {
+		scope, exists := store.scopes[name]
+		if !exists || !scope.Reachable {
+			unreachable[name] = struct{}{}
+		}
+		if !scope.ObservedAt.IsZero() && now.Sub(scope.ObservedAt) > store.freshFor {
+			stale[name] = struct{}{}
+		}
+	}
+	for _, record := range records {
+		if record.Stale {
+			stale[record.Cluster] = struct{}{}
+		}
+	}
+	coverage := fleet.Coverage{Requested: len(targets)}
+	for _, name := range targets {
+		if _, failed := unreachable[name]; failed {
+			coverage.Unreachable = append(coverage.Unreachable, name)
+			continue
+		}
+		coverage.Reachable++
+		if _, aged := stale[name]; aged {
+			coverage.Stale = append(coverage.Stale, name)
+		}
+	}
+	return coverage
+}
+
+func (store *Store) targetScopesLocked(patterns []string) []string {
+	set := make(map[string]struct{})
+	if len(patterns) == 0 {
+		for name := range store.scopes {
+			set[name] = struct{}{}
+		}
+	} else {
+		for _, pattern := range patterns {
+			matched := false
+			for name := range store.scopes {
+				if matchesGlob(name, pattern) {
+					set[name] = struct{}{}
+					matched = true
+				}
+			}
+			if !matched && !strings.ContainsAny(pattern, "*?[") {
+				set[pattern] = struct{}{}
+			}
+		}
+	}
+	result := make([]string, 0, len(set))
+	for name := range set {
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func (store *Store) stateLocked(coverage fleet.Coverage, recordCount int, pending bool) State {
+	switch {
+	case store.paused:
+		return StatePaused
+	case pending && store.syncing:
+		return StateWarming
+	case pending && store.lastError == "":
+		return StateCold
+	case recordCount == 0 && store.syncing:
+		return StateWarming
+	case recordCount == 0 && len(store.warmed) == 0:
+		return StateCold
+	case coverage.Reachable == 0 && (recordCount > 0 || store.lastError != ""):
+		return StateOffline
+	case len(coverage.Unreachable) > 0 || len(coverage.Stale) > 0 || store.lastError != "":
+		return StateDegraded
+	case store.syncing:
+		return StateWarming
+	default:
+		return StateWarm
+	}
+}
+
+func (store *Store) recordCountLocked() int {
+	count := 0
+	for _, records := range store.records {
+		count += len(records)
+	}
+	return count
+}
+
+func (store *Store) notifyLocked() {
+	store.version++
+	close(store.changed)
+	store.changed = make(chan struct{})
+}
+
+func recordKey(record Record) string {
+	return strings.Join([]string{record.Kind, record.Cluster, record.Namespace, record.Name}, "\x00")
+}
+
+func stringSet(values []string) map[string]struct{} {
+	result := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		result[value] = struct{}{}
+	}
+	return result
+}
+
+func cloneRecord(record Record) Record {
+	record.Fact = cloneFact(record.Fact)
+	record.Images = append([]string(nil), record.Images...)
+	record.Labels = cloneMap(record.Labels)
+	return record
+}
+
+func cloneCoverage(coverage fleet.Coverage) fleet.Coverage {
+	coverage.Unreachable = append([]string(nil), coverage.Unreachable...)
+	coverage.Stale = append([]string(nil), coverage.Stale...)
+	return coverage
+}
+
+func cloneScope(scope connector.Scope) connector.Scope {
+	scope.Kinds = append([]string(nil), scope.Kinds...)
+	return scope
+}
