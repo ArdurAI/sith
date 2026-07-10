@@ -1,13 +1,30 @@
 # Sith
 
-**Status: planning.** No product code yet.
+**Status: Slice 0 foundation.** The local-first CLI walking skeleton is runnable; Kubernetes
+context discovery arrives in Slice 1.
 
-Sith is a governed, multi-tenant control plane for **cross-cluster Kubernetes fleet
-operations** — one place to safely *see* and *act* across many clusters, while deep
-cluster access stays local. It is built on [Open Cluster Management (OCM)](https://open-cluster-management.io/).
+Sith is ArdurAI's single-binary, local-first Kubernetes fleet tool: **k9s for your whole fleet**.
+It is designed to aggregate every kubeconfig context without an account, telemetry, or cluster
+data leaving the machine. The same source-abstract fleet model will later power an optional
+governed hub.
 
-The full charter, architecture, ADRs, threat model, roadmap, and competitive analysis
-land via the initial planning pull request. The owner reviews the plan before any
-implementation begins.
+## Build and run
 
-See the open PR and `docs/` for the plan.
+Sith requires a supported Go 1.25 toolchain.
+
+```bash
+make build
+./bin/sith version
+./bin/sith version --output json
+./bin/sith clusters
+```
+
+Slice 0 intentionally returns a typed empty fleet through the stubbed `fleet.Source` seam. Run the
+full local quality gate with a pinned golangci-lint v2.12.2 on `PATH`:
+
+```bash
+make ci
+```
+
+The architecture, threat model, ADRs, and roadmap live under [`docs/`](docs/). Build-session
+checkpoints are recorded under [`sessions/`](sessions/).
