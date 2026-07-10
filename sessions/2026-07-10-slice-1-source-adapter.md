@@ -22,8 +22,14 @@ the `connector.Reader` to `fleet.Source` bridge.
 [T] Test: Race-enabled fleet/connector unit tests and the strict linter pass. Tests prove identity
 equality, fail-safe query validation, capability declaration+implementation checks, atomic invalid
 registration, deterministic lookup, typed-action isolation, and coverage-preserving source parity.
-[C] Checkpoint #1: this commit — additive fleet and connector contract; next: local-kubeconfig
+[C] Checkpoint #1: 7ad0759 — additive fleet and connector contract; next: local-kubeconfig
 adapter and client-go fan-out.
+[A] Action: Current client-go v0.36.2 requires Go 1.26, so raised the module and CI toolchain from
+Go 1.25 to the supported Go 1.26 line instead of pinning an older Kubernetes client.
+[T] Test: Rebuilt golangci-lint v2.12.2 with Go 1.26.5; the complete `make ci` gate passes on the
+new toolchain with no code or output changes.
+[C] Checkpoint #2: this commit — adopt the supported Go 1.26 toolchain required by current
+client-go; next: implement the adapter.
 
 ---
 

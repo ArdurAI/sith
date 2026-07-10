@@ -10,7 +10,7 @@ governed hub.
 
 ## Build and run
 
-Sith requires a supported Go 1.25 toolchain.
+Sith requires a supported Go 1.26 toolchain.
 
 ```bash
 make build
