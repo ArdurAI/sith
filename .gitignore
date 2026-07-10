@@ -15,7 +15,7 @@ Thumbs.db
 *.key
 *.pem
 *.pfx
-kubeconfig
+/kubeconfig
 *.kubeconfig
 secrets/
 .secrets/
