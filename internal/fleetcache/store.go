@@ -615,7 +615,10 @@ func cloneRecord(record Record, includeEvidence bool) Record {
 		record.Fact = fleet.Fact{}
 	}
 	record.Images = append([]string(nil), record.Images...)
+	record.ImageDigests = append([]string(nil), record.ImageDigests...)
 	record.CVEs = append([]string(nil), record.CVEs...)
+	record.Conditions = append([]string(nil), record.Conditions...)
+	record.Reasons = append([]string(nil), record.Reasons...)
 	record.Display = append([]fleet.DisplayField(nil), record.Display...)
 	record.Labels = cloneMap(record.Labels)
 	return record
