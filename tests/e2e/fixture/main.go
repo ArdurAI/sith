@@ -13,6 +13,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "fail" {
+		fmt.Fprintln(os.Stderr, "sith fixture intentional failure")
+		os.Exit(1)
+	}
 	if len(os.Args) > 1 && os.Args[1] == "echo" {
 		fmt.Println(strings.Join(os.Args[2:], " "))
 		return
