@@ -22,8 +22,8 @@ M0 → P1 → P2 → P3. Lead with adoption (Phase L); layer governance on top o
 
 **Verdict (revalidated 2026-07-11).** One hub plus two spokes passed registration, pinned
 addon health, spoke-local reach through projected scoped tokens, real-token negative RBAC
-controls, and outbound-only conntrack assertions in 158 seconds. The executable evidence and
-dependency caveats are in
+controls, active hub-ingress denial, and outbound-only conntrack assertions in 151 seconds. The
+executable evidence and dependency caveats are in
 [`experiments/M0-ocm-falsification.md`](experiments/M0-ocm-falsification.md). The bespoke
 transport/agent scope is deleted; the hub track proceeds to Phase 1.
 

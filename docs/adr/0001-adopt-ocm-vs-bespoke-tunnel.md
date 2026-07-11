@@ -87,12 +87,14 @@ The deciding experiment, its steps, exit criteria, and demo are specified in
   spoke-local fixture using that spoke's projected **scoped `managed-serviceaccount` token**.
   The same real token path was **denied** cluster-wide `secrets` and `nodes` for the expected
   `sith-reader` ServiceAccount identity. Reach and privilege are therefore decoupled.
-- **Outbound-only evidence:** conntrack original-direction tuples on both spoke nodes showed
-  spoke-pod connections to the hub kube-apiserver on `:6443` and **zero** hub-originated
-  connections into either spoke node or pod CIDR. The kind lab shares a Docker network, so a
-  later preproduction environment must repeat this with physical firewall/VPC isolation.
-- **Setup time: 158 seconds** for the automated clean-room run with a warm kind-node image
-  cache, far inside the `≤ ~1 day` exit criterion.
+- **Outbound-only evidence:** both spoke nodes enforced hub-source INPUT and FORWARD rejects;
+  active hub → live spoke-API probes failed while reverse-tunnel service reach remained healthy.
+  Conntrack original-direction tuples then showed spoke-pod connections to the hub
+  kube-apiserver on `:6443` and **zero** hub-originated connections. The kind lab shares a
+  Docker network and overlapping pod CIDRs, so a later preproduction environment must repeat
+  this with non-overlapping networks and physical firewall/VPC isolation.
+- **Setup time: 151 seconds** for the hardened automated clean-room run with a warm kind-node
+  image cache, far inside the `≤ ~1 day` exit criterion.
 - **Environment:** three single-node `kind` clusters (Kubernetes v1.36.1, digest-pinned);
   kind v0.32.0; `clusteradm` v1.3.1 / OCM core v1.3.1; `cluster-proxy` **0.10.0** and
   `managed-serviceaccount` **0.10.0**, with exact chart archive hashes checked before install.
@@ -103,4 +105,6 @@ The deciding experiment, its steps, exit criteria, and demo are specified in
   [`../experiments/M0-ocm-falsification.md`](../experiments/M0-ocm-falsification.md).
 - **Operational caveats:** the runbook retains the CRD/schema skew, same-namespace Helm
   ownership collision, and `clusteradm proxy kubectl` zero-status-on-Forbidden behavior as
-  explicit, tested dependency risks rather than suppressing them.
+  explicit, tested dependency risks rather than suppressing them. The runner also restricts
+  scratch deletion to its owned canonical directory, uses a fixture-only local Docker context,
+  and tears down instead of retaining a lab when bootstrap invalidation cannot be proved.

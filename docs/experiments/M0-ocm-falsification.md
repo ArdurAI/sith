@@ -12,14 +12,16 @@ Open Cluster Management (OCM) supplies the transport and scoped identity Sith ne
 - `managed-serviceaccount` projected a distinct `sith-reader` token for each spoke;
 - each projected token reached only its spoke-local fixture and was denied cluster-wide
   `secrets` and `nodes`; and
-- live conntrack original-direction tuples showed spoke-pod → hub `:6443` connections and
-  **zero** hub-originated connections into either spoke.
+- each spoke node enforced hub-node and external hub-pod source denies, an active hub → spoke
+  API probe failed against a known-live listener while incrementing the exact reject counter,
+  and live conntrack original-direction tuples still showed spoke-pod → hub `:6443`
+  connections with **zero** hub-node-originated connections into either spoke.
 
 The falsification premise therefore holds. Sith adopts OCM as its connectivity and scoped-
 identity substrate and does **not** build a bespoke tunnel or transport agent. The product
 work begins above that seam: read federation, governance, and typed-intent action federation.
 
-The automated clean-room run completed in **158 seconds** on a warm kind-node image cache,
+The hardened automated clean-room run completed in **151 seconds** on a warm kind-node image cache,
 well inside the `≤ ~1 day` decision gate.
 
 ## Durable proof
@@ -32,8 +34,10 @@ well inside the `≤ ~1 day` decision gate.
   [`ADR-0001`](../adr/0001-adopt-ocm-vs-bespoke-tunnel.md)
 
 The runner is the evidence contract. It fails unless every positive and negative assertion
-passes, redacts registration tokens from subprocess output, invalidates the bootstrap
-ServiceAccount after both joins, and deletes the disposable lab by default.
+passes, rejects unowned/noncanonical scratch paths and nonlocal Docker endpoints, redacts
+registration tokens from subprocess output, invalidates the bootstrap ServiceAccount after
+both joins, and deletes the disposable lab by default. Retention fails closed: an unproven
+bootstrap rotation forces teardown even when keep mode was requested.
 
 ## Acceptance evidence
 
@@ -43,7 +47,7 @@ ServiceAccount after both joins, and deletes the disposable lab by default.
 | #3: both pinned addons | `cluster-proxy` and `managed-serviceaccount` are `Available=True` on both spokes | PASS |
 | #4: reach each spoke-local service | projected `sith-reader` token returns the fixture identity for each spoke | PASS |
 | #4/#3: identity is scoped | the same real tokens receive `Forbidden` for `secrets -A` and `nodes` | PASS |
-| #5: outbound-only | each spoke has ≥1 original-direction pod flow to hub `:6443`; hub-originated count is 0 | PASS |
+| #5: outbound-only | each spoke enforces hub-source INPUT/FORWARD denies; an active hub → live spoke API probe fails; each spoke has ≥1 original-direction pod flow to hub `:6443`; hub-originated count is 0 | PASS |
 | #6: durable verdict | runner, terminal capture, this runbook, and ADR evidence are committed | PASS |
 
 The observed control-plane state was:
@@ -65,14 +69,18 @@ The clean-room runner ended with:
 ```text
 [m0] spoke-a: scoped reach PASS; secrets/nodes denied
 [m0] spoke-b: scoped reach PASS; secrets/nodes denied
-[m0] spoke-a: outbound flows to hub:6443=4; hub-initiated flows=0
+[m0] spoke-a: active hub-to-node probe denied; hub-to-pod FORWARD deny present
+[m0] spoke-b: active hub-to-node probe denied; hub-to-pod FORWARD deny present
+[m0] spoke-a: outbound flows to hub:6443=6; hub-initiated flows=0
 [m0] spoke-b: outbound flows to hub:6443=8; hub-initiated flows=0
-[m0] M0_RESULT=PASS topology=hub+2-spokes identity=scoped-msa transport=outbound-only
-[m0] elapsed_seconds=158
+[m0] M0_RESULT=PASS topology=hub+2-spokes identity=scoped-msa transport=outbound-only boundary=active-deny
+[m0] elapsed_seconds=151
 ```
 
-Connection counts are expected to vary as controllers reconnect. The invariant is at least
-one spoke-originated hub connection and zero hub-originated original-direction connections.
+Connection counts are expected to vary as controllers reconnect. The invariant is an enforced
+deny for new hub-originated node/pod-forwarding traffic, a failed active hub → spoke-node probe,
+at least one spoke-originated hub connection, and zero observed hub-originated original-direction
+connections.
 
 ## Topology tested
 
@@ -128,8 +136,14 @@ including `--force-internal-endpoint-lookup` for local kind clusters.
 ## Reproduce
 
 The default scratch root is `/Volumes/EXTENDED/tmp/sith-m0`; the runner refuses another
-filesystem unless the operator explicitly opts in. It uses a dedicated kubeconfig and isolated
-Helm state and never reads or modifies the user's kubeconfig.
+filesystem unless the operator explicitly opts in. The path must be canonical, must not already
+exist for a fresh run, and is deleted only when its regular ownership marker belongs to the
+current user. The runner verifies the entered parent's device/inode against the validated path,
+enters it once, and uses relative child paths from that held working directory, so racing or later
+renaming a writable ancestor cannot redirect creation or cleanup.
+It uses a dedicated kubeconfig and isolated Helm state, requires a local Unix-socket Docker
+endpoint, gives the image builder only a fixture-only context, and never reads or modifies the
+user's kubeconfig.
 
 ```bash
 # This machine keeps the project-pinned kind binary outside PATH.
@@ -163,9 +177,11 @@ asciinema play docs/experiments/M0-ocm-falsification.cast
 ### Registration and addon health
 
 The script creates one hub and two spokes from the same digest-pinned kind image, initializes
-OCM on the hub, joins both spokes with one ephemeral bootstrap credential, accepts them, and
-waits for each to become `Available`. It then rotates the bootstrap ServiceAccount UID, making
-the captured registration token invalid before the reach tests begin.
+OCM on the hub, starts both joins without the CLI's long-running `--wait`, clears the ephemeral
+bootstrap value after those commands return, accepts both spokes, and immediately rotates the
+bootstrap ServiceAccount UID before waiting for availability. This minimizes the unavoidable
+argv exposure imposed by `clusteradm` 1.3.1 and makes a captured registration token invalid
+before the reach tests begin.
 
 It downloads both 0.10.0 charts into isolated scratch, verifies their exact archive hashes,
 installs them, and waits for all four `ManagedClusterAddOn` conditions.
@@ -181,16 +197,24 @@ The runner uses `clusteradm proxy kubectl --sa=sith-reader` to reach both servic
 uses the **same projected token path** for `get secrets -A` and `get nodes`, requiring an
 RBAC `Forbidden` response that names the expected ServiceAccount identity.
 
-### Outbound-only directionality
+### Outbound-only directionality and active denial
 
-For each spoke node, the runner parses `/proc/net/nf_conntrack` and considers only the first
+Before OCM initialization, each spoke node receives INPUT and FORWARD rules that reject new
+connections from the hub node while allowing replies to spoke-originated connections. During
+verification, the runner requires both rules to remain installed and actively attempts a hub →
+spoke kube-apiserver connection after first proving the same listener is live from its own node.
+The hub probe must fail.
+
+For each spoke node, the runner also parses `/proc/net/nf_conntrack` and considers only the first
 tuple—the connection's original direction. It requires:
 
 - at least one `10.244.x.y → hub:6443` connection; and
-- zero original-direction connections from the hub into either the spoke node or pod CIDR.
+- zero original-direction connections from the hub node IP into either the spoke node or pod CIDR.
 
 This is more precise than grepping the full conntrack line, because the second tuple is the
-reply direction and naturally contains the hub as a source.
+reply direction and naturally contains the hub as a source. The active probe and explicit rules
+close the earlier evidence gap where an idle-but-reachable inbound path could have passed a
+purely passive sample.
 
 ## Upstream caveats retained in the decision
 
@@ -210,9 +234,14 @@ reply direction and naturally contains the hub as a source.
    matches the denial text and authenticated identity; it never treats wrapper status alone
    as proof.
 4. **Local topology is not a physical VPC boundary.** The kind nodes share one Docker network.
-   The experiment proves actual connection directionality, scoped identity, and reverse-tunnel
-   reach. A later preproduction environment must repeat network isolation with real firewall or
-   VPC controls.
+   The harness adds and verifies spoke-node firewall rules, actively denies hub → spoke-node
+   reach, and proves reverse-tunnel reach remains healthy. Single-node kind clusters reuse the
+   same pod CIDR, so a hub-side direct pod-IP probe would address a colliding hub-local pod; the
+   FORWARD rule for hub-node and externally arriving pod-CIDR sources is asserted, but that
+   ambiguous direct pod probe is intentionally not claimed. The `hub-initiated flows=0`
+   conntrack counter keys on the hub node IP; it does not pretend to classify colliding pod
+   addresses. A later preproduction environment must repeat the test with non-overlapping pod
+   CIDRs and real firewall/VPC controls.
 
 These are real operational costs, not reasons to reverse the falsification verdict. They are
 documented inputs to the addon upgrade policy and hub packaging work rather than hidden behind

@@ -12,6 +12,7 @@ readonly MANAGED_SERVICEACCOUNT_VERSION="0.10.0"
 readonly MANAGED_SERVICEACCOUNT_SHA256="ddd8b7da55667b534102397abd2e61988f9ead8a0e97b942731f869ed0b06dbf"
 readonly GO_VERSION="go1.26.5"
 readonly HELM_VERSION="v4.1.4"
+readonly FIREWALL_CHAIN="SITH_M0_HUB_DENY"
 
 readonly KIND_BIN="${KIND_BIN:-kind}"
 readonly KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
@@ -20,6 +21,7 @@ readonly HELM_BIN="${HELM_BIN:-helm}"
 readonly DOCKER_BIN="${DOCKER_BIN:-docker}"
 readonly JQ_BIN="${JQ_BIN:-jq}"
 readonly GO_BIN="${GO_BIN:-go}"
+readonly PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 readonly REPO_ROOT
@@ -31,17 +33,25 @@ readonly HUB_CONTEXT="kind-${HUB_NAME}"
 readonly SPOKE_A_CONTEXT="kind-${SPOKE_A_NAME}"
 readonly SPOKE_B_CONTEXT="kind-${SPOKE_B_NAME}"
 readonly SCRATCH_ROOT="${SITH_M0_SCRATCH_ROOT:-/Volumes/EXTENDED/tmp/sith-m0}"
-readonly KUBECONFIG_PATH="${SCRATCH_ROOT}/kubeconfig"
+SCRATCH_PARENT="$(dirname "${SCRATCH_ROOT}")"
+readonly SCRATCH_PARENT
+SCRATCH_NAME="$(basename "${SCRATCH_ROOT}")"
+readonly SCRATCH_NAME
+readonly KUBECONFIG_PATH="${SCRATCH_NAME}/kubeconfig"
+readonly SCRATCH_MARKER="${SCRATCH_NAME}/.sith-m0-owned"
+readonly FIXTURE_CONTEXT="${SCRATCH_NAME}/fixture-context"
 readonly FIXTURE_IMAGE="sith-m0-fixture:v1"
 
 KEEP_CLUSTERS="${SITH_M0_KEEP_CLUSTERS:-0}"
+BOOTSTRAP_TOKEN_ISSUED=0
 BOOTSTRAP_IDENTITY_ROTATED=0
+SCRATCH_PARENT_ENTERED=0
 
 export KUBECONFIG="${KUBECONFIG_PATH}"
-export TMPDIR="${SCRATCH_ROOT}/tmp"
-export HELM_CONFIG_HOME="${SCRATCH_ROOT}/helm/config"
-export HELM_CACHE_HOME="${SCRATCH_ROOT}/helm/cache"
-export HELM_DATA_HOME="${SCRATCH_ROOT}/helm/data"
+export TMPDIR="${SCRATCH_NAME}/tmp"
+export HELM_CONFIG_HOME="${SCRATCH_NAME}/helm/config"
+export HELM_CACHE_HOME="${SCRATCH_NAME}/helm/cache"
+export HELM_DATA_HOME="${SCRATCH_NAME}/helm/data"
 export GOTOOLCHAIN="go1.26.5"
 export GOPATH="${GOPATH:-/Volumes/EXTENDED/MacData/go}"
 
@@ -90,10 +100,28 @@ redact_tokens() {
 }
 
 cluster_exists() {
-  "${KIND_BIN}" get clusters 2>/dev/null | grep -Fxq "$1"
+  local clusters
+
+  clusters="$(${KIND_BIN} get clusters 2>/dev/null)" ||
+    die "cannot enumerate kind clusters; refusing to infer absence"
+  printf '%s\n' "${clusters}" | grep -Fxq "$1"
 }
 
 validate_scratch_root() {
+  local canonical_root
+
+  [[ -n "${SCRATCH_ROOT}" ]] || die "scratch root must not be empty"
+  [[ "${SCRATCH_ROOT}" == /* ]] || die "scratch root must be absolute"
+  canonical_root="$(${PYTHON_BIN} - "${SCRATCH_ROOT}" <<'PY'
+import os
+import sys
+
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+  [[ "${SCRATCH_ROOT}" == "${canonical_root}" ]] ||
+    die "scratch root must be canonical and contain no symlink or parent traversal components"
+
   case "${SCRATCH_ROOT}" in
     /Volumes/EXTENDED/*) ;;
     *)
@@ -102,8 +130,95 @@ validate_scratch_root() {
       ;;
   esac
 
-  [[ "${SCRATCH_ROOT}" != "/" ]] || die "refusing unsafe scratch root"
-  [[ -n "${SCRATCH_ROOT}" ]] || die "scratch root must not be empty"
+  case "${SCRATCH_ROOT}" in
+    / | /Volumes | /Volumes/EXTENDED) die "refusing unsafe scratch root" ;;
+  esac
+}
+
+scratch_directory_identity() {
+  "${PYTHON_BIN}" - "$1" <<'PY'
+import os
+import stat
+import sys
+
+parent = sys.argv[1]
+try:
+    parent_stat = os.lstat(parent)
+    if not stat.S_ISDIR(parent_stat.st_mode) or stat.S_ISLNK(parent_stat.st_mode):
+        raise ValueError
+    if parent_stat.st_uid != os.geteuid():
+        raise ValueError
+    if parent_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise ValueError
+    print(f"{parent_stat.st_dev}:{parent_stat.st_ino}")
+except (OSError, ValueError):
+    raise SystemExit(1)
+PY
+}
+
+validate_scratch_parent() {
+  scratch_directory_identity "${SCRATCH_PARENT}" >/dev/null
+}
+
+enter_scratch_parent() {
+  local entered_identity
+  local expected_identity
+
+  if [[ "${SCRATCH_PARENT_ENTERED}" == "1" ]]; then
+    return 0
+  fi
+  validate_scratch_root
+  expected_identity="$(scratch_directory_identity "${SCRATCH_PARENT}")" ||
+    die "scratch parent must be current-user-owned and not group/world writable"
+  cd -P "${SCRATCH_PARENT}" || die "cannot enter the trusted scratch parent"
+  entered_identity="$(scratch_directory_identity .)" ||
+    die "entered scratch parent is not current-user-owned and private"
+  [[ "${entered_identity}" == "${expected_identity}" ]] ||
+    die "scratch parent changed during validation; refusing the raced path"
+  SCRATCH_PARENT_ENTERED=1
+}
+
+scratch_is_owned() {
+  "${PYTHON_BIN}" - "${SCRATCH_NAME}" "${SCRATCH_MARKER}" <<'PY'
+import os
+import stat
+import sys
+
+root, marker = sys.argv[1:]
+try:
+    root_stat = os.lstat(root)
+    marker_stat = os.lstat(marker)
+    if not stat.S_ISDIR(root_stat.st_mode) or stat.S_ISLNK(root_stat.st_mode):
+        raise ValueError
+    if not stat.S_ISREG(marker_stat.st_mode) or stat.S_ISLNK(marker_stat.st_mode):
+        raise ValueError
+    if root_stat.st_uid != os.geteuid() or marker_stat.st_uid != os.geteuid():
+        raise ValueError
+    with open(marker, encoding="utf-8") as handle:
+        if handle.read() != "sith-m0-owned-v1\n":
+            raise ValueError
+except (OSError, ValueError):
+    raise SystemExit(1)
+PY
+}
+
+validate_owned_scratch() {
+  enter_scratch_parent
+  scratch_is_owned || die "scratch root is not an owned Sith M0 directory; refusing mutation"
+}
+
+validate_local_docker_endpoint() {
+  local context
+  local endpoint
+
+  if [[ -n "${DOCKER_HOST:-}" && "${DOCKER_HOST}" != unix://* ]]; then
+    die "DOCKER_HOST must use a local unix socket for this credential-bearing lab"
+  fi
+  context="$(${DOCKER_BIN} context show 2>/dev/null)" || die "cannot resolve Docker context"
+  endpoint="$(${DOCKER_BIN} context inspect "${context}" --format '{{.Endpoints.docker.Host}}' 2>/dev/null)" ||
+    die "cannot inspect Docker endpoint"
+  [[ "${endpoint}" == unix://* ]] ||
+    die "Docker context ${context} is not local (${endpoint}); refusing to expose lab state"
 }
 
 check_tools() {
@@ -113,7 +228,7 @@ check_tools() {
   local go_version
 
   for command_name in "${KIND_BIN}" "${KUBECTL_BIN}" "${CLUSTERADM_BIN}" "${HELM_BIN}" \
-    "${DOCKER_BIN}" "${JQ_BIN}" "${GO_BIN}" awk grep sed shasum; do
+    "${DOCKER_BIN}" "${JQ_BIN}" "${GO_BIN}" "${PYTHON_BIN}" awk grep sed shasum; do
     require_command "${command_name}"
   done
 
@@ -133,13 +248,21 @@ check_tools() {
   [[ "${go_version}" == "${GO_VERSION}" ]] ||
     die "Go ${GO_VERSION} is required; got: ${go_version}"
 
+  validate_local_docker_endpoint
   "${DOCKER_BIN}" info >/dev/null 2>&1 || die "Docker engine is unavailable"
 }
 
 prepare_scratch() {
-  validate_scratch_root
-  mkdir -p "${TMPDIR}" "${HELM_CONFIG_HOME}" "${HELM_CACHE_HOME}" "${HELM_DATA_HOME}" \
-    "${SCRATCH_ROOT}/charts"
+  enter_scratch_parent
+  [[ ! -e "${SCRATCH_NAME}" && ! -L "${SCRATCH_NAME}" ]] ||
+    die "scratch root already exists; use verify or cleanup before a fresh run"
+
+  umask 077
+  mkdir -m 0700 "${SCRATCH_NAME}"
+  printf 'sith-m0-owned-v1\n' >"${SCRATCH_MARKER}"
+  chmod 0600 "${SCRATCH_MARKER}"
+  mkdir -p "${TMPDIR}" "${HELM_CONFIG_HOME}" "${HELM_CACHE_HOME}" \
+    "${HELM_DATA_HOME}" "${SCRATCH_NAME}/charts"
   : >"${KUBECONFIG_PATH}"
   chmod 0600 "${KUBECONFIG_PATH}"
 }
@@ -155,18 +278,21 @@ ensure_lab_absent() {
 
 delete_clusters() {
   local cluster
+  local failed=0
+
   for cluster in "${SPOKE_B_NAME}" "${SPOKE_A_NAME}" "${HUB_NAME}"; do
     if cluster_exists "${cluster}"; then
-      "${KIND_BIN}" delete cluster --name "${cluster}"
+      "${KIND_BIN}" delete cluster --name "${cluster}" || failed=1
     fi
   done
+  return "${failed}"
 }
 
 remove_scratch() {
-  validate_scratch_root
-  if [[ -d "${SCRATCH_ROOT}" ]]; then
-    rm -rf "${SCRATCH_ROOT}"
-  fi
+  enter_scratch_parent
+  [[ -e "${SCRATCH_NAME}" || -L "${SCRATCH_NAME}" ]] || return 0
+  validate_owned_scratch
+  rm -rf -- "${SCRATCH_NAME}"
 }
 
 rotate_bootstrap_identity() {
@@ -175,37 +301,58 @@ rotate_bootstrap_identity() {
   local old_uid
   local new_uid
 
-  if [[ "${BOOTSTRAP_IDENTITY_ROTATED}" == "1" ]] || ! cluster_exists "${HUB_NAME}"; then
-    return
+  if [[ "${BOOTSTRAP_IDENTITY_ROTATED}" == "1" || "${BOOTSTRAP_TOKEN_ISSUED}" == "0" ]]; then
+    return 0
+  fi
+  if ! cluster_exists "${HUB_NAME}"; then
+    BOOTSTRAP_IDENTITY_ROTATED=1
+    return 0
   fi
   if ! "${KUBECTL_BIN}" --context "${HUB_CONTEXT}" -n "${namespace}" get serviceaccount \
     "${account}" >/dev/null 2>&1; then
-    return
+    printf '[m0] ERROR: cannot prove registration bootstrap invalidation\n' >&2
+    return 1
   fi
 
   old_uid="$(${KUBECTL_BIN} --context "${HUB_CONTEXT}" -n "${namespace}" get serviceaccount \
-    "${account}" -o jsonpath='{.metadata.uid}')"
+    "${account}" -o jsonpath='{.metadata.uid}')" || return 1
   "${KUBECTL_BIN}" --context "${HUB_CONTEXT}" -n "${namespace}" delete serviceaccount \
-    "${account}" --wait=true >/dev/null
+    "${account}" --wait=true >/dev/null || return 1
   "${KUBECTL_BIN}" --context "${HUB_CONTEXT}" -n "${namespace}" create serviceaccount \
-    "${account}" >/dev/null
+    "${account}" >/dev/null || return 1
   new_uid="$(${KUBECTL_BIN} --context "${HUB_CONTEXT}" -n "${namespace}" get serviceaccount \
-    "${account}" -o jsonpath='{.metadata.uid}')"
-  [[ "${old_uid}" != "${new_uid}" ]] || die "bootstrap ServiceAccount UID did not rotate"
+    "${account}" -o jsonpath='{.metadata.uid}')" || return 1
+  if [[ "${old_uid}" == "${new_uid}" ]]; then
+    printf '[m0] ERROR: bootstrap ServiceAccount UID did not rotate\n' >&2
+    return 1
+  fi
   BOOTSTRAP_IDENTITY_ROTATED=1
   log "registration bootstrap credential invalidated"
 }
 
 on_exit() {
   local exit_code=$?
+  local cleanup_failed=0
+  local rotation_failed=0
+
   trap - EXIT
   set +e
-  rotate_bootstrap_identity
-  if [[ "${KEEP_CLUSTERS}" == "1" ]]; then
+  rotate_bootstrap_identity || rotation_failed=1
+  if [[ "${KEEP_CLUSTERS}" == "1" && "${rotation_failed}" == "0" ]]; then
     log "retaining lab because SITH_M0_KEEP_CLUSTERS=1"
   else
-    delete_clusters
-    remove_scratch
+    if [[ "${KEEP_CLUSTERS}" == "1" && "${rotation_failed}" != "0" ]]; then
+      printf '[m0] ERROR: refusing to retain a lab with unproven bootstrap invalidation\n' >&2
+    fi
+    if delete_clusters; then
+      remove_scratch || cleanup_failed=1
+    else
+      cleanup_failed=1
+      printf '[m0] ERROR: cluster deletion failed; retaining scratch for recovery\n' >&2
+    fi
+  fi
+  if [[ "${rotation_failed}" != "0" || "${cleanup_failed}" != "0" ]]; then
+    [[ "${exit_code}" != "0" ]] || exit_code=1
   fi
   exit "${exit_code}"
 }
@@ -219,6 +366,45 @@ create_clusters() {
   done
 }
 
+enforce_spoke_ingress_boundary() {
+  local base_chain
+  local cluster
+  local hub_ip
+  local node
+  local node_ip
+
+  hub_ip="$(${DOCKER_BIN} inspect "${HUB_NAME}-control-plane" \
+    --format '{{.NetworkSettings.Networks.kind.IPAddress}}')"
+  [[ "${hub_ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] ||
+    die "unexpected hub container IP"
+
+  for cluster in spoke-a spoke-b; do
+    node="${LAB_PREFIX}-${cluster}-control-plane"
+    node_ip="$(${DOCKER_BIN} inspect "${node}" \
+      --format '{{.NetworkSettings.Networks.kind.IPAddress}}')"
+    "${DOCKER_BIN}" exec "${node}" iptables -N "${FIREWALL_CHAIN}" 2>/dev/null ||
+      "${DOCKER_BIN}" exec "${node}" iptables -F "${FIREWALL_CHAIN}"
+    # The first rule is a probe-specific counter. Verification requires its packet count
+    # to increase, so Docker/command failures cannot masquerade as a denied connection.
+    "${DOCKER_BIN}" exec "${node}" iptables -A "${FIREWALL_CHAIN}" -s "${hub_ip}" \
+      -d "${node_ip}" -p tcp --dport 6443 -m conntrack --ctstate NEW -j REJECT
+    "${DOCKER_BIN}" exec "${node}" iptables -A "${FIREWALL_CHAIN}" -s "${hub_ip}" \
+      -m conntrack --ctstate NEW -j REJECT
+    # A hub pod that is not SNATed enters through eth0 with its pod-CIDR source. Matching
+    # the ingress interface avoids blocking spoke-local 10.244/16 traffic on pod veths.
+    "${DOCKER_BIN}" exec "${node}" iptables -A "${FIREWALL_CHAIN}" -i eth0 \
+      -s 10.244.0.0/16 -m conntrack --ctstate NEW -j REJECT
+    for base_chain in INPUT FORWARD; do
+      if ! "${DOCKER_BIN}" exec "${node}" iptables -C "${base_chain}" \
+        -j "${FIREWALL_CHAIN}" >/dev/null 2>&1; then
+        "${DOCKER_BIN}" exec "${node}" iptables -I "${base_chain}" 1 \
+          -j "${FIREWALL_CHAIN}"
+      fi
+    done
+    log "${cluster}: rejecting hub-initiated node and pod connections"
+  done
+}
+
 initialize_ocm() {
   local hub_api
   local hub_token
@@ -227,6 +413,9 @@ initialize_ocm() {
   log "initializing OCM hub"
   "${CLUSTERADM_BIN}" init --wait --context "${HUB_CONTEXT}" 2>&1 | redact_tokens
 
+  # Treat token acquisition as a side-effect boundary. Even malformed output or an
+  # interruption after this point requires proven invalidation or forced teardown.
+  BOOTSTRAP_TOKEN_ISSUED=1
   join_command="$(${CLUSTERADM_BIN} get token --context "${HUB_CONTEXT}" |
     awk '/clusteradm join/ {print; exit}')"
   hub_token="$(printf '%s\n' "${join_command}" |
@@ -240,17 +429,17 @@ initialize_ocm() {
   log "joining both spokes with an in-memory bootstrap credential"
   {
     "${CLUSTERADM_BIN}" join --hub-token "${hub_token}" --hub-apiserver "${hub_api}" \
-      --cluster-name spoke-a --force-internal-endpoint-lookup --wait \
+      --cluster-name spoke-a --force-internal-endpoint-lookup \
       --context "${SPOKE_A_CONTEXT}"
     "${CLUSTERADM_BIN}" join --hub-token "${hub_token}" --hub-apiserver "${hub_api}" \
-      --cluster-name spoke-b --force-internal-endpoint-lookup --wait \
+      --cluster-name spoke-b --force-internal-endpoint-lookup \
       --context "${SPOKE_B_CONTEXT}"
   } 2>&1 | redact_tokens
   hub_token=""
   join_command=""
 
   "${CLUSTERADM_BIN}" accept --clusters spoke-a,spoke-b --wait --context "${HUB_CONTEXT}"
-  rotate_bootstrap_identity
+  rotate_bootstrap_identity || die "registration bootstrap credential could not be invalidated"
 
   for cluster in spoke-a spoke-b; do
     "${KUBECTL_BIN}" --context "${HUB_CONTEXT}" wait "managedcluster/${cluster}" \
@@ -268,16 +457,16 @@ verify_chart_digest() {
 }
 
 install_addons() {
-  local cluster_proxy_chart="${SCRATCH_ROOT}/charts/cluster-proxy-${CLUSTER_PROXY_VERSION}.tgz"
-  local msa_chart="${SCRATCH_ROOT}/charts/managed-serviceaccount-${MANAGED_SERVICEACCOUNT_VERSION}.tgz"
+  local cluster_proxy_chart="${SCRATCH_NAME}/charts/cluster-proxy-${CLUSTER_PROXY_VERSION}.tgz"
+  local msa_chart="${SCRATCH_NAME}/charts/managed-serviceaccount-${MANAGED_SERVICEACCOUNT_VERSION}.tgz"
 
   log "downloading and verifying pinned addon charts"
   "${HELM_BIN}" repo add ocm https://open-cluster-management.io/helm-charts
   "${HELM_BIN}" repo update ocm
   "${HELM_BIN}" pull ocm/cluster-proxy --version "${CLUSTER_PROXY_VERSION}" \
-    --destination "${SCRATCH_ROOT}/charts"
+    --destination "${SCRATCH_NAME}/charts"
   "${HELM_BIN}" pull ocm/managed-serviceaccount --version "${MANAGED_SERVICEACCOUNT_VERSION}" \
-    --destination "${SCRATCH_ROOT}/charts"
+    --destination "${SCRATCH_NAME}/charts"
   verify_chart_digest "${cluster_proxy_chart}" "${CLUSTER_PROXY_SHA256}"
   verify_chart_digest "${msa_chart}" "${MANAGED_SERVICEACCOUNT_SHA256}"
 
@@ -322,10 +511,11 @@ build_fixture() {
   local go_arch
   go_arch="$(docker_go_arch)"
   log "building deterministic ${go_arch} spoke-local fixture"
+  mkdir -m 0700 "${FIXTURE_CONTEXT}"
   CGO_ENABLED=0 GOOS=linux GOARCH="${go_arch}" "${GO_BIN}" build -trimpath \
-    -o "${SCRATCH_ROOT}/fixture" "${REPO_ROOT}/tests/e2e/fixture"
+    -o "${FIXTURE_CONTEXT}/fixture" "${REPO_ROOT}/tests/e2e/fixture/main.go"
   "${DOCKER_BIN}" build --platform "linux/${go_arch}" \
-    -f "${REPO_ROOT}/tests/e2e/fixture/Dockerfile" -t "${FIXTURE_IMAGE}" "${SCRATCH_ROOT}"
+    -f "${REPO_ROOT}/tests/e2e/fixture/Dockerfile" -t "${FIXTURE_IMAGE}" "${FIXTURE_CONTEXT}"
   "${KIND_BIN}" load docker-image "${FIXTURE_IMAGE}" --name "${SPOKE_A_NAME}"
   "${KIND_BIN}" load docker-image "${FIXTURE_IMAGE}" --name "${SPOKE_B_NAME}"
 }
@@ -480,6 +670,78 @@ verify_scoped_proxy() {
   done
 }
 
+firewall_probe_packets() {
+  local node=$1
+
+  "${DOCKER_BIN}" exec "${node}" iptables -nvx -L "${FIREWALL_CHAIN}" 1 |
+    awk '$3 == "REJECT" {print $1; found=1} END {if (!found) exit 1}'
+}
+
+probe_hub_connection_denied() {
+  local destination=$1
+  local port=$2
+  local source_node=$3
+  local after_packets
+  local before_packets
+  local probe_rc
+
+  [[ "${destination}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] ||
+    die "unexpected probe destination"
+  [[ "${port}" =~ ^[0-9]+$ ]] || die "unexpected probe port"
+
+  "${DOCKER_BIN}" exec "${source_node}" timeout 3 bash -c \
+    "exec 3<>/dev/tcp/${destination}/${port}" >/dev/null 2>&1 ||
+    die "negative-control listener ${destination}:${port} is not reachable from its spoke node"
+  before_packets="$(firewall_probe_packets "${source_node}")" ||
+    die "cannot read the hub-deny probe counter"
+  if "${DOCKER_BIN}" exec "${HUB_NAME}-control-plane" timeout 3 bash -c \
+    "exec 3<>/dev/tcp/${destination}/${port}" >/dev/null 2>&1; then
+    probe_rc=0
+  else
+    probe_rc=$?
+  fi
+  after_packets="$(firewall_probe_packets "${source_node}")" ||
+    die "cannot read the hub-deny probe counter after the active check"
+  if [[ "${probe_rc}" == "0" ]]; then
+    die "hub initiated a forbidden connection to ${destination}:${port}"
+  fi
+  [[ "${after_packets}" -gt "${before_packets}" ]] ||
+    die "hub probe failed without hitting the spoke firewall; refusing a false PASS"
+}
+
+verify_spoke_ingress_boundary() {
+  local base_chain
+  local cluster
+  local hub_ip
+  local node
+  local node_ip
+
+  hub_ip="$(${DOCKER_BIN} inspect "${HUB_NAME}-control-plane" \
+    --format '{{.NetworkSettings.Networks.kind.IPAddress}}')"
+  for cluster in spoke-a spoke-b; do
+    node="${LAB_PREFIX}-${cluster}-control-plane"
+    node_ip="$(${DOCKER_BIN} inspect "${node}" \
+      --format '{{.NetworkSettings.Networks.kind.IPAddress}}')"
+
+    for base_chain in INPUT FORWARD; do
+      "${DOCKER_BIN}" exec "${node}" iptables -C "${base_chain}" \
+        -j "${FIREWALL_CHAIN}" >/dev/null ||
+        die "${cluster} is missing the ${base_chain} hub-ingress deny jump"
+    done
+    "${DOCKER_BIN}" exec "${node}" iptables -C "${FIREWALL_CHAIN}" -s "${hub_ip}" \
+      -m conntrack --ctstate NEW -j REJECT >/dev/null ||
+      die "${cluster} is missing the hub-node source deny"
+    "${DOCKER_BIN}" exec "${node}" iptables -C "${FIREWALL_CHAIN}" -i eth0 \
+      -s 10.244.0.0/16 -m conntrack --ctstate NEW -j REJECT >/dev/null ||
+      die "${cluster} is missing the external hub-pod source deny"
+    probe_hub_connection_denied "${node_ip}" 6443 "${node}"
+    # Each single-node kind cluster reuses 10.244.0.0/24. A direct pod-IP probe from the
+    # hub would therefore hit a colliding hub-local pod, not the selected spoke. The
+    # FORWARD policy is asserted above; the unique node API supplies the active denial probe.
+    log "${cluster}: active hub-to-node probe denied; hub-to-pod FORWARD deny present"
+  done
+}
+
 verify_outbound_only() {
   local cluster
   local node
@@ -522,19 +784,21 @@ verify_lab() {
   verify_cluster_registration
   "${CLUSTERADM_BIN}" proxy health --context "${HUB_CONTEXT}"
   verify_scoped_proxy
+  verify_spoke_ingress_boundary
   verify_outbound_only
-  log "M0_RESULT=PASS topology=hub+2-spokes identity=scoped-msa transport=outbound-only"
+  log "M0_RESULT=PASS topology=hub+2-spokes identity=scoped-msa transport=outbound-only boundary=active-deny"
 }
 
 run_lab() {
   local started_at
   local finished_at
   started_at="$(date +%s)"
+  enter_scratch_parent
   check_tools
-  validate_scratch_root
   ensure_lab_absent
   prepare_scratch
   create_clusters
+  enforce_spoke_ingress_boundary
   initialize_ocm
   install_addons
   build_fixture
@@ -548,9 +812,9 @@ run_lab() {
 }
 
 cleanup_lab() {
+  enter_scratch_parent
   check_tools
-  validate_scratch_root
-  delete_clusters
+  delete_clusters || die "cluster deletion failed; retaining scratch for recovery"
   remove_scratch
   log "cleanup complete"
 }
@@ -564,8 +828,9 @@ main() {
       run_lab
       ;;
     verify)
+      enter_scratch_parent
       check_tools
-      validate_scratch_root
+      validate_owned_scratch
       verify_lab
       ;;
     cleanup)
@@ -581,4 +846,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

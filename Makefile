@@ -21,7 +21,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/buildinfo.Commit=$(COMMIT) \
 	-X $(PKG)/internal/buildinfo.Date=$(DATE)
 
-.PHONY: all build test perf e2e e2e-kind lint vuln fmt fmt-check vet tidy clean run ci release-check help
+.PHONY: all build test test-scripts perf e2e e2e-kind lint vuln fmt fmt-check vet tidy clean run ci release-check help
 
 all: build
 
@@ -31,6 +31,9 @@ build: ## Build the sith binary into bin/
 
 test: ## Run unit tests with the race detector and report coverage
 	go test -race -count=1 -coverprofile=coverage.out ./...
+
+test-scripts: ## Run focused safety tests for operator-facing shell harnesses
+	bash tests/scripts/m0_ocm_falsification_safety_test.sh
 
 perf: ## Enforce the warm-cache TUI p95 latency budget without race overhead
 	go test -count=1 -run '^TestWarmViewP95UnderOneHundredMilliseconds$$' ./internal/tui
@@ -68,7 +71,7 @@ clean: ## Remove build and coverage artifacts
 run: build ## Build then run sith version
 	$(BIN_DIR)/$(BINARY) version
 
-ci: fmt-check vet lint vuln test perf e2e build ## Run the full CI gate locally
+ci: fmt-check vet lint vuln test test-scripts perf e2e build ## Run the full CI gate locally
 
 release-check: ## Build and verify the reproducible multi-platform release snapshot twice
 	@command -v "$(GORELEASER)" >/dev/null || { echo "goreleaser is required" >&2; exit 1; }
