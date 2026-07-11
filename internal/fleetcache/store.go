@@ -46,20 +46,21 @@ type Snapshot struct {
 type Store struct {
 	mu sync.RWMutex
 
-	records   map[string]map[string]Record
-	coverage  map[string]fleet.Coverage
-	aliases   map[string]string
-	scopes    map[string]connector.Scope
-	warmed    map[string]bool
-	expected  map[string]bool
-	syncing   bool
-	paused    bool
-	lastError string
-	updatedAt time.Time
-	version   uint64
-	changed   chan struct{}
-	now       func() time.Time
-	freshFor  time.Duration
+	records         map[string]map[string]Record
+	coverage        map[string]fleet.Coverage
+	aliases         map[string]string
+	scopes          map[string]connector.Scope
+	scopeWorkspaces map[string]map[string]bool
+	warmed          map[string]bool
+	expected        map[string]bool
+	syncing         bool
+	paused          bool
+	lastError       string
+	updatedAt       time.Time
+	version         uint64
+	changed         chan struct{}
+	now             func() time.Time
+	freshFor        time.Duration
 }
 
 // New creates an empty cold store.
@@ -69,15 +70,16 @@ func New() *Store {
 
 func newStore(now func() time.Time, freshFor time.Duration) *Store {
 	return &Store{
-		records:  make(map[string]map[string]Record),
-		coverage: make(map[string]fleet.Coverage),
-		aliases:  make(map[string]string),
-		scopes:   make(map[string]connector.Scope),
-		warmed:   make(map[string]bool),
-		expected: make(map[string]bool),
-		changed:  make(chan struct{}),
-		now:      now,
-		freshFor: freshFor,
+		records:         make(map[string]map[string]Record),
+		coverage:        make(map[string]fleet.Coverage),
+		aliases:         make(map[string]string),
+		scopes:          make(map[string]connector.Scope),
+		scopeWorkspaces: make(map[string]map[string]bool),
+		warmed:          make(map[string]bool),
+		expected:        make(map[string]bool),
+		changed:         make(chan struct{}),
+		now:             now,
+		freshFor:        freshFor,
 	}
 }
 
@@ -100,12 +102,19 @@ func (store *Store) BeginSync(kinds ...string) bool {
 	return true
 }
 
-// SetDiscovery refreshes the known context set while preserving last-known facts.
-func (store *Store) SetDiscovery(discovery connector.Discovery) {
+// SetDiscovery refreshes one workspace's known context set while preserving last-known facts.
+func (store *Store) SetDiscovery(workspace string, discovery connector.Discovery) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if store.paused {
+	if store.paused || strings.TrimSpace(workspace) == "" {
 		return
+	}
+	for name, memberships := range store.scopeWorkspaces {
+		delete(memberships, workspace)
+		if len(memberships) == 0 {
+			delete(store.scopeWorkspaces, name)
+			delete(store.scopes, name)
+		}
 	}
 	known := make(map[string]connector.Scope, len(discovery.Scopes)+len(discovery.Unreachable))
 	for _, scope := range discovery.Scopes {
@@ -116,7 +125,10 @@ func (store *Store) SetDiscovery(discovery connector.Discovery) {
 			known[name] = connector.Scope{Name: name}
 		}
 	}
-	store.scopes = known
+	for name, scope := range known {
+		store.scopes[name] = scope
+		store.markScopeWorkspaceLocked(workspace, name)
+	}
 	store.notifyLocked()
 }
 
@@ -146,6 +158,7 @@ func (store *Store) Replace(kind string, result fleet.QueryResult) error {
 	store.aliases[kindAlias(kind)] = canonical
 	for _, record := range normalized {
 		store.aliases[kindAlias(record.Kind)] = canonical
+		store.markScopeWorkspaceLocked(record.Workspace, record.Cluster)
 	}
 	unreachable := stringSet(result.Coverage.Unreachable)
 	for key, record := range store.records[canonical] {
@@ -216,6 +229,7 @@ func (store *Store) ApplyWatchEvent(event connector.WatchEvent) error {
 	}
 	for _, record := range normalized {
 		store.aliases[kindAlias(record.Kind)] = canonical
+		store.markScopeWorkspaceLocked(record.Workspace, record.Cluster)
 	}
 
 	switch event.Type {
@@ -317,10 +331,13 @@ func (store *Store) Paused() bool {
 	return store.paused
 }
 
-// Query returns a deterministic immutable answer without connector or network access.
-func (store *Store) Query(query Query) Snapshot {
+// Query returns a deterministic workspace-scoped answer without connector or network access.
+func (store *Store) Query(workspace string, query Query) Snapshot {
 	store.mu.RLock()
 	defer store.mu.RUnlock()
+	if strings.TrimSpace(workspace) == "" {
+		return Snapshot{State: StateCold, Records: []Record{}, Scopes: []connector.Scope{}}
+	}
 	now := store.now().UTC()
 	records := make([]Record, 0)
 	selectedKind := store.resolveKindLocked(query.Kind)
@@ -341,7 +358,7 @@ func (store *Store) Query(query Query) Snapshot {
 				record.Fact.Stale = true
 				record.Fact.StaleFor = age.Round(time.Second).String()
 			}
-			if matchQuery.matches(record) {
+			if matchQuery.matches(workspace, record) {
 				records = append(records, record)
 			}
 		}
@@ -352,7 +369,7 @@ func (store *Store) Query(query Query) Snapshot {
 	if query.Limit > 0 && len(records) > query.Limit {
 		records = records[:query.Limit]
 	}
-	coverage := store.coverageLocked(query, records, now)
+	coverage := store.coverageLocked(workspace, query, records, now)
 	unreachable := stringSet(coverage.Unreachable)
 	for index := range records {
 		if _, failed := unreachable[records[index].Cluster]; failed {
@@ -366,14 +383,14 @@ func (store *Store) Query(query Query) Snapshot {
 	pending := selectedKind != "" && !store.warmed[selectedKind]
 	return Snapshot{
 		Version:   store.version,
-		State:     store.stateLocked(coverage, store.recordCountLocked(), pending),
+		State:     store.stateLocked(coverage, store.recordCountLocked(workspace), pending),
 		Syncing:   store.syncing,
 		Paused:    store.paused,
 		Records:   records,
 		Coverage:  coverage,
 		UpdatedAt: store.updatedAt,
 		LastError: store.lastError,
-		Scopes:    store.scopesLocked(query.Scopes),
+		Scopes:    store.scopesLocked(workspace, query.Scopes),
 	}
 }
 
@@ -396,8 +413,8 @@ func (store *Store) WaitForChange(ctx context.Context, after uint64) (uint64, er
 	}
 }
 
-func (store *Store) coverageLocked(query Query, records []Record, now time.Time) fleet.Coverage {
-	targets := store.targetScopesLocked(query.Scopes)
+func (store *Store) coverageLocked(workspace string, query Query, records []Record, now time.Time) fleet.Coverage {
+	targets := store.targetScopesLocked(workspace, query.Scopes)
 	unreachable := make(map[string]struct{})
 	stale := make(map[string]struct{})
 	kind := store.resolveKindLocked(query.Kind)
@@ -423,7 +440,7 @@ func (store *Store) coverageLocked(query Query, records []Record, now time.Time)
 	}
 	for _, name := range targets {
 		scope, exists := store.scopes[name]
-		if !exists || !scope.Reachable {
+		if !exists || !store.scopeWorkspaces[name][workspace] || !scope.Reachable {
 			unreachable[name] = struct{}{}
 		}
 		if !scope.ObservedAt.IsZero() && now.Sub(scope.ObservedAt) > store.freshFor {
@@ -464,17 +481,19 @@ func kindAlias(kind string) string {
 	return strings.ToLower(canonicalKind(kind))
 }
 
-func (store *Store) targetScopesLocked(patterns []string) []string {
+func (store *Store) targetScopesLocked(workspace string, patterns []string) []string {
 	set := make(map[string]struct{})
 	if len(patterns) == 0 {
-		for name := range store.scopes {
-			set[name] = struct{}{}
+		for name, memberships := range store.scopeWorkspaces {
+			if memberships[workspace] {
+				set[name] = struct{}{}
+			}
 		}
 	} else {
 		for _, pattern := range patterns {
 			matched := false
-			for name := range store.scopes {
-				if matchesGlob(name, pattern) {
+			for name, memberships := range store.scopeWorkspaces {
+				if memberships[workspace] && matchesGlob(name, pattern) {
 					set[name] = struct{}{}
 					matched = true
 				}
@@ -492,12 +511,12 @@ func (store *Store) targetScopesLocked(patterns []string) []string {
 	return result
 }
 
-func (store *Store) scopesLocked(patterns []string) []connector.Scope {
-	names := store.targetScopesLocked(patterns)
+func (store *Store) scopesLocked(workspace string, patterns []string) []connector.Scope {
+	names := store.targetScopesLocked(workspace, patterns)
 	result := make([]connector.Scope, 0, len(names))
 	for _, name := range names {
 		scope, exists := store.scopes[name]
-		if !exists {
+		if !exists || !store.scopeWorkspaces[name][workspace] {
 			scope = connector.Scope{Name: name}
 		}
 		result = append(result, cloneScope(scope))
@@ -528,12 +547,26 @@ func (store *Store) stateLocked(coverage fleet.Coverage, recordCount int, pendin
 	}
 }
 
-func (store *Store) recordCountLocked() int {
+func (store *Store) recordCountLocked(workspace string) int {
 	count := 0
 	for _, records := range store.records {
-		count += len(records)
+		for _, record := range records {
+			if record.Workspace == workspace {
+				count++
+			}
+		}
 	}
 	return count
+}
+
+func (store *Store) markScopeWorkspaceLocked(workspace, scope string) {
+	if strings.TrimSpace(workspace) == "" || strings.TrimSpace(scope) == "" {
+		return
+	}
+	if store.scopeWorkspaces[scope] == nil {
+		store.scopeWorkspaces[scope] = make(map[string]bool)
+	}
+	store.scopeWorkspaces[scope][workspace] = true
 }
 
 func (store *Store) notifyLocked() {
@@ -582,6 +615,7 @@ func cloneRecord(record Record, includeEvidence bool) Record {
 		record.Fact = fleet.Fact{}
 	}
 	record.Images = append([]string(nil), record.Images...)
+	record.CVEs = append([]string(nil), record.CVEs...)
 	record.Display = append([]fleet.DisplayField(nil), record.Display...)
 	record.Labels = cloneMap(record.Labels)
 	return record

@@ -14,6 +14,7 @@ import (
 
 	"github.com/pmezard/go-difflib/difflib"
 
+	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/fleetcache"
 	"github.com/ArdurAI/sith/internal/hydrate"
 	"github.com/ArdurAI/sith/internal/localops"
@@ -80,7 +81,7 @@ func (application *Application) handleSnapshot(response http.ResponseWriter, req
 		parsed.Limit = query.Limit
 		query = parsed
 	}
-	writeJSON(response, http.StatusOK, application.store.Query(query))
+	writeJSON(response, http.StatusOK, application.store.Query(fleet.LocalWorkspace, query))
 }
 
 type syncRequest struct {

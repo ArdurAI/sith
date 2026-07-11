@@ -16,6 +16,8 @@ decision rests on an external fact, that fact is web-verified and cited (see als
 | [0004](0004-typed-intent-action-model.md) | Typed-intent action model (closed vocabulary, no shell) | Proposed |
 | [0005](0005-ai-mcp-ardur-pdp.md) | AI / MCP server surface & Ardur as the PDP | Proposed |
 | [0006](0006-credential-key-custody.md) | Credential & key custody | Proposed |
+| [0007](0007-local-mcp-transport-auth.md) | Local MCP transport, scope, and authentication | Accepted |
 
-All ADRs are **Proposed** — this is the planning phase; the owner reviews before any
-implementation. Milestone-0's falsification result will move 0001 to Accepted/Rejected.
+Planning ADRs remain **Proposed** until their implementation lane accepts or rejects them.
+Implementation-specific ADRs may be **Accepted** when the corresponding shipped slice provides
+the validation evidence.

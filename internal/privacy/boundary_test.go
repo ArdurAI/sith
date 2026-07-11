@@ -15,8 +15,10 @@ import (
 )
 
 var approvedNetworkImports = map[string]map[string]bool{
+	"internal/cli/mcp.go":                            {"net": true, "net/http": true},
 	"internal/cli/ui.go":                             {"net": true, "net/http": true},
 	"internal/connector/kubeconfig/local_streams.go": {"net/http": true, "net/url": true},
+	"internal/mcpserver/server.go":                   {"net": true, "net/http": true, "net/url": true},
 	"internal/webui/api.go":                          {"net/http": true},
 	"internal/webui/server.go":                       {"net": true, "net/http": true, "net/url": true},
 }

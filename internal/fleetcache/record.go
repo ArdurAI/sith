@@ -19,6 +19,7 @@ import (
 // Record is a render-ready projection of one cached fleet fact.
 type Record struct {
 	Fact       fleet.Fact           `json:"fact"`
+	Workspace  string               `json:"workspace"`
 	Kind       string               `json:"kind"`
 	Cluster    string               `json:"cluster"`
 	Namespace  string               `json:"namespace,omitempty"`
@@ -31,6 +32,7 @@ type Record struct {
 	Version    string               `json:"version,omitempty"`
 	Restarts   int64                `json:"restarts,omitempty"`
 	Images     []string             `json:"images,omitempty"`
+	CVEs       []string             `json:"cves,omitempty"`
 	Labels     map[string]string    `json:"labels,omitempty"`
 	Display    []fleet.DisplayField `json:"display,omitempty"`
 	CreatedAt  time.Time            `json:"created_at,omitempty"`
@@ -40,12 +42,16 @@ type Record struct {
 }
 
 func normalize(fact fleet.Fact) (Record, error) {
+	if fact.Kind == fleet.FactCVE {
+		return normalizeCVE(fact)
+	}
 	object := &unstructured.Unstructured{}
 	if err := json.Unmarshal(fact.Observed, &object.Object); err != nil {
 		return Record{}, fmt.Errorf("decode %s: %w", fact.Ref.String(), err)
 	}
 	record := Record{
 		Fact:       cloneFact(fact),
+		Workspace:  fact.Workspace,
 		Kind:       canonicalKind(fact.Ref.Kind),
 		Cluster:    fact.Ref.Scope,
 		Namespace:  fact.Ref.Namespace,
@@ -74,6 +80,31 @@ func normalize(fact fleet.Fact) (Record, error) {
 		record.Status, _, _ = unstructured.NestedString(object.Object, "status", "phase")
 	}
 	return record, nil
+}
+
+func normalizeCVE(fact fleet.Fact) (Record, error) {
+	observation := fleet.CVEObservation{}
+	if err := json.Unmarshal(fact.Observed, &observation); err != nil {
+		return Record{}, fmt.Errorf("decode %s CVE observation: %w", fact.Ref.String(), err)
+	}
+	if strings.TrimSpace(observation.Image) == "" || len(observation.IDs) == 0 {
+		return Record{}, fmt.Errorf("decode %s CVE observation: image and at least one CVE ID are required", fact.Ref.String())
+	}
+	cves := make([]string, 0, len(observation.IDs))
+	for _, identifier := range observation.IDs {
+		identifier = strings.ToUpper(strings.TrimSpace(identifier))
+		if !strings.HasPrefix(identifier, "CVE-") {
+			return Record{}, fmt.Errorf("decode %s CVE observation: invalid identifier %q", fact.Ref.String(), identifier)
+		}
+		cves = append(cves, identifier)
+	}
+	sort.Strings(cves)
+	return Record{
+		Fact: cloneFact(fact), Workspace: fact.Workspace, Kind: canonicalKind(fact.Ref.Kind), Cluster: fact.Ref.Scope,
+		Namespace: fact.Ref.Namespace, Name: fact.Ref.Name, Status: observation.Severity,
+		Images: []string{observation.Image}, CVEs: cves, Labels: map[string]string{},
+		ObservedAt: fact.ObservedAt, Stale: fact.Stale,
+	}, nil
 }
 
 func normalizePod(record *Record, object unstructured.Unstructured) {

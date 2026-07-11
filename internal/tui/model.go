@@ -272,7 +272,7 @@ func (model *Model) View() tea.View {
 		return model.panelView()
 	}
 	snapshot := model.snapshot()
-	allSnapshot := model.store.Query(fleetcache.Query{Kind: model.currentLens(), MetadataOnly: true})
+	allSnapshot := model.store.Query(fleet.LocalWorkspace, fleetcache.Query{Kind: model.currentLens(), MetadataOnly: true})
 	allScopes := allSnapshot.Scopes
 	renderLens := model.currentLens()
 	if model.filterAll || (model.mode == modeSearch && model.inputAll) {
@@ -474,7 +474,7 @@ func (model *Model) snapshot() fleetcache.Snapshot {
 			query.Text = []string{strings.ToLower(expression)}
 		}
 	}
-	return model.store.Query(query)
+	return model.store.Query(fleet.LocalWorkspace, query)
 }
 
 func (model *Model) renderRows(table fleetrender.Table) string {
@@ -565,7 +565,7 @@ func (model *Model) clampCursor() {
 }
 
 func (model *Model) selectScope(index int) {
-	scopes := model.store.Query(fleetcache.Query{MetadataOnly: true}).Scopes
+	scopes := model.store.Query(fleet.LocalWorkspace, fleetcache.Query{MetadataOnly: true}).Scopes
 	if index >= 0 && index < len(scopes) {
 		model.scopes = []string{scopes[index].Name}
 		model.cursor = 0
