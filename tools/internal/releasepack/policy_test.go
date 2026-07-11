@@ -77,6 +77,17 @@ func TestWorkflowActionsUseImmutableRefs(t *testing.T) {
 	}
 }
 
+func TestReleaseGuidePinsSPDXPredicateVersion(t *testing.T) {
+	t.Parallel()
+	guide := readRepositoryFile(t, repositoryRoot(t), "docs/RELEASE.md")
+	if !strings.Contains(guide, "--predicate-type https://spdx.dev/Document/v2.3") {
+		t.Fatal("release guide does not pin the SPDX 2.3 attestation predicate URI")
+	}
+	if strings.Contains(guide, "--predicate-type https://spdx.dev/Document \\") {
+		t.Fatal("release guide contains the unversioned SPDX predicate URI")
+	}
+}
+
 func repositoryRoot(t *testing.T) string {
 	t.Helper()
 	_, filename, _, ok := runtime.Caller(0)

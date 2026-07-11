@@ -17,6 +17,9 @@
 [T] Test: Full `make ci` is green with zero lint findings and no govulncheck vulnerabilities. The digest-pinned real two-cluster kind gate passed under `-race` in 90.660s; Docker cleanup reclaimed 913.1 MB. Homebrew tap CI run 29167709347 and no-release sync smoke run 29167717172 both passed. GitHub Dependabot, code-scanning, and secret-scanning queues are each zero open.
 [C] Checkpoint #1: signed Homebrew tap bootstrap `f7084518e9c6268f7266206ea17020754cb4fc67` — next: publish the Sith release pipeline.
 [C] Checkpoint #2: reproducible signed release and verification pipeline — next: PR, green remote gates, dev/main release integration, first signed tag, and real Homebrew install proof.
+[A] Action: Consumer verification of the public v0.1.0 SBOM bundle identified that GitHub emits predicate URI `https://spdx.dev/Document/v2.3`; the runbook used the unversioned URI. Corrected the command and added a regression assertion for the exact vetted predicate.
+[T] Test: The corrected offline command verifies the darwin/arm64 archive against its attached SPDX attestation bundle. Direct Cosign checks for archive, SBOM, checksums, and formula; online/offline SLSA checks; archive extraction; embedded release metadata; Ruby syntax; and formula/checksum binding all pass.
+[C] Checkpoint #3: consumer-verification documentation correction — next: merge through dev/main and complete tap install proof.
 
 ---
 
