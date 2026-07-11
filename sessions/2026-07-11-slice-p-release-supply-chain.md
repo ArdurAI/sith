@@ -1,7 +1,7 @@
 # Session — 2026-07-11 — slice-p-release-supply-chain
 
 **Builder:** Gnani Rahul · **Model/effort:** GPT-5, max · **Branch:** gnanirahulnutakki/feat/release-supply-chain
-**Slice(s):** Slice P / E9 #27 Phase-L subset · **Status:** ready-for-PR
+**Slice(s):** Slice P / E9 #27 Phase-L subset · **Status:** shipped
 
 ---
 
@@ -26,7 +26,10 @@
 [A] Action: Homebrew 6 consumer testing showed that third-party taps require explicit trust before install. Added the formula-scoped `brew trust --formula ArdurAI/tap/sith` command to Sith and tap install guidance and their regression/CI checks; explicitly rejected whole-tap trust and the unsafe trust-disable environment override.
 [T] Test: The exact tap → formula trust → `brew install sith` → `brew test` path passes against the public ArdurAI tap. The installed binary reports v0.1.0, commit 5e50168315787f864127349556e36c46d8872bd5, Go 1.26.5, and darwin/arm64; cleanup removes the local install and tap.
 [C] Checkpoint #5: Homebrew 6 formula-scoped trust UX — next: promote corrected guidance and close Phase-L release evidence.
+[A] Action: Published the signed `v0.1.0` release with 25 assets, including four platform archives, per-archive SPDX SBOMs, direct Sigstore bundles, checksum/formula bundles, one SLSA provenance bundle, and four SBOM attestation bundles. Promoted the verification, dependency, and Homebrew trust corrections through release PR #70 to `main` merge `b85db45076738e6d415732c277deb6cdcd9392c1`. Enabled GitHub immutable releases for future tags and recorded the completed Phase-L subset on E9 issue #27 while leaving the epic open for F9.1–F9.5.
+[T] Test: Final full CI run 29169058880 passed build, vet, formatting, lint, govulncheck, race tests, the dedicated TUI latency gate, binary smoke, the real two-cluster kind test, and reproducible release validation. Post-merge CodeQL run 29169238030 passed for Go, Actions, and JavaScript/TypeScript. Dependabot, code-scanning, and secret-scanning each report zero open alerts. Public consumer checks pass for archive/SBOM checksums, direct Cosign signatures, online and attached-bundle SLSA provenance, attached SPDX 2.3 attestations, and the formula-scoped Homebrew install/test path.
+[C] Checkpoint #6: Slice P shipped and release evidence closed — next: resume the roadmap at the M0 OCM falsification lane; E9 remains open for hub packaging.
 
 ---
 
-**Session close:** local and tap gates green; ready for PR · **Open questions touched:** none
+**Session close:** shipped to `main`; public release and consumer path verified; future immutable releases enabled · **Open questions touched:** none
