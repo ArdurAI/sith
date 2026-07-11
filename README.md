@@ -1,11 +1,13 @@
 # Sith
 
-**Status: Slice 6 local MCP read server.** The CLI, TUI, browser IDE, and optional MCP server
+**Status: Slice 7 local advisory Investigation Brain.** The CLI, TUI, browser IDE, optional MCP server,
+and deterministic advisory brain
 discover every context resolved by client-go, hydrate one local in-memory fleet cache through
 per-context watches, serve coverage-honest fleet search/correlation, and provide explicit-context
 logs, exec, port-forward, describe, and YAML view/edit. Local mode requires no account, emits no
 telemetry, and can expose workspace-scoped, audited fleet reads to local agents without giving them
-cluster credentials.
+cluster credentials. The brain explains supported degraded signals with cited rules and suggested
+human-run commands while naming every missing evidence lens.
 
 Sith is ArdurAI's single-binary, local-first Kubernetes fleet tool: **k9s for your whole fleet**.
 It is designed to aggregate every kubeconfig context without an account, telemetry, or cluster
@@ -26,6 +28,8 @@ make build
 ./bin/sith get pods -A --all-clusters
 ./bin/sith search 'image:*log4j*'
 ./bin/sith correlate 'deploy/payments status!=Healthy'
+./bin/sith investigate             # rank supported degraded signals across every context
+./bin/sith investigate payments --context kind-dev --output json
 ./bin/sith describe pod/api --context kind-dev -n apps
 ./bin/sith yaml secret/api-token --context kind-dev -n apps
 ./bin/sith logs api --context kind-dev -n apps --tail 100 -f
@@ -75,6 +79,20 @@ normalized in-memory records; partial results name stale/unreachable contexts. T
 persisted to disk, so raw workload specifications do not become a new plaintext credential-adjacent
 artifact.
 
+`sith investigate` runs the deterministic R1-R6 catalog over the same cache: bad deploy,
+OOMKilled, CrashLoopBackOff/repeated container failure, config drift, certificate expiry, and node
+pressure. Every verdict includes its rule, exact cited signals, confidence state, missing lenses,
+and an advisory command or PR change for the operator to inspect and run. The brain performs no
+I/O and imports no connector planning, execution, intent, PEP, MCP, or local-operation path.
+
+Phase-L kubeconfig hydration supplies LIVE pod/workload/node evidence and discrete Kubernetes
+Events for TIMELINE when present. DESIRED and TELEMETRY remain unavailable unless a future
+connector supplies entity-attached facts. Consequently, an OOM or repeated failure is detected
+from LIVE evidence while its leak/spike/log-cause variant remains explicitly unconfirmed. A stale
+or missing required lens downgrades the dependent verdict rather than being treated as negative
+evidence. Identical unhealthy image digests on two or more contexts produce a fleet-wide verdict
+ahead of per-cluster findings. Advisory output never executes or dispatches anything.
+
 The TUI opens only when stdin and stdout are terminals; redirected bare invocations remain
 script-safe and print help. Tier-1 lenses are Pods, Deployments, Events, and Nodes. Use `:` for
 lens/context commands (including `:<kind>` for an API-discovered generic resource rendered with
@@ -120,17 +138,19 @@ make ci
 ```
 
 The gate also compiles the binary under a functional HTTP/HTTPS egress sentinel and exercises
-local commands plus the running web UI and MCP server with an official SDK client. A source
+local commands, deterministic investigation, plus the running web UI and MCP server with an official SDK client. A source
 boundary exact-allowlists production network, filesystem-write, and subprocess imports, confines
 client-go transport to the kubeconfig adapter, and rejects known telemetry SDKs and low-level
 network bypasses. Together these checks prove the reviewed paths; they are regression controls
 rather than an operating-system network sandbox.
 
 The real multi-cluster gate creates two temporary kind clusters with a digest-pinned node image,
-checks one additional unreachable context, and proves CLI, web-IDE, and MCP context isolation for
+checks one additional unreachable context, and proves CLI, advisory-brain, web-IDE, and MCP context isolation for
 search/correlation, logs, exec, YAML/Secret handling, describe/events, preview-gated edit, and
 loopback TCP forwarding against a scratch fixture image. MCP additionally proves live inventory,
-unhealthy-workload correlation, and image/CVE search over the same two clusters. It removes both
+unhealthy-workload correlation, and image/CVE search over the same two clusters. The brain fixture
+uses one real repeatedly failing container per cluster and proves same-digest fleet correlation,
+cited LIVE evidence, and clean TELEMETRY abstention. It removes both
 clusters afterward. The gate requires a running Docker engine and kind v0.32.0, and consumes
 additional CI time, disk, and memory:
 

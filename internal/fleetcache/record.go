@@ -18,27 +18,30 @@ import (
 
 // Record is a render-ready projection of one cached fleet fact.
 type Record struct {
-	Fact       fleet.Fact           `json:"fact"`
-	Workspace  string               `json:"workspace"`
-	Kind       string               `json:"kind"`
-	Cluster    string               `json:"cluster"`
-	Namespace  string               `json:"namespace,omitempty"`
-	Name       string               `json:"name"`
-	Ready      string               `json:"ready,omitempty"`
-	Status     string               `json:"status,omitempty"`
-	Reason     string               `json:"reason,omitempty"`
-	Message    string               `json:"message,omitempty"`
-	Node       string               `json:"node,omitempty"`
-	Version    string               `json:"version,omitempty"`
-	Restarts   int64                `json:"restarts,omitempty"`
-	Images     []string             `json:"images,omitempty"`
-	CVEs       []string             `json:"cves,omitempty"`
-	Labels     map[string]string    `json:"labels,omitempty"`
-	Display    []fleet.DisplayField `json:"display,omitempty"`
-	CreatedAt  time.Time            `json:"created_at,omitempty"`
-	ObservedAt time.Time            `json:"observed_at"`
-	Stale      bool                 `json:"stale"`
-	StaleFor   time.Duration        `json:"stale_for,omitempty"`
+	Fact         fleet.Fact           `json:"fact"`
+	Workspace    string               `json:"workspace"`
+	Kind         string               `json:"kind"`
+	Cluster      string               `json:"cluster"`
+	Namespace    string               `json:"namespace,omitempty"`
+	Name         string               `json:"name"`
+	Ready        string               `json:"ready,omitempty"`
+	Status       string               `json:"status,omitempty"`
+	Reason       string               `json:"reason,omitempty"`
+	Reasons      []string             `json:"reasons,omitempty"`
+	Message      string               `json:"message,omitempty"`
+	Node         string               `json:"node,omitempty"`
+	Version      string               `json:"version,omitempty"`
+	Restarts     int64                `json:"restarts,omitempty"`
+	Images       []string             `json:"images,omitempty"`
+	ImageDigests []string             `json:"image_digests,omitempty"`
+	CVEs         []string             `json:"cves,omitempty"`
+	Conditions   []string             `json:"conditions,omitempty"`
+	Labels       map[string]string    `json:"labels,omitempty"`
+	Display      []fleet.DisplayField `json:"display,omitempty"`
+	CreatedAt    time.Time            `json:"created_at,omitempty"`
+	ObservedAt   time.Time            `json:"observed_at"`
+	Stale        bool                 `json:"stale"`
+	StaleFor     time.Duration        `json:"stale_for,omitempty"`
 }
 
 func normalize(fact fleet.Fact) (Record, error) {
@@ -121,11 +124,22 @@ func normalizePod(record *Record, object unstructured.Unstructured) {
 			ready++
 		}
 		record.Restarts += number(status["restartCount"])
+		if digest := imageDigest(nestedString(status, "imageID")); digest != "" {
+			record.ImageDigests = appendUnique(record.ImageDigests, digest)
+		}
 		if reason := nestedString(status, "state", "waiting", "reason"); reason != "" {
+			record.Reasons = appendUnique(record.Reasons, reason)
 			record.Status = reason
 		}
 		if reason := nestedString(status, "state", "terminated", "reason"); reason != "" {
+			record.Reasons = appendUnique(record.Reasons, reason)
 			record.Status = reason
+		}
+		if reason := nestedString(status, "lastState", "terminated", "reason"); reason != "" {
+			record.Reasons = appendUnique(record.Reasons, reason)
+			if record.Status == "" || record.Status == "Running" {
+				record.Status = reason
+			}
 		}
 	}
 	desired, _, _ := unstructured.NestedSlice(object.Object, "spec", "containers")
@@ -169,18 +183,41 @@ func normalizeNode(record *Record, object unstructured.Unstructured) {
 	conditions, _, _ := unstructured.NestedSlice(object.Object, "status", "conditions")
 	for _, value := range conditions {
 		condition, ok := value.(map[string]any)
-		if !ok || condition["type"] != "Ready" {
+		if !ok {
 			continue
 		}
-		if condition["status"] == "True" {
-			record.Status = "Ready"
-		} else {
-			record.Status = "NotReady"
+		conditionType, _ := condition["type"].(string)
+		conditionStatus, _ := condition["status"].(string)
+		if conditionType != "Ready" && conditionStatus == "True" {
+			record.Conditions = appendUnique(record.Conditions, conditionType)
 		}
-		record.Reason, _ = condition["reason"].(string)
-		break
+		if conditionType == "Ready" {
+			if conditionStatus == "True" {
+				record.Status = "Ready"
+			} else {
+				record.Status = "NotReady"
+			}
+			record.Reason, _ = condition["reason"].(string)
+		}
 	}
+	sort.Strings(record.Conditions)
 	record.Version, _, _ = unstructured.NestedString(object.Object, "status", "nodeInfo", "kubeletVersion")
+}
+
+func imageDigest(imageID string) string {
+	if index := strings.LastIndex(imageID, "sha256:"); index >= 0 {
+		return imageID[index:]
+	}
+	return ""
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func objectImages(object unstructured.Unstructured) []string {
