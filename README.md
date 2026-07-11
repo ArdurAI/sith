@@ -1,7 +1,7 @@
 # Sith
 
-**Status: Slice 7 local advisory Investigation Brain.** The CLI, TUI, browser IDE, optional MCP server,
-and deterministic advisory brain
+**Status: Phase-L client plus release supply-chain gate.** The CLI, TUI, browser IDE, optional MCP server,
+deterministic advisory brain, and reproducible multi-platform release pipeline
 discover every context resolved by client-go, hydrate one local in-memory fleet cache through
 per-context watches, serve coverage-honest fleet search/correlation, and provide explicit-context
 logs, exec, port-forward, describe, and YAML view/edit. Local mode requires no account, emits no
@@ -13,6 +13,21 @@ Sith is ArdurAI's single-binary, local-first Kubernetes fleet tool: **k9s for yo
 It is designed to aggregate every kubeconfig context without an account, telemetry, or cluster
 data leaving the machine. The same source-abstract fleet model will later power an optional
 governed hub.
+
+## Install
+
+On macOS or Linux with Homebrew:
+
+```bash
+brew tap ArdurAI/tap
+brew install sith
+sith version
+```
+
+Release archives are also available for `darwin/amd64`, `darwin/arm64`, `linux/amd64`, and
+`linux/arm64`. Every archive has a checksum, an SPDX SBOM, a keyless Sigstore bundle, SLSA build
+provenance, and a platform-specific SBOM attestation. Verify those materials before installing;
+the exact online and offline commands are in [`docs/RELEASE.md`](docs/RELEASE.md).
 
 ## Build and run
 
@@ -135,6 +150,13 @@ Run the full local quality gate with golangci-lint v2.12.2 and govulncheck v1.6.
 
 ```bash
 make ci
+```
+
+Release changes additionally require GoReleaser v2.17.0 and Syft v1.46.0. This gate builds all
+four archives twice and refuses the change if their SHA-256 digests differ:
+
+```bash
+make release-check
 ```
 
 The gate also compiles the binary under a functional HTTP/HTTPS egress sentinel and exercises
