@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en" data-mode="__SITH_MODE__">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="sith-csrf-token" content="__SITH_CSRF_TOKEN__">
+  <title>Sith — Fleet IDE</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23101820'/%3E%3Cpath d='M22 8c-2-1-4-2-7-2-4 0-7 2-7 6 0 7 11 4 11 8 0 2-2 3-4 3-3 0-5-1-7-2v5c2 1 5 2 8 2 5 0 8-3 8-7 0-7-11-5-11-9 0-1 1-2 3-2 2 0 4 1 6 2z' fill='%23e56b3f'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <div class="boot-scan" aria-hidden="true"></div>
+  <header class="masthead">
+    <div class="identity">
+      <span class="identity-mark" aria-hidden="true">S</span>
+      <div>
+        <p class="eyebrow">Fleet plotting board</p>
+        <h1>Sith <span>/ live</span></h1>
+      </div>
+    </div>
+    <div class="coverage-summary" aria-live="polite">
+      <span id="coverage-count">warming contexts</span>
+      <span id="coverage-detail">Cache rows appear as clusters answer.</span>
+    </div>
+    <div class="mast-actions">
+      <button id="forwards-button" class="quiet-action" type="button">Forwards <span id="forward-count">0</span></button>
+      <button id="refresh-button" class="primary-action" type="button">Refresh fleet</button>
+    </div>
+  </header>
+
+  <section class="query-deck" aria-label="Fleet query controls">
+    <div class="lens-switcher" id="lens-switcher" role="list" aria-label="Resource lenses"></div>
+    <label class="search-field" for="fleet-search">
+      <span id="search-label">Search the fleet</span>
+      <input id="fleet-search" type="search" autocomplete="off" spellcheck="false"
+        placeholder="payments status:CrashLoopBackOff">
+      <kbd>⌘ K</kbd>
+    </label>
+    <button id="query-mode" class="mode-switch" type="button" aria-pressed="false">Search mode</button>
+  </section>
+
+  <main class="workspace">
+    <aside class="context-rail" aria-labelledby="context-heading">
+      <div class="rail-heading">
+        <p class="eyebrow">Signal rail</p>
+        <h2 id="context-heading">Contexts</h2>
+      </div>
+      <div id="context-list" class="context-list"></div>
+      <p class="rail-note">Select one node to scope. Coverage gaps stay visible.</p>
+    </aside>
+
+    <section class="fleet-board" aria-labelledby="board-heading">
+      <div class="board-heading">
+        <div>
+          <p class="eyebrow" id="board-kicker">Aggregated lens</p>
+          <h2 id="board-heading">Pods</h2>
+        </div>
+        <p id="result-count" class="result-count">0 cached rows</p>
+      </div>
+      <div class="table-frame" tabindex="0" aria-label="Fleet resources">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Context</th>
+              <th scope="col">Namespace</th>
+              <th scope="col">Name</th>
+              <th scope="col">Ready</th>
+              <th scope="col">Status</th>
+              <th scope="col">Restarts</th>
+              <th scope="col">Observed</th>
+            </tr>
+          </thead>
+          <tbody id="fleet-rows"></tbody>
+        </table>
+        <div id="empty-state" class="empty-state" hidden>
+          <strong>No cached matches.</strong>
+          <span>Change the scope or query. Coverage below shows where Sith could look.</span>
+        </div>
+      </div>
+      <footer id="coverage-line" class="coverage-line">covered 0/0 clusters</footer>
+    </section>
+
+    <aside class="inspector" aria-labelledby="inspector-heading">
+      <div id="inspector-empty" class="inspector-empty">
+        <p class="eyebrow">Exact evidence</p>
+        <h2 id="inspector-heading">Select a fleet row</h2>
+        <p>Details and local operations always stay pinned to the row’s named context.</p>
+      </div>
+      <div id="inspector-content" hidden>
+        <p class="eyebrow" id="inspector-kind">Resource</p>
+        <h2 id="inspector-name"></h2>
+        <p id="inspector-address" class="resource-address"></p>
+        <dl id="inspector-facts" class="fact-grid"></dl>
+        <div class="operation-grid" id="operation-grid"></div>
+        <p class="identity-boundary">Direct local identity · not a governed fleet action</p>
+      </div>
+    </aside>
+  </main>
+
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+  <dialog id="action-dialog" class="action-dialog">
+    <header>
+      <div>
+        <p class="eyebrow" id="dialog-kicker">Local operation</p>
+        <h2 id="dialog-title">Resource</h2>
+      </div>
+      <button id="dialog-close" class="close-action" type="button" aria-label="Close dialog">Close</button>
+    </header>
+    <div id="dialog-body" class="dialog-body"></div>
+    <footer id="dialog-actions" class="dialog-actions"></footer>
+  </dialog>
+
+  <template id="loading-template">
+    <div class="loading-state"><span></span><p>Reading selected context…</p></div>
+  </template>
+</body>
+</html>

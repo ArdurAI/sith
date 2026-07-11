@@ -179,10 +179,10 @@ func TestClustersUsesInjectedSource(t *testing.T) {
 	}
 }
 
-func TestUIStub(t *testing.T) {
-	stdout, _, exitCode := runCLI(t, []string{"ui"}, fleet.StubSource{})
-	if exitCode != 0 || stdout != "sith ui: not yet implemented — see F11.3 (#34).\n" {
-		t.Fatalf("exit/stdout = %d/%q", exitCode, stdout)
+func TestUIRequiresLocalBackend(t *testing.T) {
+	stdout, stderr, exitCode := runCLI(t, []string{"ui", "--no-open"}, fleet.StubSource{})
+	if exitCode == 0 || stdout != "" || !strings.Contains(stderr, "requires a Kubernetes reader") {
+		t.Fatalf("exit/stdout/stderr = %d/%q/%q", exitCode, stdout, stderr)
 	}
 }
 

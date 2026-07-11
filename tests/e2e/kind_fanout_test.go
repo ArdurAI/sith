@@ -123,6 +123,7 @@ func TestKindFleetFanout(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "sith")
 	runCommand(ctx, t, root, "go", "build", "-trimpath", "-o", binary, "./cmd/sith")
 	exerciseLocalOperations(ctx, t, binary, kubeconfigPath, clusterNames)
+	exerciseWebUI(ctx, t, binary, kubeconfigPath, clusterNames)
 	command := exec.CommandContext(ctx, binary, "clusters", "--output", "json")
 	command.Env = append(os.Environ(), "KUBECONFIG="+kubeconfigPath, "XDG_CONFIG_HOME="+t.TempDir())
 	output, err := command.CombinedOutput()

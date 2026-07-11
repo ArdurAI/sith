@@ -5,8 +5,12 @@
 package e2e_test
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,7 +46,6 @@ func TestBinarySmoke(t *testing.T) {
 		{name: "version JSON", args: []string{"version", "-o", "json"}, validJSON: true},
 		{name: "clusters text", args: []string{"clusters"}, contains: "No clusters found (source: local-kubeconfig)."},
 		{name: "clusters JSON", args: []string{"clusters", "-o", "json"}, validJSON: true},
-		{name: "ui stub", args: []string{"ui"}, contains: "not yet implemented"},
 		{name: "hub stub", args: []string{"hub"}, contains: "phase-1+"},
 		{name: "no arguments", contains: "Usage:"},
 		{name: "help", args: []string{"--help"}, contains: "Usage:"},
@@ -65,6 +68,73 @@ func TestBinarySmoke(t *testing.T) {
 			}
 		})
 	}
+	smokeWebUI(ctx, t, binary, kubeconfig)
+}
+
+func smokeWebUI(ctx context.Context, t *testing.T, binary, kubeconfig string) {
+	t.Helper()
+	command := exec.CommandContext(ctx, binary, "ui", "--no-open", "--address", "127.0.0.1", "--port", "0")
+	command.Env = append(os.Environ(), "XDG_CONFIG_HOME="+t.TempDir(), "KUBECONFIG="+kubeconfig)
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatalf("web UI stdout: %v", err)
+	}
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	if err := command.Start(); err != nil {
+		t.Fatalf("start web UI: %v", err)
+	}
+	stopped := false
+	defer func() {
+		if !stopped {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	}()
+	lineReady := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		if scanner.Scan() {
+			lineReady <- scanner.Text()
+		}
+		close(lineReady)
+	}()
+	var line string
+	select {
+	case line = <-lineReady:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("web UI did not report startup: %s", stderr.String())
+	case <-ctx.Done():
+		t.Fatalf("web UI startup context: %v", ctx.Err())
+	}
+	const prefix = "sith ui listening on "
+	if !strings.HasPrefix(line, prefix) {
+		t.Fatalf("web UI startup line = %q", line)
+	}
+	origin := strings.TrimPrefix(line, prefix)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/", nil)
+	if err != nil {
+		t.Fatalf("construct web UI request: %v", err)
+	}
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatalf("request web UI: %v", err)
+	}
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	closeErr := response.Body.Close()
+	if readErr != nil || closeErr != nil {
+		t.Fatalf("read web UI index: %v / %v", readErr, closeErr)
+	}
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), "Sith — Fleet IDE") {
+		t.Fatalf("web UI status/body = %d/%q", response.StatusCode, body)
+	}
+	if err := command.Process.Signal(os.Interrupt); err != nil {
+		t.Fatalf("interrupt web UI: %v", err)
+	}
+	if err := command.Wait(); err != nil {
+		t.Fatalf("wait for web UI: %v\n%s", err, stderr.String())
+	}
+	stopped = true
 }
 
 func TestUnknownCommandFails(t *testing.T) {
