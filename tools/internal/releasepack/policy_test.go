@@ -88,6 +88,20 @@ func TestReleaseGuidePinsSPDXPredicateVersion(t *testing.T) {
 	}
 }
 
+func TestInstallDocsUseFormulaScopedHomebrewTrust(t *testing.T) {
+	t.Parallel()
+	root := repositoryRoot(t)
+	for _, name := range []string{"README.md", "docs/RELEASE.md"} {
+		contents := readRepositoryFile(t, root, name)
+		if !strings.Contains(contents, "brew trust --formula ArdurAI/tap/sith") {
+			t.Errorf("%s does not require formula-scoped Homebrew trust", name)
+		}
+		if strings.Contains(contents, "brew trust ArdurAI/tap") {
+			t.Errorf("%s broadens trust to the entire Homebrew tap", name)
+		}
+	}
+}
+
 func repositoryRoot(t *testing.T) string {
 	t.Helper()
 	_, filename, _, ok := runtime.Caller(0)

@@ -20,9 +20,14 @@ On macOS or Linux with Homebrew:
 
 ```bash
 brew tap ArdurAI/tap
+brew trust --formula ArdurAI/tap/sith
 brew install sith
 sith version
 ```
+
+Homebrew 6 requires explicit trust for third-party taps. The formula-scoped command keeps the trust
+boundary narrower than trusting every current and future formula in `ArdurAI/tap`. Older Homebrew
+versions that do not implement tap trust can omit that line.
 
 Release archives are also available for `darwin/amd64`, `darwin/arm64`, `linux/amd64`, and
 `linux/arm64`. Every archive has a checksum, an SPDX SBOM, a keyless Sigstore bundle, SLSA build

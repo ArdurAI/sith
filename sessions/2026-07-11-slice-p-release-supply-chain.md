@@ -23,6 +23,9 @@
 [A] Action: Two hosted unit/race runs exceeded the TUI microbenchmark's race-only allowance while repeated local runs and the dedicated non-race performance gate passed. Removed the invalid race-instrumented wall-clock assertion; the same test still enforces the unchanged 100 ms p95 budget through `make perf`.
 [T] Test: Race-targeted invocation skips only the latency microbenchmark; non-race `make perf` runs and passes the 100 ms acceptance test. All functional race coverage remains in the unit gate.
 [C] Checkpoint #4: isolate performance acceptance from race instrumentation — next: green remote gates and documentation promotion.
+[A] Action: Homebrew 6 consumer testing showed that third-party taps require explicit trust before install. Added the formula-scoped `brew trust --formula ArdurAI/tap/sith` command to Sith and tap install guidance and their regression/CI checks; explicitly rejected whole-tap trust and the unsafe trust-disable environment override.
+[T] Test: The exact tap → formula trust → `brew install sith` → `brew test` path passes against the public ArdurAI tap. The installed binary reports v0.1.0, commit 5e50168315787f864127349556e36c46d8872bd5, Go 1.26.5, and darwin/arm64; cleanup removes the local install and tap.
+[C] Checkpoint #5: Homebrew 6 formula-scoped trust UX — next: promote corrected guidance and close Phase-L release evidence.
 
 ---
 
