@@ -224,6 +224,10 @@ not expressible in the model. Adding *any* new verb is an ADR-level decision
 
 ## E0 — OCM substrate and falsification
 
+**Status:** ✅ **Passed** on the required hub-plus-two-spoke topology (2026-07-11). See the
+[executable evidence and runbook](experiments/M0-ocm-falsification.md). The bespoke transport
+scope is deleted; Phase 1 may proceed.
+
 **Goal:** prove, in a lab, that OCM's `cluster-proxy` + `managed-serviceaccount` deliver
 outbound-only, cross-network, reach-cluster-local-services connectivity with scoped tokens —
 so the whole "build a transport/agent" scope can be deleted.
@@ -3267,4 +3271,3 @@ a specific epic and is left open on purpose rather than assumed.
 15. **Local-mode telemetry stance (E11).** "No telemetry" is the trust promise. Do we want an
     explicit, off-by-default, clearly-disclosed opt-in for anonymous usage counts later, or a
     permanent hard no? The Lens backlash argues for a hard no; confirm.
-

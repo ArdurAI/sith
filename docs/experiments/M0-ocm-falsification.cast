@@ -1,0 +1,13 @@
+{"version":3,"term":{"cols":120,"rows":30},"timestamp":1783811841,"idle_time_limit":1.0,"command":"KIND_BIN=/Volumes/EXTENDED/MacData/tools/bin/kind hack/experiments/m0-ocm-falsification.sh verify","title":"Sith M0 OCM falsification: scoped spokes with active hub-ingress denial","env":{"SHELL":"/bin/zsh"}}
+[0.985, "o", "I0711 18:17:22.264609   55898 portforward.go:154] Forwarding to pod cluster-proxy-7b64c95896-db8kn\r\n"]
+[0.030, "o", "I0711 18:17:22.294711   55898 portforward.go:154] Forwarding to pod cluster-proxy-7b64c95896-db8kn\r\n"]
+[0.000, "o", "E0711 18:17:22.295254   55898 portforward.go:209] \"Unhandled Error\" err=\"error copying from remote stream to local connection: readfrom tcp 127.0.0.1:8090->127.0.0.1:59615: write tcp 127.0.0.1:8090->127.0.0.1:59615: write: broken pipe\" logger=\"UnhandledError\"\r\n"]
+[0.031, "o", "CLUSTER NAME    INSTALLED    AVAILABLE    PROBED HEALTH    LATENCY\r\nspoke-a         True         True         True             8.746291ms\r\nspoke-b         True         True         True             11.819125ms\r\n"]
+[0.463, "o", "[m0] spoke-a: scoped reach PASS; secrets/nodes denied\r\n"]
+[0.424, "o", "[m0] spoke-b: scoped reach PASS; secrets/nodes denied\r\n"]
+[1.490, "o", "[m0] spoke-a: active hub-to-node probe denied; hub-to-pod FORWARD deny present\r\n"]
+[1.519, "o", "[m0] spoke-b: active hub-to-node probe denied; hub-to-pod FORWARD deny present\r\n"]
+[0.105, "o", "[m0] spoke-a: outbound flows to hub:6443=8; hub-initiated flows=0\r\n"]
+[0.081, "o", "[m0] spoke-b: outbound flows to hub:6443=8; hub-initiated flows=0\r\n"]
+[0.000, "o", "[m0] M0_RESULT=PASS topology=hub+2-spokes identity=scoped-msa transport=outbound-only boundary=active-deny\r\n"]
+[0.001, "x", "0"]
