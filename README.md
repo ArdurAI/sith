@@ -1,10 +1,11 @@
 # Sith
 
-**Status: Slice 5 local privacy boundary.** The CLI and embedded browser IDE discover every context
-resolved by client-go, hydrate one local in-memory fleet cache through per-context watches, serve
-coverage-honest fleet search/correlation, and provide explicit-context logs, exec, port-forward,
-describe, and YAML view/edit. Local mode requires no account, emits no telemetry, and includes a
-fail-loud OS-keychain custody layer for the optional local token introduced in the next slice.
+**Status: Slice 6 local MCP read server.** The CLI, TUI, browser IDE, and optional MCP server
+discover every context resolved by client-go, hydrate one local in-memory fleet cache through
+per-context watches, serve coverage-honest fleet search/correlation, and provide explicit-context
+logs, exec, port-forward, describe, and YAML view/edit. Local mode requires no account, emits no
+telemetry, and can expose workspace-scoped, audited fleet reads to local agents without giving them
+cluster credentials.
 
 Sith is ArdurAI's single-binary, local-first Kubernetes fleet tool: **k9s for your whole fleet**.
 It is designed to aggregate every kubeconfig context without an account, telemetry, or cluster
@@ -32,6 +33,8 @@ make build
 ./bin/sith port-forward service/api --context kind-dev -n apps :http
 ./bin/sith edit configmap/api-settings --context kind-dev -n apps
 ./bin/sith ui                    # loopback-only embedded fleet IDE
+./bin/sith serve --mcp           # loopback-only MCP read server
+./bin/sith serve --mcp --require-token
 ```
 
 `sith clusters` follows standard client-go loading rules: set `KUBECONFIG` to an OS path-list or
@@ -41,9 +44,30 @@ use the default `~/.kube/config`. Exec-credential helpers run locally, exactly a
 Sith-owned persisted secrets use the host credential store under the fixed `io.ardur.sith`
 service: macOS Keychain, Windows Credential Manager, or freedesktop Secret Service. If that store
 is unavailable, the operation fails; there is no silent plaintext or encrypted-file fallback.
-The current slice establishes and tests this custody boundary without creating a stored secret.
+The optional local MCP capability is the first consumer: it uses a unique short-lived keychain
+entry and deletes it on clean server shutdown.
 The dependency can invoke the fixed macOS `/usr/bin/security` tool or the Linux session D-Bus only
 during an explicit keychain operation; it creates no account, hosted service, or cloud cost.
+
+`sith serve --mcp` exposes `fleet.inventory`, `fleet.health`, `fleet.correlate`, and
+`fleet.cve-search` over MCP Streamable HTTP. All four tools are cache-only and carry
+`readOnlyHint:true`; they use the exact workspace-required query path used by the CLI, TUI, and web
+API. The server binds loopback only, requires an exact Host/path, enables DNS-rebinding and
+cross-origin protections, and emits structured audit records without raw arguments, results, or
+tokens. Its output is a reviewed projection and excludes raw Kubernetes evidence payloads.
+
+Loopback trust is the account-free default. For machines where another same-user process is in the
+threat model, add `--require-token`. Sith generates a listener-bound capability, stores it only in
+the OS keychain, and prints a key reference—not the secret. Retrieve it explicitly for client
+configuration while the server is running:
+
+```bash
+sith mcp-token --key mcp/session/<key-printed-by-serve>
+```
+
+This is a narrow local capability, not a full OAuth flow; governed hub mode will use OAuth 2.1 and
+RFC 8707 audience-bound tokens. A crashed local server can leave an unusable session entry, but the
+entry cannot authorize a new server because listener sessions and key names are unique.
 
 Scripted `get` calls require either `--all-clusters` or one explicit `--context`. Text, JSON, YAML,
 wide, and source-abstract name outputs are supported. Search and correlation run over the same
@@ -96,17 +120,19 @@ make ci
 ```
 
 The gate also compiles the binary under a functional HTTP/HTTPS egress sentinel and exercises
-local commands plus the running web UI. A source boundary exact-allowlists production network,
-filesystem-write, and subprocess imports, confines client-go transport to the kubeconfig adapter,
-and rejects known telemetry SDKs and low-level network bypasses. Together these checks prove the
-reviewed paths; they are regression controls rather than an operating-system network sandbox.
+local commands plus the running web UI and MCP server with an official SDK client. A source
+boundary exact-allowlists production network, filesystem-write, and subprocess imports, confines
+client-go transport to the kubeconfig adapter, and rejects known telemetry SDKs and low-level
+network bypasses. Together these checks prove the reviewed paths; they are regression controls
+rather than an operating-system network sandbox.
 
 The real multi-cluster gate creates two temporary kind clusters with a digest-pinned node image,
-checks one additional unreachable context, and proves CLI plus web-IDE context isolation for
+checks one additional unreachable context, and proves CLI, web-IDE, and MCP context isolation for
 search/correlation, logs, exec, YAML/Secret handling, describe/events, preview-gated edit, and
-loopback TCP forwarding against a scratch fixture image. It removes both clusters afterward. The
-gate requires a running Docker engine and kind v0.32.0, and consumes additional CI time, disk,
-and memory:
+loopback TCP forwarding against a scratch fixture image. MCP additionally proves live inventory,
+unhealthy-workload correlation, and image/CVE search over the same two clusters. It removes both
+clusters afterward. The gate requires a running Docker engine and kind v0.32.0, and consumes
+additional CI time, disk, and memory:
 
 ```bash
 make e2e-kind
