@@ -71,7 +71,7 @@ Verify that the platform SBOM is cryptographically tied to the same archive:
 gh attestation verify "$archive" \
   --repo ArdurAI/sith \
   --signer-workflow ArdurAI/sith/.github/workflows/release.yml \
-  --predicate-type https://spdx.dev/Document \
+  --predicate-type https://spdx.dev/Document/v2.3 \
   --bundle "sith_${version}_${platform}.sbom.sigstore.json"
 ```
 
