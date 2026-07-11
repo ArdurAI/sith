@@ -44,6 +44,17 @@ func (r ResourceRef) String() string {
 // FactKind is the closed taxonomy of normalized fleet observations.
 type FactKind string
 
+// Lens identifies one orthogonal evidence dimension in the operational graph.
+type Lens string
+
+// Supported operational evidence lenses.
+const (
+	LensLive      Lens = "live"
+	LensDesired   Lens = "desired"
+	LensTimeline  Lens = "timeline"
+	LensTelemetry Lens = "telemetry"
+)
+
 // Supported fact kinds.
 const (
 	FactInventory FactKind = "inventory"
@@ -52,12 +63,15 @@ const (
 	FactDrift     FactKind = "drift"
 	FactCVE       FactKind = "cve"
 	FactCost      FactKind = "cost"
+	FactDesired   FactKind = "desired"
+	FactChange    FactKind = "change"
+	FactDerived   FactKind = "derived"
 )
 
 // Valid reports whether the fact kind belongs to the closed taxonomy.
 func (kind FactKind) Valid() bool {
 	switch kind {
-	case FactInventory, FactHealth, FactAlert, FactDrift, FactCVE, FactCost:
+	case FactInventory, FactHealth, FactAlert, FactDrift, FactCVE, FactCost, FactDesired, FactChange, FactDerived:
 		return true
 	default:
 		return false

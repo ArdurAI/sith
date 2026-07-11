@@ -27,6 +27,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
+	"github.com/ArdurAI/sith/internal/brain"
 	"github.com/ArdurAI/sith/internal/connector/kubeconfig"
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/fleetcache"
@@ -77,6 +78,7 @@ func TestKindFleetFanout(t *testing.T) {
 	fixtureImage := buildKindFixture(ctx, t, root, kindBinary, clusterNames, suffix)
 	seedKindResources(ctx, t, kubeconfigPath, clusterNames)
 	seedLocalOperationResources(ctx, t, kubeconfigPath, clusterNames, fixtureImage)
+	seedBrainResources(ctx, t, kubeconfigPath, clusterNames, fixtureImage)
 	adapter, err := kubeconfig.New(
 		kubeconfig.WithExplicitPath(kubeconfigPath),
 		kubeconfig.WithProbeTimeout(5*time.Second),
@@ -160,6 +162,24 @@ func TestKindFleetFanout(t *testing.T) {
 	assertCachedRecord(t, getSnapshot, "kind-"+clusterNames[1], "sith-worker-sample", false)
 	if !strings.Contains(getStderr, "warning: covered 2/3 clusters") {
 		t.Fatalf("get stderr = %q, want partial coverage warning", getStderr)
+	}
+
+	investigateOutput, investigateStderr, err := runSith(ctx, binary, kubeconfigPath, "investigate", "--output", "json")
+	if err != nil {
+		t.Fatalf("run sith investigate against kind: %v\nstdout=%s\nstderr=%s", err, investigateOutput, investigateStderr)
+	}
+	var investigation brain.Result
+	if err := json.Unmarshal(investigateOutput, &investigation); err != nil {
+		t.Fatalf("decode sith investigate output %q: %v", investigateOutput, err)
+	}
+	if len(investigation.Verdicts) < 3 || investigation.Verdicts[0].Rule != brain.RuleCrashLoop ||
+		!investigation.Verdicts[0].FleetWide || investigation.Verdicts[0].Status != brain.StatusDetected ||
+		!slices.Equal(investigation.Verdicts[0].Clusters, []string{"kind-" + clusterNames[0], "kind-" + clusterNames[1]}) ||
+		!slices.Contains(investigation.Verdicts[0].MissingLenses, fleet.LensTelemetry) {
+		t.Fatalf("investigation = %#v, want fleet-wide detected R3 with telemetry gap", investigation)
+	}
+	if !strings.Contains(investigateStderr, "warning: covered 2/3 clusters") {
+		t.Fatalf("investigate stderr = %q, want partial coverage warning", investigateStderr)
 	}
 
 	genericOutput, genericStderr, err := runSith(
@@ -501,6 +521,90 @@ func seedKindResources(ctx context.Context, t *testing.T, kubeconfigPath string,
 		if _, err := client.Resource(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}).
 			Namespace("default").Create(ctx, deployment, metav1.CreateOptions{}); err != nil {
 			t.Fatalf("create deployment in %s: %v", contextName, err)
+		}
+	}
+}
+
+func seedBrainResources(
+	ctx context.Context,
+	t *testing.T,
+	kubeconfigPath string,
+	clusters []string,
+	fixtureImage string,
+) {
+	t.Helper()
+	type target struct {
+		contextName string
+		pods        dynamic.ResourceInterface
+	}
+	targets := make([]target, 0, len(clusters))
+	for _, cluster := range clusters {
+		contextName := "kind-" + cluster
+		client := dynamicClientForContext(t, kubeconfigPath, contextName)
+		pod := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "v1",
+			"kind":       "Pod",
+			"metadata": map[string]any{
+				"name": "sith-brain-crash", "namespace": "default",
+				"labels": map[string]any{"app": "sith-brain-crash"},
+			},
+			"spec": map[string]any{
+				"restartPolicy": "Always",
+				"containers": []any{map[string]any{
+					"name": "app", "image": fixtureImage, "imagePullPolicy": "Never",
+					"args": []any{"fail"},
+				}},
+			}}}
+		pods := client.Resource(schema.GroupVersionResource{Version: "v1", Resource: "pods"}).Namespace("default")
+		if _, err := pods.Create(ctx, pod, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create brain fixture in %s: %v", contextName, err)
+		}
+		targets = append(targets, target{contextName: contextName, pods: pods})
+	}
+	for _, target := range targets {
+		waitForCrashingPod(ctx, t, target.pods, target.contextName, "sith-brain-crash")
+	}
+}
+
+func waitForCrashingPod(
+	ctx context.Context,
+	t *testing.T,
+	pods dynamic.ResourceInterface,
+	contextName, podName string,
+) {
+	t.Helper()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.NewTimer(45 * time.Second)
+	defer deadline.Stop()
+	lastStatus := "container status unavailable"
+	for {
+		pod, err := pods.Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("read brain fixture in %s: %v", contextName, err)
+		}
+		statuses, _, _ := unstructured.NestedSlice(pod.Object, "status", "containerStatuses")
+		if payload, err := json.Marshal(statuses); err == nil {
+			lastStatus = string(payload)
+		}
+		for _, raw := range statuses {
+			status, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			waiting, _, _ := unstructured.NestedString(status, "state", "waiting", "reason")
+			lastReason, _, _ := unstructured.NestedString(status, "lastState", "terminated", "reason")
+			restarts, _, _ := unstructured.NestedInt64(status, "restartCount")
+			if waiting == "CrashLoopBackOff" || lastReason == "Error" && restarts >= 2 {
+				return
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("wait for crashing pod in %s: %v", contextName, ctx.Err())
+		case <-deadline.C:
+			t.Fatalf("pod %s in %s did not enter a repeated failure; last container status: %s", podName, contextName, lastStatus)
+		case <-ticker.C:
 		}
 	}
 }

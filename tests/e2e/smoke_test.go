@@ -57,6 +57,7 @@ func TestBinarySmoke(t *testing.T) {
 		{name: "get no egress", args: []string{"get", "pods", "-A", "--all-clusters", "-o", "json"}, contains: "no kubeconfig contexts discovered", wantError: true},
 		{name: "search no egress", args: []string{"search", "status:Running", "-o", "json"}, contains: "no kubeconfig contexts discovered", wantError: true},
 		{name: "correlate no egress", args: []string{"correlate", "deploy/payments", "status!=Healthy", "-o", "json"}, contains: "no kubeconfig contexts discovered", wantError: true},
+		{name: "investigate no egress", args: []string{"investigate", "-o", "json"}, contains: "no kubeconfig contexts discovered", wantError: true},
 		{name: "hub stub", args: []string{"hub"}, contains: "phase-1+"},
 		{name: "no arguments", contains: "Usage:"},
 		{name: "help", args: []string{"--help"}, contains: "Usage:"},
