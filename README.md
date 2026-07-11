@@ -1,8 +1,9 @@
 # Sith
 
-**Status: Slice 3 local fleet client.** The CLI discovers every context resolved by client-go,
-hydrates a local in-memory fleet cache through per-context watches, serves coverage-honest fleet
-search, and provides explicit-context logs, exec, port-forward, describe, and YAML view/edit.
+**Status: Slice 4 local fleet client.** The CLI and embedded browser IDE discover every context
+resolved by client-go, hydrate one local in-memory fleet cache through per-context watches, serve
+coverage-honest fleet search/correlation, and provide explicit-context logs, exec, port-forward,
+describe, and YAML view/edit.
 
 Sith is ArdurAI's single-binary, local-first Kubernetes fleet tool: **k9s for your whole fleet**.
 It is designed to aggregate every kubeconfig context without an account, telemetry, or cluster
@@ -29,6 +30,7 @@ make build
 ./bin/sith exec api --context kind-dev -n apps -it -- /bin/sh
 ./bin/sith port-forward service/api --context kind-dev -n apps :http
 ./bin/sith edit configmap/api-settings --context kind-dev -n apps
+./bin/sith ui                    # loopback-only embedded fleet IDE
 ```
 
 `sith clusters` follows standard client-go loading rules: set `KUBECONFIG` to an OS path-list or
@@ -54,6 +56,15 @@ active one.
 The UI uses Bubble Tea v2.0.8 core only; tables and search remain local so no optional styling or
 component dependency enters the binary.
 
+`sith ui` serves a build-free frontend embedded in the same Go binary. It binds to
+`127.0.0.1` on an available port by default; `--address` accepts loopback addresses only and
+`--no-open` suppresses browser launch. The browser renders the same cache, lenses, ordering,
+coverage, search/correlation grammar, and per-resource operations as the CLI/TUI. Its local HTTP
+boundary requires an exact Host/Origin and a per-process capability header, uses a restrictive
+Content Security Policy, and loads no remote assets. YAML apply additionally requires a short-lived,
+single-use server preview token bound to the exact target and manifest; Secret edit requires an
+explicit reveal-and-edit confirmation before unredacted data enters the browser.
+
 Local resource operations always require or derive one explicit cached context and use that
 context's existing kubeconfig identity directly. They are deliberately separate from Sith's
 governed Intent/PEP action model. Secret YAML is redacted unless `--show-secrets` is explicit;
@@ -74,10 +85,11 @@ make ci
 ```
 
 The real multi-cluster gate creates two temporary kind clusters with a digest-pinned node image,
-checks one additional unreachable context, and proves context-isolated logs, exec, YAML/Secret
-handling, describe/events, dry-run edit, and loopback TCP forwarding against a scratch fixture
-image. It removes both clusters afterward. The gate requires a running Docker engine and kind
-v0.32.0, and consumes additional CI time, disk, and memory:
+checks one additional unreachable context, and proves CLI plus web-IDE context isolation for
+search/correlation, logs, exec, YAML/Secret handling, describe/events, preview-gated edit, and
+loopback TCP forwarding against a scratch fixture image. It removes both clusters afterward. The
+gate requires a running Docker engine and kind v0.32.0, and consumes additional CI time, disk,
+and memory:
 
 ```bash
 make e2e-kind
