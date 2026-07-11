@@ -1,0 +1,11 @@
+{"version":3,"term":{"cols":120,"rows":30},"timestamp":1783807615,"idle_time_limit":1.0,"command":"KIND_BIN=/Volumes/EXTENDED/MacData/tools/bin/kind hack/experiments/m0-ocm-falsification.sh verify","title":"Sith M0 OCM falsification: two scoped spokes over outbound-only tunnels","env":{"SHELL":"/bin/zsh"}}
+[1.814, "o", "I0711 17:06:57.698957    8866 portforward.go:154] Forwarding to pod cluster-proxy-7b64c95896-8rczc\r\n"]
+[0.040, "o", "I0711 17:06:57.739109    8866 portforward.go:154] Forwarding to pod cluster-proxy-7b64c95896-8rczc\r\n"]
+[0.031, "o", "CLUSTER NAME    INSTALLED    AVAILABLE    PROBED HEALTH    LATENCY\r\nspoke-a         True         True         "]
+[0.000, "o", "True             16.163042ms\r\nspoke-b         True         True         True             11.216292ms\r\n"]
+[0.383, "o", "[m0] spoke-a: scoped reach PASS; secrets/nodes denied\r\n"]
+[0.402, "o", "[m0] spoke-b: scoped reach PASS; secrets/nodes denied\r\n"]
+[0.102, "o", "[m0] spoke-a: outbound flows to hub:6443=7; hub-initiated flows=0\r\n"]
+[0.086, "o", "[m0] spoke-b: outbound flows to hub:6443=8; hub-initiated flows=0\r\n"]
+[0.000, "o", "[m0] M0_RESULT=PASS topology=hub+2-spokes identity=scoped-msa transport=outbound-only\r\n"]
+[0.000, "x", "0"]
