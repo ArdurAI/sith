@@ -21,6 +21,7 @@ import (
 	"github.com/ArdurAI/sith/internal/fleetcache"
 	"github.com/ArdurAI/sith/internal/fleetrender"
 	"github.com/ArdurAI/sith/internal/hydrate"
+	"github.com/ArdurAI/sith/internal/localops"
 )
 
 type inputMode uint8
@@ -30,6 +31,7 @@ const (
 	modeFilter
 	modeCommand
 	modeSearch
+	modePortForward
 )
 
 // Syncer is the narrow background-I/O seam consumed by the TUI runtime.
@@ -59,6 +61,10 @@ type Model struct {
 	version   uint64
 	lastError string
 	now       func() time.Time
+	local     localops.Client
+	panel     *localPanel
+	pending   *localops.Target
+	forwards  []*forwardEntry
 }
 
 type syncDoneMsg struct{ err error }
@@ -67,8 +73,66 @@ type cacheChangedMsg struct {
 	err     error
 }
 
+type localPanel struct {
+	title   string
+	content string
+	loading bool
+	offset  int
+	stream  io.ReadCloser
+}
+
+type forwardEntry struct {
+	target  localops.Target
+	ports   []localops.ForwardedPort
+	session localops.ForwardSession
+	err     error
+	done    bool
+}
+
+type localTextMsg struct {
+	title   string
+	content string
+	err     error
+}
+
+type localStreamMsg struct {
+	stream io.ReadCloser
+	err    error
+}
+
+type localChunkMsg struct {
+	stream io.ReadCloser
+	chunk  string
+	err    error
+}
+
+type localExecDoneMsg struct{ err error }
+type localEditDoneMsg struct{ err error }
+type localForwardMsg struct {
+	entry *forwardEntry
+	err   error
+}
+type localForwardDoneMsg struct {
+	entry *forwardEntry
+	err   error
+}
+
 // NewModel validates and constructs the cold first-paint model.
 func NewModel(ctx context.Context, store *fleetcache.Store, syncer Syncer) (*Model, error) {
+	return newModel(ctx, store, syncer, nil)
+}
+
+// NewModelWithLocal adds explicit-context per-resource operations to the cache-first model.
+func NewModelWithLocal(
+	ctx context.Context,
+	store *fleetcache.Store,
+	syncer Syncer,
+	local localops.Client,
+) (*Model, error) {
+	return newModel(ctx, store, syncer, local)
+}
+
+func newModel(ctx context.Context, store *fleetcache.Store, syncer Syncer, local localops.Client) (*Model, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("construct TUI model: context is nil")
 	}
@@ -86,12 +150,25 @@ func NewModel(ctx context.Context, store *fleetcache.Store, syncer Syncer) (*Mod
 		width:  120,
 		height: 30,
 		now:    time.Now,
+		local:  local,
 	}, nil
 }
 
 // Run starts the interactive alternate-screen fleet view.
 func Run(ctx context.Context, store *fleetcache.Store, syncer Syncer, input io.Reader, output io.Writer) error {
-	model, err := NewModel(ctx, store, syncer)
+	return RunWithLocal(ctx, store, syncer, nil, input, output)
+}
+
+// RunWithLocal starts the fleet view with local per-resource operations enabled.
+func RunWithLocal(
+	ctx context.Context,
+	store *fleetcache.Store,
+	syncer Syncer,
+	local localops.Client,
+	input io.Reader,
+	output io.Writer,
+) error {
+	model, err := NewModelWithLocal(ctx, store, syncer, local)
 	if err != nil {
 		return err
 	}
@@ -125,6 +202,64 @@ func (model *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		} else if typed.err == nil {
 			model.lastError = ""
 		}
+	case localTextMsg:
+		if model.panel != nil {
+			model.panel.loading = false
+			model.panel.title = typed.title
+			model.panel.content = typed.content
+		}
+		model.setLocalError(typed.err)
+	case localStreamMsg:
+		if typed.err != nil {
+			model.setLocalError(typed.err)
+			if model.panel != nil {
+				model.panel.loading = false
+			}
+			break
+		}
+		if model.panel == nil {
+			_ = typed.stream.Close()
+			break
+		}
+		model.panel.loading, model.panel.stream = false, typed.stream
+		return model, readLocalStream(typed.stream)
+	case localChunkMsg:
+		if model.panel == nil || model.panel.stream != typed.stream {
+			_ = typed.stream.Close()
+			break
+		}
+		model.appendPanel(typed.chunk)
+		if typed.err != nil {
+			_ = typed.stream.Close()
+			model.panel.stream = nil
+			if !errors.Is(typed.err, io.EOF) {
+				model.setLocalError(typed.err)
+			}
+			break
+		}
+		return model, readLocalStream(typed.stream)
+	case localExecDoneMsg:
+		model.panel = &localPanel{title: "EXEC", content: "remote command ended; returned to the same fleet row\n"}
+		model.setLocalError(typed.err)
+	case localEditDoneMsg:
+		model.panel = &localPanel{title: "YAML EDIT", content: "edit session ended; returned to the same fleet row\n"}
+		model.setLocalError(typed.err)
+	case localForwardMsg:
+		if typed.err != nil {
+			model.setLocalError(typed.err)
+			if model.panel != nil {
+				model.panel.loading = false
+			}
+			break
+		}
+		model.forwards = append(model.forwards, typed.entry)
+		model.panel = &localPanel{title: "PORT-FORWARDS", content: model.forwardPanel()}
+		return model, waitForward(typed.entry)
+	case localForwardDoneMsg:
+		typed.entry.err, typed.entry.done = typed.err, true
+		if model.panel != nil && model.panel.title == "PORT-FORWARDS" {
+			model.panel.content = model.forwardPanel()
+		}
 	case tea.KeyPressMsg:
 		return model.handleKey(typed)
 	}
@@ -133,6 +268,9 @@ func (model *Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 // View renders an alternate-screen frame from immutable cache snapshots only.
 func (model *Model) View() tea.View {
+	if model.panel != nil {
+		return model.panelView()
+	}
 	snapshot := model.snapshot()
 	allSnapshot := model.store.Query(fleetcache.Query{Kind: model.currentLens(), MetadataOnly: true})
 	allScopes := allSnapshot.Scopes
@@ -170,7 +308,7 @@ func (model *Model) View() tea.View {
 	}
 	content.WriteString("\n")
 	content.WriteString(fleetrender.CoverageLine(snapshot.Coverage))
-	content.WriteString("   [c]overage  [/]filter  [:]cmd  [ctrl-k]search  [ctrl-r]refresh  [q]quit\n")
+	content.WriteString("   [c]overage [d]escribe [y]aml [l]ogs [s]hell [f]orward [e]dit [:]cmd [q]quit\n")
 	if prompt := model.prompt(); prompt != "" {
 		content.WriteString(prompt)
 		content.WriteString("\n")
@@ -192,11 +330,15 @@ func (model *Model) View() tea.View {
 
 func (model *Model) handleKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := message.String()
+	if model.panel != nil {
+		return model.handlePanelKey(key)
+	}
 	if model.mode != modeNormal {
 		return model.handleInput(message)
 	}
 	switch key {
 	case "q", "ctrl+c":
+		model.closeLocalSessions()
 		return model, tea.Quit
 	case ":":
 		model.mode, model.input = modeCommand, ""
@@ -208,6 +350,18 @@ func (model *Model) handleKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		model.coverage = !model.coverage
 	case "ctrl+r":
 		return model, model.syncCommand()
+	case "d":
+		return model.startLocalText("DESCRIBE", model.describeCommand)
+	case "y":
+		return model.startLocalText("YAML", model.yamlCommand)
+	case "l":
+		return model.startLogs()
+	case "s":
+		return model.startExec()
+	case "e":
+		return model.startEdit()
+	case "f":
+		return model.startForwardPrompt()
 	case "up", "k":
 		model.cursor = max(0, model.cursor-1)
 	case "down", "j":
@@ -234,6 +388,9 @@ func (model *Model) handleInput(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if model.mode == modeCommand {
 			return model.applyCommand()
 		}
+		if model.mode == modePortForward {
+			return model.startForward()
+		}
 		model.filter, model.filterAll = model.input, model.inputAll
 		model.mode, model.input, model.inputAll = modeNormal, "", false
 		return model, nil
@@ -258,6 +415,7 @@ func (model *Model) applyCommand() (tea.Model, tea.Cmd) {
 	}
 	switch strings.ToLower(fields[0]) {
 	case "q", "quit":
+		model.closeLocalSessions()
 		return model, tea.Quit
 	case "pause":
 		model.store.SetPaused(true)
@@ -272,6 +430,8 @@ func (model *Model) applyCommand() (tea.Model, tea.Cmd) {
 		} else {
 			model.scopes = []string{fields[1]}
 		}
+	case "pf":
+		model.panel = &localPanel{title: "PORT-FORWARDS", content: model.forwardPanel()}
 	default:
 		if len(fields) != 1 {
 			model.lastError = "unknown command: " + fields[0]
@@ -435,6 +595,8 @@ func (model *Model) prompt() string {
 		return ":" + model.input
 	case modeSearch:
 		return "search> " + model.input
+	case modePortForward:
+		return "port-forward> " + model.input
 	default:
 		return ""
 	}
