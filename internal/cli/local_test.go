@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ArdurAI/sith/internal/connector"
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/localops"
 )
@@ -129,6 +130,24 @@ func TestEditSurfacesServerDryRunRejectionWithoutApply(t *testing.T) {
 	}
 }
 
+func TestUIRefusesExternalBindAndStartsOnLoopback(t *testing.T) {
+	reader := &cacheReader{}
+	client := &fakeLocalClient{}
+	_, stderr, exitCode := runUICLI(context.Background(), t, []string{
+		"ui", "--address", "0.0.0.0", "--no-open",
+	}, reader, client)
+	if exitCode == 0 || !strings.Contains(stderr, "not loopback") {
+		t.Fatalf("external bind exit/stderr = %d/%q", exitCode, stderr)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	stdout, stderr, exitCode := runUICLI(ctx, t, []string{"ui", "--port", "0", "--no-open"}, reader, client)
+	if exitCode != 0 || stderr != "" || !strings.Contains(stdout, "sith ui listening on http://127.0.0.1:") {
+		t.Fatalf("loopback UI exit/stdout/stderr = %d/%q/%q", exitCode, stdout, stderr)
+	}
+}
+
 func runLocalCLI(
 	t *testing.T,
 	args []string,
@@ -142,6 +161,22 @@ func runLocalCLI(
 	var stdoutBuffer, stderrBuffer bytes.Buffer
 	exitCode = executeBackend(args, backend{
 		source: fleet.StubSource{}, local: client, tuiInput: strings.NewReader(input),
+	}, &stdoutBuffer, &stderrBuffer)
+	return stdoutBuffer.String(), stderrBuffer.String(), exitCode
+}
+
+func runUICLI(
+	ctx context.Context,
+	t *testing.T,
+	args []string,
+	reader connector.Reader,
+	client localops.Client,
+) (stdout, stderr string, exitCode int) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var stdoutBuffer, stderrBuffer bytes.Buffer
+	exitCode = executeBackendContext(ctx, args, backend{
+		source: connector.AsSource(reader), reader: reader, local: client, tuiInput: strings.NewReader(""),
 	}, &stdoutBuffer, &stderrBuffer)
 	return stdoutBuffer.String(), stderrBuffer.String(), exitCode
 }
