@@ -1,9 +1,10 @@
 # Sith
 
-**Status: Slice 4 local fleet client.** The CLI and embedded browser IDE discover every context
+**Status: Slice 5 local privacy boundary.** The CLI and embedded browser IDE discover every context
 resolved by client-go, hydrate one local in-memory fleet cache through per-context watches, serve
 coverage-honest fleet search/correlation, and provide explicit-context logs, exec, port-forward,
-describe, and YAML view/edit.
+describe, and YAML view/edit. Local mode requires no account, emits no telemetry, and includes a
+fail-loud OS-keychain custody layer for the optional local token introduced in the next slice.
 
 Sith is ArdurAI's single-binary, local-first Kubernetes fleet tool: **k9s for your whole fleet**.
 It is designed to aggregate every kubeconfig context without an account, telemetry, or cluster
@@ -37,6 +38,13 @@ make build
 use the default `~/.kube/config`. Exec-credential helpers run locally, exactly as they do for
 `kubectl`; Sith does not copy kubeconfigs or credentials elsewhere.
 
+Sith-owned persisted secrets use the host credential store under the fixed `io.ardur.sith`
+service: macOS Keychain, Windows Credential Manager, or freedesktop Secret Service. If that store
+is unavailable, the operation fails; there is no silent plaintext or encrypted-file fallback.
+The current slice establishes and tests this custody boundary without creating a stored secret.
+The dependency can invoke the fixed macOS `/usr/bin/security` tool or the Linux session D-Bus only
+during an explicit keychain operation; it creates no account, hosted service, or cloud cost.
+
 Scripted `get` calls require either `--all-clusters` or one explicit `--context`. Text, JSON, YAML,
 wide, and source-abstract name outputs are supported. Search and correlation run over the same
 normalized in-memory records; partial results name stale/unreachable contexts. The cache is not
@@ -68,10 +76,13 @@ explicit reveal-and-edit confirmation before unredacted data enters the browser.
 Local resource operations always require or derive one explicit cached context and use that
 context's existing kubeconfig identity directly. They are deliberately separate from Sith's
 governed Intent/PEP action model. Secret YAML is redacted unless `--show-secrets` is explicit;
-edit files use mode `0600`, are capped at 10 MiB, and are applied only after strict server dry-run
-and a displayed diff. Port-forward accepts loopback addresses only (`localhost`, `127.0.0.1`, or
-`::1`). Streaming can hold API connections for its lifetime, but it creates no cloud resources or
-persistent local cache.
+interactive CLI/TUI Secret edit is refused because it would create a plaintext temporary file.
+An explicit user-managed `--file` remains available for secured automation, and browser Secret
+editing stays in memory behind its explicit disclosure action. Non-Secret edit files use mode
+`0600`, are capped at 10 MiB, and are applied only after strict server dry-run and a displayed
+diff. Port-forward accepts loopback addresses only (`localhost`, `127.0.0.1`, or `::1`). Streaming
+can hold API connections for its lifetime, but it creates no cloud resources or persistent local
+cache.
 
 Each active lens holds one Kubernetes watch per reachable context after its initial list. A
 two-minute safety rediscovery recovers contexts that were offline at launch; it is not the primary
@@ -83,6 +94,12 @@ Run the full local quality gate with golangci-lint v2.12.2 and govulncheck v1.6.
 ```bash
 make ci
 ```
+
+The gate also compiles the binary under a functional HTTP/HTTPS egress sentinel and exercises
+local commands plus the running web UI. A source boundary exact-allowlists production network,
+filesystem-write, and subprocess imports, confines client-go transport to the kubeconfig adapter,
+and rejects known telemetry SDKs and low-level network bypasses. Together these checks prove the
+reviewed paths; they are regression controls rather than an operating-system network sandbox.
 
 The real multi-cluster gate creates two temporary kind clusters with a digest-pinned node image,
 checks one additional unreachable context, and proves CLI plus web-IDE context isolation for
