@@ -8,6 +8,7 @@ BIN_DIR  := bin
 GOLANGCI ?= golangci-lint
 GOVULNCHECK ?= govulncheck
 KIND     ?= kind
+GORELEASER ?= goreleaser
 
 KIND_NODE_IMAGE ?= kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
 
@@ -20,7 +21,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/buildinfo.Commit=$(COMMIT) \
 	-X $(PKG)/internal/buildinfo.Date=$(DATE)
 
-.PHONY: all build test perf e2e e2e-kind lint vuln fmt fmt-check vet tidy clean run ci help
+.PHONY: all build test perf e2e e2e-kind lint vuln fmt fmt-check vet tidy clean run ci release-check help
 
 all: build
 
@@ -68,6 +69,22 @@ run: build ## Build then run sith version
 	$(BIN_DIR)/$(BINARY) version
 
 ci: fmt-check vet lint vuln test perf e2e build ## Run the full CI gate locally
+
+release-check: ## Build and verify the reproducible multi-platform release snapshot twice
+	@command -v "$(GORELEASER)" >/dev/null || { echo "goreleaser is required" >&2; exit 1; }
+	@command -v syft >/dev/null || { echo "syft is required" >&2; exit 1; }
+	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+		go mod download; \
+		go mod verify; \
+		"$(GORELEASER)" check .goreleaser.yaml; \
+		"$(GORELEASER)" release --snapshot --clean --skip=sign; \
+		go run ./tools/releasecheck verify --dist dist; \
+		go run ./tools/releasecheck digests --dist dist > "$$tmp/first.sha256"; \
+		"$(GORELEASER)" release --snapshot --clean --skip=sign; \
+		go run ./tools/releasecheck verify --dist dist; \
+		go run ./tools/releasecheck formula --dist dist --output dist/sith.rb; \
+		go run ./tools/releasecheck digests --dist dist > "$$tmp/second.sha256"; \
+		diff -u "$$tmp/first.sha256" "$$tmp/second.sha256"
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \

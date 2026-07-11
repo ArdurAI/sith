@@ -1,0 +1,23 @@
+# Session — 2026-07-11 — slice-p-release-supply-chain
+
+**Builder:** Gnani Rahul · **Model/effort:** GPT-5, max · **Branch:** gnanirahulnutakki/feat/release-supply-chain
+**Slice(s):** Slice P / E9 #27 Phase-L subset · **Status:** ready-for-PR
+
+---
+
+[G] Goal: Ship the Phase-L release gate from E9 #27: reproducible multi-platform archives, attached SPDX SBOMs, keyless Sigstore signatures, SLSA L2 provenance, release metadata, and a working Homebrew install path.
+[S] Scope: GoReleaser configuration, release and verification workflows, release documentation, deterministic Homebrew packaging, and supply-chain tests. Hub Helm charts, OCM addon packaging, deployment profiles, and air-gap installation remain later E9 slices; issue #27 stays open.
+[A] Action: Re-read the authoritative build sequence, conventions, roadmap, and live issue #27. Verified that the repository has no tags, releases, release workflow, SBOM/signing/provenance configuration, or existing ArdurAI Homebrew tap. Selected pinned GoReleaser, Syft, Cosign, and GitHub artifact-attestation tooling from their primary release sources.
+[T] Test: Baseline branch is clean at origin/dev commit 7a9433904956c39c7c2c56feaa220befa64546da; prior Slice 7 CI, release, two-cluster kind, and GitHub security checks are green.
+[A] Action: Added GoReleaser 2.17.0 configuration for CGO-free darwin/linux amd64/arm64 builds with a pinned Go 1.26.5 toolchain, verified offline module cache, readonly modules, path/VCS trimming, commit-derived metadata and timestamps, and normalized archive ownership and modes. Syft 1.46.0 emits one SPDX 2.3 SBOM per archive; Cosign 3.0.6 keylessly signs every archive, SBOM, checksum manifest, and generated Homebrew formula.
+[T] Test: The release snapshot gate validates checksums, exact archive contents, native binary version/commit/date/platform, non-empty Syft SPDX identity, and formula target/hash completeness. Two full pinned-tool builds produced byte-identical archive SHA-256 manifests with `GOPROXY=off`; Ruby syntax, Homebrew strict audit, and Homebrew style checks passed for the generated formula.
+[A] Action: Added a tag-only release workflow pinned entirely to immutable action SHAs. It accepts only GitHub-verified signed annotated stable-semver tags reachable from `main`, publishes to a replaceable draft, creates SLSA provenance plus four archive-specific SPDX attestations, attaches all bundles, and makes the release public only after every trust artifact exists. Added static fail-closed workflow-policy tests and Dependabot coverage for Go modules and GitHub Actions.
+[T] Test: GoReleaser configuration validation and actionlint 1.7.12 are green. The privacy boundary initially rejected process/filesystem-capable release code under production `internal/`; moving it under `tools/internal/` restored the invariant and targeted privacy/race/lint tests pass.
+[A] Action: Added ADR 0009, the release/verification runbook, and install documentation. Created `ArdurAI/homebrew-tap` with a signed seed commit (`f7084518e9c6268f7266206ea17020754cb4fc67`), scheduled/manual formula sync that verifies both keyless identities and signed checksum bindings, and macOS Homebrew audit/install/test CI. The tap uses only its own scoped token; Sith has no cross-repository credential.
+[T] Test: Full `make ci` is green with zero lint findings and no govulncheck vulnerabilities. The digest-pinned real two-cluster kind gate passed under `-race` in 90.660s; Docker cleanup reclaimed 913.1 MB. Homebrew tap CI run 29167709347 and no-release sync smoke run 29167717172 both passed. GitHub Dependabot, code-scanning, and secret-scanning queues are each zero open.
+[C] Checkpoint #1: signed Homebrew tap bootstrap `f7084518e9c6268f7266206ea17020754cb4fc67` — next: publish the Sith release pipeline.
+[C] Checkpoint #2: reproducible signed release and verification pipeline — next: PR, green remote gates, dev/main release integration, first signed tag, and real Homebrew install proof.
+
+---
+
+**Session close:** local and tap gates green; ready for PR · **Open questions touched:** none

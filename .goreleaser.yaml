@@ -1,0 +1,135 @@
+version: 2
+
+project_name: sith
+
+builds:
+  - id: sith
+    main: ./cmd/sith
+    binary: sith
+    env:
+      - CGO_ENABLED=0
+      - GOPROXY=off
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+      - -buildvcs=false
+      - -mod=readonly
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/ArdurAI/sith/internal/buildinfo.Version={{ .Version }}
+        -X github.com/ArdurAI/sith/internal/buildinfo.Commit={{ .Commit }}
+        -X github.com/ArdurAI/sith/internal/buildinfo.Date={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: sith
+    ids:
+      - sith
+    formats:
+      - tar.gz
+    name_template: "sith_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    builds_info:
+      owner: root
+      group: root
+      mode: 0755
+      mtime: "{{ .CommitDate }}"
+    files:
+      - src: LICENSE
+        info:
+          owner: root
+          group: root
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
+      - src: README.md
+        info:
+          owner: root
+          group: root
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
+
+sboms:
+  - id: archives
+    artifacts: archive
+    ids:
+      - sith
+    documents:
+      - "{{ .ArtifactName }}.spdx.json"
+    cmd: syft
+    args:
+      - "${artifact}"
+      - --output
+      - "spdx-json=${document}"
+      - --enrich
+      - all
+    disable: false
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+signs:
+  - id: keyless-archives
+    cmd: cosign
+    artifacts: archive
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - --yes
+    output: true
+  - id: keyless-sboms
+    cmd: cosign
+    artifacts: sbom
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - --yes
+    output: true
+  - id: keyless-checksum
+    cmd: cosign
+    artifacts: checksum
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - --yes
+    output: true
+
+release:
+  github:
+    owner: ArdurAI
+    name: sith
+  draft: true
+  replace_existing_draft: true
+  replace_existing_artifacts: true
+  prerelease: auto
+  make_latest: true
+  mode: replace
+  header: |
+    Sith is a local-first, account-free Kubernetes fleet tool from ArdurAI.
+
+    Every archive in this release is reproducibly built from the tagged commit and is accompanied
+    by an SPDX SBOM, a keyless Sigstore bundle, and GitHub-hosted SLSA provenance.
+
+  footer: |
+    Verify checksums, signatures, and provenance before installation; see `docs/RELEASE.md`.
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "Merge pull request"

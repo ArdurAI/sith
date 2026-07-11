@@ -14,14 +14,16 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: "1.26.x"
+  GO_VERSION: "1.26.5"
   GOLANGCI_VERSION: "v2.12.2"
   GOVULNCHECK_VERSION: "v1.6.0"
+  GORELEASER_VERSION: "v2.17.0"
+  SYFT_VERSION: "v1.46.0"
 
 jobs:
   build-test-lint:
     name: build · vet · gofmt · lint · test · e2e
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
         with:
@@ -30,7 +32,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
-          check-latest: true
+          check-latest: false
           cache: true
           cache-dependency-path: go.sum
 
@@ -62,7 +64,7 @@ jobs:
 
       - name: Vulnerability scan
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
           govulncheck ./...
 
       - name: Build
@@ -82,3 +84,38 @@ jobs:
 
       - name: Real two-cluster fan-out test
         run: make e2e-kind KIND="$(go env GOPATH)/bin/kind"
+
+  release-snapshot:
+    name: reproducible archives · SPDX SBOM · Homebrew formula
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Install pinned Syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          syft-version: ${{ env.SYFT_VERSION }}
+
+      - name: Install pinned GoReleaser
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: ${{ env.GORELEASER_VERSION }}
+          install-only: true
+
+      - name: Download and verify modules
+        run: |
+          go mod download
+          go mod verify
+
+      - name: Verify release snapshot and rebuild reproducibility
+        run: make release-check
