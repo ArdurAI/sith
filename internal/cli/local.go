@@ -404,6 +404,11 @@ func editedManifest(
 	if filename != "" {
 		return readBoundedFile(filename)
 	}
+	if strings.EqualFold(target.Kind, "Secret") || strings.EqualFold(target.Kind, "Secrets") {
+		return nil, fmt.Errorf(
+			"interactive Secret edit is refused because it would persist plaintext in a temporary file; provide --file from a secure workflow",
+		)
+	}
 	view, err := client.View(command.Context(), target, true)
 	if err != nil {
 		return nil, err
