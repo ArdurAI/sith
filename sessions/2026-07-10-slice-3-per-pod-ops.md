@@ -29,7 +29,21 @@ localhost/127.0.0.1/::1.
 sequence, explicit-context-only bootstrap, URL-segment rejection, log/container options, exact
 exec argv/query/stream wiring, loopback enforcement, service pod/port selection, session cleanup,
 and the cross-package governed-path boundary. Focused golangci-lint reports zero issues.
-[C] Checkpoint #1: this commit — direct local-operation engine and security boundary; next: CLI/TUI surfaces.
+[C] Checkpoint #1: c64e8bb — direct local-operation engine and security boundary; next: CLI/TUI surfaces.
+[A] Action: Added explicit-context CLI commands for describe, raw/masked YAML, logs, exec, service/
+pod port-forward, and YAML edit. Exec requires a `--` argv boundary and never invokes a shell;
+SIGINT owns cancellation so terminals and tunnels restore cleanly.
+[A] Action: The CLI/TUI edit workflow uses a 0600, 10 MiB-bounded temporary file, invokes the
+user's editor directly, shows the API server's strict dry-run diff, prompts unless `--yes` is
+explicit, and revalidates via dry-run immediately before the actual update.
+[A] Action: Added cache-row TUI actions `d/y/l/s/f/e`, scrollable detail/log panels, terminal
+release/restore for exec and edit, resize propagation, exact scope/cursor restoration, and
+persistent loopback port-forwards managed through `:pf` and `x`.
+[T] Test: CLI tests prove pre-client explicit-context rejection, exact target/log/exec argument
+mapping, server rejection passthrough, and preview-before-apply order. TUI tests prove action I/O
+is deferred from navigation, logs/YAML return to the same row, port-forward persistence/closure,
+and preview-before-apply edit. Race tests and the full linter pass.
+[C] Checkpoint #2: this commit — scriptable and interactive local-operation surfaces; next: real two-cluster proof and closure.
 
 ---
 
