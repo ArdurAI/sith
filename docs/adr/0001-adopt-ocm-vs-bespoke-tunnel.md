@@ -1,6 +1,7 @@
 # ADR-0001 — Adopt OCM as the substrate (vs. a bespoke tunnel/agent)
 
-**Status:** **Accepted** (Milestone-0 falsification **passed** 2026-07-08) · **Date:** 2026-07-08
+**Status:** **Accepted** (Milestone-0 falsification **passed** 2026-07-08; required
+two-spoke topology revalidated 2026-07-11) · **Date:** 2026-07-08
 
 ## Context
 
@@ -62,6 +63,11 @@ The deciding experiment, its steps, exit criteria, and demo are specified in
 - **OCM is Sandbox, not Graduated** — some maturity risk. Mitigation: the addons we depend
   on are precisely the well-exercised ones; abstract the transport behind a thin internal
   interface so an alternative (remotedialer/Konnectivity direct) remains possible.
+- **The pinned 0.10.0 addon charts have packaging defects.** `cluster-proxy` templates a
+  field absent from its bundled CRD, and both addon charts claim the same Helm-owned
+  `ManagedClusterSetBinding/global` when installed into one namespace. Mitigation: the
+  executable M0 runbook verifies exact chart hashes, applies the narrow CRD compatibility
+  patch, and isolates each release's namespace ownership. Any addon bump remains ADR-gated.
 
 ## Alternatives considered
 
@@ -75,25 +81,26 @@ The deciding experiment, its steps, exit criteria, and demo are specified in
 
 ## Falsification evidence (Milestone-0)
 
-- **Result: ✅ PASS.** A central OCM hub reached an in-cluster service (`nginx.sith-demo`)
-  on a managed spoke using a **scoped `managed-serviceaccount` token** — over the
-  `cluster-proxy` reverse (konnectivity) tunnel, with the spoke connecting **outbound-only**
-  and the hub holding **no admin kubeconfig** for the spoke. The scoping is real, not
-  incidental: the same token was **denied** cluster-wide `secrets` and `nodes` (403), while
-  the in-scope service/pod reads succeeded — reach and privilege are decoupled. Connection
-  tracking on the spoke showed **every** hub-directed flow originating on the spoke to the
-  hub kube-apiserver, and **zero** hub→spoke-initiated flows.
-- **Setup time: ~15 minutes** of hands-on execution (kind clusters → registration → addons →
-  passing reach-test → outbound-only verification), far inside the `≤ ~1 day` exit criterion.
-- **Environment:** two single-node `kind` clusters (k8s v1.34.0); `clusteradm` v1.3.1 / OCM
-  core v1.3.1; `cluster-proxy` **0.10.0** and `managed-serviceaccount` **0.10.0** (the pinned
-  versions above, confirmed latest as of 2026-07-08).
+- **Result: ✅ PASS on the required topology.** One central OCM hub registered `spoke-a`
+  and `spoke-b`; both `ManagedCluster` objects and all four addon instances reported
+  `Available`. Through each `cluster-proxy` reverse tunnel, the hub reached a distinct
+  spoke-local fixture using that spoke's projected **scoped `managed-serviceaccount` token**.
+  The same real token path was **denied** cluster-wide `secrets` and `nodes` for the expected
+  `sith-reader` ServiceAccount identity. Reach and privilege are therefore decoupled.
+- **Outbound-only evidence:** conntrack original-direction tuples on both spoke nodes showed
+  spoke-pod connections to the hub kube-apiserver on `:6443` and **zero** hub-originated
+  connections into either spoke node or pod CIDR. The kind lab shares a Docker network, so a
+  later preproduction environment must repeat this with physical firewall/VPC isolation.
+- **Setup time: 158 seconds** for the automated clean-room run with a warm kind-node image
+  cache, far inside the `≤ ~1 day` exit criterion.
+- **Environment:** three single-node `kind` clusters (Kubernetes v1.36.1, digest-pinned);
+  kind v0.32.0; `clusteradm` v1.3.1 / OCM core v1.3.1; `cluster-proxy` **0.10.0** and
+  `managed-serviceaccount` **0.10.0**, with exact chart archive hashes checked before install.
 - **Consequence:** the "build the transport/agent" scope is **deleted**. Sith adopts OCM as
   the connectivity + scoped-identity substrate and builds only the federation/governance
   layer above it. **Proceed to Phase 1.**
-- **Notes / runbook + verbatim command output:**
+- **Executable runbook, fail-closed assertions, and redacted terminal capture:**
   [`../experiments/M0-ocm-falsification.md`](../experiments/M0-ocm-falsification.md).
-- One upstream papercut found and worked around (does not affect the verdict): the
-  `cluster-proxy` 0.10.0 Helm chart templates a `ManagedProxyConfiguration` field
-  (`proxyAgent.additionalValues`) its own bundled CRD does not declare — see the experiment
-  doc's "Caveats" for the one-line CRD workaround. Worth filing upstream.
+- **Operational caveats:** the runbook retains the CRD/schema skew, same-namespace Helm
+  ownership collision, and `clusteradm proxy kubectl` zero-status-on-Forbidden behavior as
+  explicit, tested dependency risks rather than suppressing them.
