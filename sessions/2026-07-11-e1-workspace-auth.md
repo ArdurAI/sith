@@ -1,0 +1,18 @@
+# Session — 2026-07-11 — e1-workspace-auth
+
+**Builder:** Gnani Rahul · **Model/effort:** GPT-5, max · **Branch:** gnanirahulnutakki/feat/e1-workspace-auth
+**Slice(s):** Phase 1 / E1 / issue #7 · **Status:** in-progress
+
+---
+
+[G] Goal: Implement the first Phase-1 isolation layer: the Workspace tenancy anchor, signed-token-only identity and membership claims, exact least-privilege roles, and a hard-fail application scope with no request-header trust.
+[S] Scope: Immutable tenancy/authentication contracts and HTTP middleware for issue #7. PostgreSQL persistence and FORCE RLS (#8), the destructive negative-control isolation suite (#12), OIDC/JWKS discovery, and the OCM read adapter remain separate follow-on slices.
+[A] Action: Started from post-M0-closeout `dev` commit `30aadc7` after PR #74 and its full post-merge CI passed. Reconciled issue #7, E1, ADR-0003, the existing workspace-stamped fleet/cache seams, and the local keychain MCP token boundary. Selected a static Ed25519 JWT session profile behind a verifier interface so future OIDC/JWKS providers cannot change downstream authorization semantics.
+[T] Test: Current primary sources verified golang-jwt v5.3.1 and the RFC 8725 requirements to pin algorithms, validate issuer/subject/audience, use explicit token typing, and keep validation rules mutually exclusive.
+[A] Action: Added validated `Workspace`, `Membership`, `Principal`, and `Scope` contracts with defensive membership copies, an exact reader/operator/approver/admin action matrix, and a generic hard-fail guard for foreign workspace rows. Admin intentionally receives read plus workspace-management authority, not implicit proposal or approval authority, preserving the separation-of-duties roles defined by E1.
+[T] Test: Table-driven tenancy tests prove every role's exact allow/deny matrix, membership-map immutability, foreign-workspace scope denial, hard-fail row validation, and rejection of padded, blank, control-character, and unknown-role identities. Focused tests pass under the race detector.
+[C] Checkpoint #1: workspace tenancy and fail-safe app-scope contract — next: strict signed-token verification and header-agnostic HTTP authentication.
+
+---
+
+**Session close:** in progress · **Open questions touched:** none
