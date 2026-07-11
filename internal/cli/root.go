@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -19,6 +20,7 @@ import (
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/fleetcache"
 	"github.com/ArdurAI/sith/internal/hydrate"
+	"github.com/ArdurAI/sith/internal/localops"
 	"github.com/ArdurAI/sith/internal/logging"
 	"github.com/ArdurAI/sith/internal/tui"
 )
@@ -40,14 +42,17 @@ type rootOptions struct {
 type backend struct {
 	source   fleet.Source
 	reader   connector.Reader
+	local    localops.Client
 	tuiInput io.Reader
 }
 
 // Execute builds and runs the command tree, returning a process exit code.
 func Execute() int {
 	adapter := kubeconfig.Default()
-	return executeBackend(os.Args[1:], backend{
-		source: connector.AsSource(adapter), reader: adapter, tuiInput: os.Stdin,
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	return executeBackendContext(ctx, os.Args[1:], backend{
+		source: connector.AsSource(adapter), reader: adapter, local: adapter, tuiInput: os.Stdin,
 	}, os.Stdout, os.Stderr)
 }
 
@@ -60,9 +65,18 @@ func executeWithReader(args []string, reader connector.Reader, stdout, stderr io
 }
 
 func executeBackend(args []string, runtime backend, stdout, stderr io.Writer) int {
+	return executeBackendContext(context.Background(), args, runtime, stdout, stderr)
+}
+
+func executeBackendContext(
+	ctx context.Context,
+	args []string,
+	runtime backend,
+	stdout, stderr io.Writer,
+) int {
 	command := newRootCommand(runtime, stdout, stderr)
 	command.SetArgs(args)
-	if err := command.Execute(); err != nil {
+	if err := command.ExecuteContext(ctx); err != nil {
 		if _, writeErr := fmt.Fprintln(stderr, err); writeErr != nil {
 			return 2
 		}
@@ -82,7 +96,7 @@ func newRootCommand(runtime backend, stdout, stderr io.Writer) *cobra.Command {
 		SilenceErrors: true,
 		RunE: func(command *cobra.Command, _ []string) error {
 			if runtime.reader != nil && terminalIO(runtime.tuiInput, stdout) {
-				return runFleetTUI(command.Context(), runtime.reader, runtime.tuiInput, stdout)
+				return runFleetTUI(command.Context(), runtime.reader, runtime.local, runtime.tuiInput, stdout)
 			}
 			return command.Help()
 		},
@@ -112,6 +126,9 @@ func newRootCommand(runtime backend, stdout, stderr io.Writer) *cobra.Command {
 	}
 	command.SetOut(stdout)
 	command.SetErr(stderr)
+	if runtime.tuiInput != nil {
+		command.SetIn(runtime.tuiInput)
+	}
 	command.CompletionOptions.DisableDefaultCmd = true
 
 	flags := command.PersistentFlags()
@@ -128,18 +145,21 @@ func newRootCommand(runtime backend, stdout, stderr io.Writer) *cobra.Command {
 	}
 	if runtime.reader != nil {
 		commands = append(commands,
-			newTUICommand(runtime.reader, runtime.tuiInput, stdout),
+			newTUICommand(runtime.reader, runtime.local, runtime.tuiInput, stdout),
 			newGetCommand(options, runtime.reader),
 			newSearchCommand(options, runtime.reader),
 			newCorrelateCommand(options, runtime.reader),
 		)
+	}
+	if runtime.local != nil {
+		commands = append(commands, newLocalCommands(options, runtime.local)...)
 	}
 	command.AddCommand(commands...)
 
 	return command
 }
 
-func newTUICommand(reader connector.Reader, input io.Reader, output io.Writer) *cobra.Command {
+func newTUICommand(reader connector.Reader, local localops.Client, input io.Reader, output io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:   "tui",
 		Short: "Open the cache-first interactive fleet view",
@@ -148,18 +168,24 @@ func newTUICommand(reader connector.Reader, input io.Reader, output io.Writer) *
 			if input == nil {
 				return fmt.Errorf("TUI input is unavailable")
 			}
-			return runFleetTUI(command.Context(), reader, input, output)
+			return runFleetTUI(command.Context(), reader, local, input, output)
 		},
 	}
 }
 
-func runFleetTUI(ctx context.Context, reader connector.Reader, input io.Reader, output io.Writer) error {
+func runFleetTUI(
+	ctx context.Context,
+	reader connector.Reader,
+	local localops.Client,
+	input io.Reader,
+	output io.Writer,
+) error {
 	store := fleetcache.New()
 	hydrator, err := hydrate.New(reader, store)
 	if err != nil {
 		return err
 	}
-	return tui.Run(ctx, store, hydrator, input, output)
+	return tui.RunWithLocal(ctx, store, hydrator, local, input, output)
 }
 
 func terminalIO(input io.Reader, output io.Writer) bool {

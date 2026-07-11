@@ -1,8 +1,8 @@
 # Sith
 
-**Status: Slice 2 cache-first fleet client.** The CLI discovers every context resolved by
-client-go, hydrates a local in-memory fleet cache through per-context watches, and serves Tier-1
-reads and cross-cluster search from normalized snapshots with explicit freshness and coverage.
+**Status: Slice 3 local fleet client.** The CLI discovers every context resolved by client-go,
+hydrates a local in-memory fleet cache through per-context watches, serves coverage-honest fleet
+search, and provides explicit-context logs, exec, port-forward, describe, and YAML view/edit.
 
 Sith is ArdurAI's single-binary, local-first Kubernetes fleet tool: **k9s for your whole fleet**.
 It is designed to aggregate every kubeconfig context without an account, telemetry, or cluster
@@ -23,6 +23,12 @@ make build
 ./bin/sith get pods -A --all-clusters
 ./bin/sith search 'image:*log4j*'
 ./bin/sith correlate 'deploy/payments status!=Healthy'
+./bin/sith describe pod/api --context kind-dev -n apps
+./bin/sith yaml secret/api-token --context kind-dev -n apps
+./bin/sith logs api --context kind-dev -n apps --tail 100 -f
+./bin/sith exec api --context kind-dev -n apps -it -- /bin/sh
+./bin/sith port-forward service/api --context kind-dev -n apps :http
+./bin/sith edit configmap/api-settings --context kind-dev -n apps
 ```
 
 `sith clusters` follows standard client-go loading rules: set `KUBECONFIG` to an OS path-list or
@@ -41,8 +47,20 @@ lens/context commands (including `:<kind>` for an API-discovered generic resourc
 the server's print columns), `/` to filter the current lens, `Ctrl-K` for whole-fleet fuzzy/
 structured search, number keys for cluster scope, `c` for coverage, and `Ctrl-R` for a non-blocking
 refresh.
+On a selected row, `d` opens describe, `y` opens masked YAML, `l` follows pod logs, `s` opens a
+pod shell, `f` prompts for a loopback port mapping, and `e` opens a YAML edit. `Esc` returns to the
+exact prior fleet scope and row; `:pf` lists persistent port-forwards and `x` closes the newest
+active one.
 The UI uses Bubble Tea v2.0.8 core only; tables and search remain local so no optional styling or
 component dependency enters the binary.
+
+Local resource operations always require or derive one explicit cached context and use that
+context's existing kubeconfig identity directly. They are deliberately separate from Sith's
+governed Intent/PEP action model. Secret YAML is redacted unless `--show-secrets` is explicit;
+edit files use mode `0600`, are capped at 10 MiB, and are applied only after strict server dry-run
+and a displayed diff. Port-forward accepts loopback addresses only (`localhost`, `127.0.0.1`, or
+`::1`). Streaming can hold API connections for its lifetime, but it creates no cloud resources or
+persistent local cache.
 
 Each active lens holds one Kubernetes watch per reachable context after its initial list. A
 two-minute safety rediscovery recovers contexts that were offline at launch; it is not the primary
@@ -56,8 +74,10 @@ make ci
 ```
 
 The real multi-cluster gate creates two temporary kind clusters with a digest-pinned node image,
-checks one additional unreachable context, and removes both clusters afterward. It requires a
-running Docker engine and kind v0.32.0, and consumes additional CI time, disk, and memory:
+checks one additional unreachable context, and proves context-isolated logs, exec, YAML/Secret
+handling, describe/events, dry-run edit, and loopback TCP forwarding against a scratch fixture
+image. It removes both clusters afterward. The gate requires a running Docker engine and kind
+v0.32.0, and consumes additional CI time, disk, and memory:
 
 ```bash
 make e2e-kind

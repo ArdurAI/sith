@@ -60,6 +60,10 @@ var resourceSpecs = map[string]resourceSpec{
 	"namespaces":  {kind: "Namespace", gvr: schema.GroupVersionResource{Version: "v1", Resource: "namespaces"}},
 	"event":       {kind: "Event", gvr: schema.GroupVersionResource{Version: "v1", Resource: "events"}, namespaced: true},
 	"events":      {kind: "Event", gvr: schema.GroupVersionResource{Version: "v1", Resource: "events"}, namespaced: true},
+	"configmap":   {kind: "ConfigMap", gvr: schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, namespaced: true},
+	"configmaps":  {kind: "ConfigMap", gvr: schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, namespaced: true},
+	"secret":      {kind: "Secret", gvr: schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, namespaced: true},
+	"secrets":     {kind: "Secret", gvr: schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, namespaced: true},
 	"rollout":     {kind: "Rollout", gvr: schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: "rollouts"}, namespaced: true},
 	"rollouts":    {kind: "Rollout", gvr: schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: "rollouts"}, namespaced: true},
 }
@@ -215,7 +219,9 @@ func (adapter *Adapter) queryScope(
 	if query.Selector.ResourceKind == "" {
 		return result
 	}
-	generic := spec.gvr.Resource == ""
+	// ConfigMap and Secret are statically known for local YAML/edit operations, but remain generic
+	// fleet lenses so Kubernetes server print columns continue to drive their tabular presentation.
+	generic := spec.gvr.Resource == "" || spec.kind == "ConfigMap" || spec.kind == "Secret"
 	if generic {
 		var err error
 		spec, err = adapter.resolveResource(ctx, name, config, query.Selector.ResourceKind)

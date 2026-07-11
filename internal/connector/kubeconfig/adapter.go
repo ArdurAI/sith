@@ -41,6 +41,8 @@ var supportedKinds = []string{
 	"Service",
 	"Namespace",
 	"Event",
+	"ConfigMap",
+	"Secret",
 }
 
 type probeFunc func(ctx context.Context, config *rest.Config) error
@@ -64,6 +66,10 @@ type options struct {
 	dynamic        dynamicFactory
 	resolve        resourceResolver
 	table          tableFactory
+	typed          typedFactory
+	logs           logStreamFactory
+	exec           execFactory
+	forward        portForwardFactory
 }
 
 // Option configures the local kubeconfig adapter.
@@ -228,6 +234,10 @@ func defaultOptions() options {
 		},
 		resolve: defaultResourceResolver,
 		table:   newTablePrinter,
+		typed:   defaultTypedFactory,
+		logs:    defaultLogStream,
+		exec:    defaultExecFactory,
+		forward: defaultPortForwardFactory,
 	}
 }
 

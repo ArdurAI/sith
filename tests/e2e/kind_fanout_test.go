@@ -69,7 +69,10 @@ func TestKindFleetFanout(t *testing.T) {
 	}
 
 	kubeconfigPath := mergedKindKubeconfig(ctx, t, kindBinary, clusterNames)
+	root := repositoryRoot(t)
+	fixtureImage := buildKindFixture(ctx, t, root, kindBinary, clusterNames, suffix)
 	seedKindResources(ctx, t, kubeconfigPath, clusterNames)
+	seedLocalOperationResources(ctx, t, kubeconfigPath, clusterNames, fixtureImage)
 	adapter, err := kubeconfig.New(
 		kubeconfig.WithExplicitPath(kubeconfigPath),
 		kubeconfig.WithProbeTimeout(5*time.Second),
@@ -117,9 +120,9 @@ func TestKindFleetFanout(t *testing.T) {
 		}
 	}
 
-	root := repositoryRoot(t)
 	binary := filepath.Join(t.TempDir(), "sith")
 	runCommand(ctx, t, root, "go", "build", "-trimpath", "-o", binary, "./cmd/sith")
+	exerciseLocalOperations(ctx, t, binary, kubeconfigPath, clusterNames)
 	command := exec.CommandContext(ctx, binary, "clusters", "--output", "json")
 	command.Env = append(os.Environ(), "KUBECONFIG="+kubeconfigPath, "XDG_CONFIG_HOME="+t.TempDir())
 	output, err := command.CombinedOutput()
