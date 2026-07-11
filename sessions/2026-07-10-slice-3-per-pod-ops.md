@@ -1,7 +1,7 @@
 # Session — 2026-07-10 — slice-3-per-pod-ops
 
 **Builder:** Gnani Rahul · **Model/effort:** engineering, max · **Branch:** gnanirahulnutakki/feat/per-pod-ops
-**Slice(s):** Slice 3 / #35 · **Status:** in-progress
+**Slice(s):** Slice 3 / #35 · **Status:** ready-for-PR
 
 ---
 
@@ -43,8 +43,27 @@ persistent loopback port-forwards managed through `:pf` and `x`.
 mapping, server rejection passthrough, and preview-before-apply order. TUI tests prove action I/O
 is deferred from navigation, logs/YAML return to the same row, port-forward persistence/closure,
 and preview-before-apply edit. Race tests and the full linter pass.
-[C] Checkpoint #2: this commit — scriptable and interactive local-operation surfaces; next: real two-cluster proof and closure.
+[C] Checkpoint #2: 303544a — scriptable and interactive local-operation surfaces; next: real two-cluster proof and closure.
+[A] Action: Expanded the existing digest-pinned two-kind-cluster scenario with a locally built
+scratch fixture. Both clusters receive context-stamped running pods, services with named target
+ports, ConfigMaps, Secrets, and related Events; no fixture image pull or external service is used.
+[T] Test: The compiled Sith binary proves context-isolated logs, exact remote exec argv, YAML,
+default Secret masking and explicit reveal, object+Event describe, server-dry-run ConfigMap edit
+with fresh-read persistence, and real loopback HTTP forwarding through a Service in both clusters.
+The complete existing+new gate passes in 65.72 seconds; temporary clusters/images were removed and
+`docker system prune -f` reclaimed 1.869 GB.
+[R] Review: The first real run caught and fixed a ConfigMap generic-lens regression caused by its
+new static local-edit resource mapping; server print columns remain authoritative for generic
+fleet rendering. Manual red-team review then found and fixed unsafe path-segment reliance and
+expanded the AST no-governed-path assertion across core, adapter, CLI, and TUI files.
+[R] Review: CodeRabbit CLI preflight reported not installed, so the documented local fallback was
+used after a changed-surface credential scan. Full format, vet, lint, build, module verification,
+race, tagged binary smoke, warm-cache p95, and govulncheck gates pass; govulncheck reports no
+reachable vulnerabilities. GitHub reports zero open Dependabot, CodeQL, or secret-scanning alerts.
+[A] Action: Updated README command examples, local/governed identity boundary, Secret/edit/
+loopback safety, stream cost, TUI keybindings, and the expanded real-cluster gate.
+[C] Checkpoint #3: this commit — real-cluster proof, documentation, and security/review closure; next: publish PR and require green CI.
 
 ---
 
-**Session close:** in progress · **Open questions touched:** D1 uses the recommended distinct local-apply boundary; D2 uses explicit local streaming interfaces outside the locked seven-verb registry
+**Session close:** ready for PR · **Open questions touched:** D1 uses the recommended distinct local-apply boundary; D2 uses explicit local streaming interfaces outside the locked seven-verb registry
