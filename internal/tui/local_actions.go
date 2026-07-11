@@ -421,6 +421,9 @@ func (command *localEditCommand) SetStdout(output io.Writer) { command.stdout = 
 func (command *localEditCommand) SetStderr(output io.Writer) { command.stderr = output }
 
 func (command *localEditCommand) Run() error {
+	if strings.EqualFold(command.target.Kind, "Secret") || strings.EqualFold(command.target.Kind, "Secrets") {
+		return fmt.Errorf("interactive Secret edit is refused because it would persist plaintext in a temporary file")
+	}
 	view, err := command.client.View(command.ctx, command.target, true)
 	if err != nil {
 		return err

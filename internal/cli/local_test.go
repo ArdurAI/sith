@@ -130,6 +130,40 @@ func TestEditSurfacesServerDryRunRejectionWithoutApply(t *testing.T) {
 	}
 }
 
+func TestInteractiveSecretEditRefusesPlaintextTemporaryFile(t *testing.T) {
+	client := &fakeLocalClient{}
+	_, stderr, exitCode := runLocalCLI(t, []string{
+		"edit", "secret/credentials", "--context", "alpha", "--yes",
+	}, client, "")
+	if exitCode == 0 || !strings.Contains(stderr, "interactive Secret edit is refused") {
+		t.Fatalf("secret edit exit/stderr = %d/%q", exitCode, stderr)
+	}
+	if client.calls() != 0 {
+		t.Fatalf("secret edit client calls = %d", client.calls())
+	}
+}
+
+func TestSecretEditAcceptsExplicitUserManagedFile(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "secret.yaml")
+	manifest := []byte("apiVersion: v1\nkind: Secret\nmetadata:\n  name: credentials\n")
+	if err := os.WriteFile(filename, manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeLocalClient{
+		preview: localops.ApplyPreview{CurrentYAML: manifest, DryRunYAML: append(manifest, []byte("data: {}\n")...)},
+		applied: fleet.Evidence{Ref: fleet.ResourceRef{Scope: "alpha", Kind: "Secret", Name: "credentials"}},
+	}
+	_, stderr, exitCode := runLocalCLI(t, []string{
+		"edit", "secret/credentials", "--context", "alpha", "--file", filename, "--yes",
+	}, client, "")
+	if exitCode != 0 || stderr != "" {
+		t.Fatalf("file-backed Secret edit exit/stderr = %d/%q", exitCode, stderr)
+	}
+	if !slices.Equal(client.order, []string{"preview", "apply"}) {
+		t.Fatalf("file-backed Secret edit operations = %v", client.order)
+	}
+}
+
 func TestUIRefusesExternalBindAndStartsOnLoopback(t *testing.T) {
 	reader := &cacheReader{}
 	client := &fakeLocalClient{}

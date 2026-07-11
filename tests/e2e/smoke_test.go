@@ -11,11 +11,15 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -35,17 +39,22 @@ func TestBinarySmoke(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build binary: %v\n%s", err, output)
 	}
+	egress := newEgressGuard(t)
 
 	tests := []struct {
 		name      string
 		args      []string
 		contains  string
 		validJSON bool
+		wantError bool
 	}{
 		{name: "version text", args: []string{"version"}, contains: "sith dev"},
 		{name: "version JSON", args: []string{"version", "-o", "json"}, validJSON: true},
 		{name: "clusters text", args: []string{"clusters"}, contains: "No clusters found (source: local-kubeconfig)."},
 		{name: "clusters JSON", args: []string{"clusters", "-o", "json"}, validJSON: true},
+		{name: "get no egress", args: []string{"get", "pods", "-A", "--all-clusters", "-o", "json"}, contains: "no kubeconfig contexts discovered", wantError: true},
+		{name: "search no egress", args: []string{"search", "status:Running", "-o", "json"}, contains: "no kubeconfig contexts discovered", wantError: true},
+		{name: "correlate no egress", args: []string{"correlate", "deploy/payments", "status!=Healthy", "-o", "json"}, contains: "no kubeconfig contexts discovered", wantError: true},
 		{name: "hub stub", args: []string{"hub"}, contains: "phase-1+"},
 		{name: "no arguments", contains: "Usage:"},
 		{name: "help", args: []string{"--help"}, contains: "Usage:"},
@@ -55,10 +64,10 @@ func TestBinarySmoke(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			command := exec.CommandContext(ctx, binary, test.args...)
-			command.Env = append(os.Environ(), "XDG_CONFIG_HOME="+t.TempDir(), "KUBECONFIG="+kubeconfig)
+			command.Env = egress.environment(t.TempDir(), kubeconfig)
 			output, err := command.CombinedOutput()
-			if err != nil {
-				t.Fatalf("run %v: %v\n%s", test.args, err, output)
+			if (err != nil) != test.wantError {
+				t.Fatalf("run %v error = %v, want error %t\n%s", test.args, err, test.wantError, output)
 			}
 			if test.contains != "" && !strings.Contains(string(output), test.contains) {
 				t.Fatalf("output = %q, want %q", output, test.contains)
@@ -68,13 +77,14 @@ func TestBinarySmoke(t *testing.T) {
 			}
 		})
 	}
-	smokeWebUI(ctx, t, binary, kubeconfig)
+	smokeWebUI(ctx, t, binary, egress.environment(t.TempDir(), kubeconfig))
+	egress.assertUnused(t)
 }
 
-func smokeWebUI(ctx context.Context, t *testing.T, binary, kubeconfig string) {
+func smokeWebUI(ctx context.Context, t *testing.T, binary string, environment []string) {
 	t.Helper()
 	command := exec.CommandContext(ctx, binary, "ui", "--no-open", "--address", "127.0.0.1", "--port", "0")
-	command.Env = append(os.Environ(), "XDG_CONFIG_HOME="+t.TempDir(), "KUBECONFIG="+kubeconfig)
+	command.Env = environment
 	stdout, err := command.StdoutPipe()
 	if err != nil {
 		t.Fatalf("web UI stdout: %v", err)
@@ -135,6 +145,81 @@ func smokeWebUI(ctx context.Context, t *testing.T, binary, kubeconfig string) {
 		t.Fatalf("wait for web UI: %v\n%s", err, stderr.String())
 	}
 	stopped = true
+}
+
+type egressGuard struct {
+	server   *httptest.Server
+	mu       sync.Mutex
+	requests []string
+}
+
+func newEgressGuard(t *testing.T) *egressGuard {
+	t.Helper()
+	guard := &egressGuard{}
+	guard.server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		guard.mu.Lock()
+		guard.requests = append(guard.requests, request.Method+" "+request.URL.String())
+		guard.mu.Unlock()
+		response.WriteHeader(http.StatusTeapot)
+	}))
+	t.Cleanup(guard.server.Close)
+	proxyURL, err := url.Parse(guard.server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{
+		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+		Timeout:   2 * time.Second,
+	}
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://telemetry.invalid/control", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("verify egress sentinel: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusTeapot {
+		t.Fatalf("egress sentinel status = %d", response.StatusCode)
+	}
+	guard.mu.Lock()
+	guard.requests = nil
+	guard.mu.Unlock()
+	return guard
+}
+
+func (guard *egressGuard) environment(configRoot, kubeconfig string) []string {
+	overrides := map[string]string{
+		"ALL_PROXY": guard.server.URL, "HTTP_PROXY": guard.server.URL, "HTTPS_PROXY": guard.server.URL,
+		"NO_PROXY": "", "all_proxy": guard.server.URL, "http_proxy": guard.server.URL,
+		"https_proxy": guard.server.URL, "no_proxy": "", "XDG_CONFIG_HOME": configRoot, "KUBECONFIG": kubeconfig,
+	}
+	environment := make([]string, 0, len(os.Environ())+len(overrides))
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if _, replaced := overrides[name]; !replaced {
+			environment = append(environment, entry)
+		}
+	}
+	names := make([]string, 0, len(overrides))
+	for name := range overrides {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		environment = append(environment, name+"="+overrides[name])
+	}
+	return environment
+}
+
+func (guard *egressGuard) assertUnused(t *testing.T) {
+	t.Helper()
+	guard.mu.Lock()
+	defer guard.mu.Unlock()
+	if len(guard.requests) != 0 {
+		t.Fatalf("local-mode binary attempted non-cluster network egress: %v", guard.requests)
+	}
 }
 
 func TestUnknownCommandFails(t *testing.T) {
