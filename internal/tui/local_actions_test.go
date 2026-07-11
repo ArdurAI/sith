@@ -125,6 +125,22 @@ func TestTUIEditCommandShowsDryRunDiffBeforeApply(t *testing.T) {
 	}
 }
 
+func TestTUISecretEditRefusesPlaintextTemporaryFile(t *testing.T) {
+	t.Parallel()
+	client := &tuiLocalClient{}
+	command := &localEditCommand{
+		ctx: t.Context(), client: client,
+		target: localops.Target{Context: "alpha", Namespace: "apps", Kind: "Secret", Name: "credentials"},
+		stdin:  strings.NewReader("yes\n"), stdout: io.Discard, stderr: io.Discard,
+	}
+	if err := command.Run(); err == nil || !strings.Contains(err.Error(), "interactive Secret edit is refused") {
+		t.Fatalf("secret edit error = %v", err)
+	}
+	if len(client.order) != 0 {
+		t.Fatalf("secret edit operations = %v", client.order)
+	}
+}
+
 type stagedConfirmReader struct {
 	mu           sync.Mutex
 	editorRead   bool

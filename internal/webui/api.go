@@ -17,6 +17,7 @@ import (
 	"github.com/ArdurAI/sith/internal/fleetcache"
 	"github.com/ArdurAI/sith/internal/hydrate"
 	"github.com/ArdurAI/sith/internal/localops"
+	"github.com/ArdurAI/sith/internal/privacy"
 )
 
 const (
@@ -41,8 +42,9 @@ func (application *Application) registerAPI(mux *http.ServeMux) {
 }
 
 func (application *Application) handleMeta(response http.ResponseWriter, _ *http.Request) {
+	posture := privacy.LocalMode()
 	writeJSON(response, http.StatusOK, map[string]any{
-		"mode": application.mode, "account_required": false, "telemetry": false,
+		"mode": application.mode, "account_required": posture.AccountRequired, "telemetry": posture.Telemetry,
 		"lenses":     hydrate.TierOneKinds(),
 		"operations": []string{"describe", "yaml", "logs", "exec", "port-forward", "edit"},
 	})
