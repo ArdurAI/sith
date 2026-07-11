@@ -273,7 +273,7 @@ func (hydrator *Hydrator) sync(ctx context.Context, kinds []string) error {
 		syncErr = fmt.Errorf("discover hydration scopes: %w", err)
 		return syncErr
 	}
-	hydrator.store.SetDiscovery(discovery)
+	hydrator.store.SetDiscovery(fleet.LocalWorkspace, discovery)
 
 	errorsByKind := make([]error, len(kinds))
 	workers := min(hydrator.limit, len(kinds))

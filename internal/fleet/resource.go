@@ -150,6 +150,13 @@ type QueryResult struct {
 	Coverage Coverage `json:"coverage"`
 }
 
+// CVEObservation is the normalized payload for one image vulnerability fact.
+type CVEObservation struct {
+	Image    string   `json:"image"`
+	IDs      []string `json:"ids"`
+	Severity string   `json:"severity,omitempty"`
+}
+
 // Diff is a structured desired-versus-observed result.
 type Diff struct {
 	Ref     ResourceRef `json:"ref"`
