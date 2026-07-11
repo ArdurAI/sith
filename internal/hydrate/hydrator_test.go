@@ -70,7 +70,7 @@ func TestSyncOnceReconcilesKindsConcurrently(t *testing.T) {
 		t.Fatalf("maximum active queries = %d, want 2", reader.maximumActive())
 	}
 	for _, kind := range TierOneKinds() {
-		snapshot := store.Query(fleetcache.Query{Kind: kind})
+		snapshot := store.Query(fleet.LocalWorkspace, fleetcache.Query{Kind: kind})
 		if len(snapshot.Records) != 2 || !snapshot.Coverage.Complete() {
 			t.Errorf("%s snapshot = %#v, want two complete records", kind, snapshot)
 		}
@@ -89,10 +89,10 @@ func TestSyncOnceKeepsSuccessfulLensesOnPartialFailure(t *testing.T) {
 	if err == nil || !errors.Is(err, reader.failures["Event"]) {
 		t.Fatalf("SyncOnce() error = %v, want event failure", err)
 	}
-	if snapshot := store.Query(fleetcache.Query{Kind: "Pod"}); len(snapshot.Records) != 2 {
+	if snapshot := store.Query(fleet.LocalWorkspace, fleetcache.Query{Kind: "Pod"}); len(snapshot.Records) != 2 {
 		t.Fatalf("pod records = %#v, want successful lens retained", snapshot.Records)
 	}
-	if snapshot := store.Query(fleetcache.Query{Kind: "Event"}); snapshot.LastError == "" {
+	if snapshot := store.Query(fleet.LocalWorkspace, fleetcache.Query{Kind: "Event"}); snapshot.LastError == "" {
 		t.Fatalf("event snapshot = %#v, want visible sync error", snapshot)
 	}
 }
@@ -108,7 +108,7 @@ func TestSyncKindsReconcilesGenericLens(t *testing.T) {
 	if err := hydrator.SyncKinds(context.Background(), "widgets", "widgets"); err != nil {
 		t.Fatalf("SyncKinds() error = %v", err)
 	}
-	snapshot := store.Query(fleetcache.Query{Kind: "Widgets"})
+	snapshot := store.Query(fleet.LocalWorkspace, fleetcache.Query{Kind: "Widgets"})
 	if len(snapshot.Records) != 2 || !snapshot.Coverage.Complete() {
 		t.Fatalf("generic snapshot = %#v, want two complete records", snapshot)
 	}
@@ -169,7 +169,7 @@ func TestRunAppliesWatchDeltasAndAddsGenericKinds(t *testing.T) {
 		Fact: fakeFact("Pod", "alpha", now), ObservedAt: now,
 	}
 	waitForCondition(t, func() bool {
-		return len(store.Query(fleetcache.Query{Kind: "Pod"}).Records) == 2
+		return len(store.Query(fleet.LocalWorkspace, fleetcache.Query{Kind: "Pod"}).Records) == 2
 	})
 
 	if err := hydrator.SyncKinds(ctx, "widgets"); err != nil {
@@ -182,7 +182,7 @@ func TestRunAppliesWatchDeltasAndAddsGenericKinds(t *testing.T) {
 		Type: connector.WatchError, Kind: "Pod", Scope: "beta", Err: errors.New("connection reset"),
 	}
 	waitForCondition(t, func() bool {
-		return slices.Contains(store.Query(fleetcache.Query{Kind: "Pod"}).Coverage.Unreachable, "beta")
+		return slices.Contains(store.Query(fleet.LocalWorkspace, fleetcache.Query{Kind: "Pod"}).Coverage.Unreachable, "beta")
 	})
 
 	cancel()

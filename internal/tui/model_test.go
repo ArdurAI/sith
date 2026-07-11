@@ -184,7 +184,7 @@ func TestTUIAndCLIBuildIdenticalSharedTable(t *testing.T) {
 	}
 	snapshot := model.snapshot()
 	fromTUI := fleetrender.Build(snapshot, fleetrender.Options{Lens: model.currentLens(), MaxRows: model.maxRows()})
-	fromCLI := fleetrender.Build(store.Query(fleetcache.Query{Kind: "Pod"}), fleetrender.Options{Lens: "Pod", MaxRows: model.maxRows()})
+	fromCLI := fleetrender.Build(store.Query(fleet.LocalWorkspace, fleetcache.Query{Kind: "Pod"}), fleetrender.Options{Lens: "Pod", MaxRows: model.maxRows()})
 	if !slices.EqualFunc(fromTUI.Rows, fromCLI.Rows, func(left, right []string) bool { return slices.Equal(left, right) }) ||
 		!slices.Equal(fromTUI.Columns, fromCLI.Columns) {
 		t.Fatalf("TUI table = %#v, CLI table = %#v", fromTUI, fromCLI)
@@ -202,7 +202,7 @@ func TestUpdateHandlesBackgroundMessagesAndCommands(t *testing.T) {
 	if model.Init() == nil {
 		t.Fatal("Init() command = nil")
 	}
-	_, command := model.Update(cacheChangedMsg{version: store.Query(fleetcache.Query{}).Version})
+	_, command := model.Update(cacheChangedMsg{version: store.Query(fleet.LocalWorkspace, fleetcache.Query{}).Version})
 	if command == nil {
 		t.Fatal("cache change did not resubscribe")
 	}
@@ -294,7 +294,7 @@ func populatedStore(t *testing.T, pods int) *fleetcache.Store {
 	t.Helper()
 	now := time.Date(2026, time.July, 10, 21, 0, 0, 0, time.UTC)
 	store := fleetcache.New()
-	store.SetDiscovery(connector.Discovery{Scopes: []connector.Scope{
+	store.SetDiscovery(fleet.LocalWorkspace, connector.Discovery{Scopes: []connector.Scope{
 		{Name: "alpha", Reachable: true, ObservedAt: now},
 		{Name: "beta", Reachable: true, ObservedAt: now},
 	}})

@@ -322,7 +322,7 @@ func populatedWebStore(t *testing.T) *fleetcache.Store {
 	t.Helper()
 	now := time.Now().UTC()
 	store := fleetcache.New()
-	store.SetDiscovery(connector.Discovery{Scopes: []connector.Scope{{Name: "alpha", Reachable: true, ObservedAt: now}}})
+	store.SetDiscovery(fleet.LocalWorkspace, connector.Discovery{Scopes: []connector.Scope{{Name: "alpha", Reachable: true, ObservedAt: now}}})
 	observed := json.RawMessage(`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"api","namespace":"apps"},"status":{"phase":"Running"}}`)
 	err := store.Replace("Pod", fleet.QueryResult{
 		Facts: []fleet.Fact{{Evidence: fleet.Evidence{

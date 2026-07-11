@@ -22,6 +22,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestBinarySmoke(t *testing.T) {
@@ -78,6 +80,7 @@ func TestBinarySmoke(t *testing.T) {
 		})
 	}
 	smokeWebUI(ctx, t, binary, egress.environment(t.TempDir(), kubeconfig))
+	smokeMCP(ctx, t, binary, egress.environment(t.TempDir(), kubeconfig))
 	egress.assertUnused(t)
 }
 
@@ -143,6 +146,78 @@ func smokeWebUI(ctx context.Context, t *testing.T, binary string, environment []
 	}
 	if err := command.Wait(); err != nil {
 		t.Fatalf("wait for web UI: %v\n%s", err, stderr.String())
+	}
+	stopped = true
+}
+
+func smokeMCP(ctx context.Context, t *testing.T, binary string, environment []string) {
+	t.Helper()
+	command := exec.CommandContext(ctx, binary, "serve", "--mcp", "--address", "127.0.0.1", "--port", "0")
+	command.Env = environment
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatalf("MCP stdout: %v", err)
+	}
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	if err := command.Start(); err != nil {
+		t.Fatalf("start MCP: %v", err)
+	}
+	stopped := false
+	defer func() {
+		if !stopped {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	}()
+	lineReady := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		if scanner.Scan() {
+			lineReady <- scanner.Text()
+		}
+		close(lineReady)
+	}()
+	var line string
+	select {
+	case line = <-lineReady:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("MCP did not report startup: %s", stderr.String())
+	case <-ctx.Done():
+		t.Fatalf("MCP startup context: %v", ctx.Err())
+	}
+	const prefix = "sith MCP listening on "
+	if !strings.HasPrefix(line, prefix) {
+		t.Fatalf("MCP startup line = %q", line)
+	}
+	endpoint := strings.TrimPrefix(line, prefix)
+	client := mcp.NewClient(&mcp.Implementation{Name: "sith-e2e", Version: "test"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint: endpoint,
+		HTTPClient: &http.Client{
+			Transport: &http.Transport{Proxy: nil},
+			Timeout:   5 * time.Second,
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("connect MCP client: %v\n%s", err, stderr.String())
+	}
+	listed, err := session.ListTools(ctx, nil)
+	if err != nil || len(listed.Tools) != 4 {
+		t.Fatalf("MCP tools = %#v, %v", listed, err)
+	}
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "fleet.inventory", Arguments: map[string]any{"kind": "Pod"},
+	})
+	if err != nil || result.IsError {
+		t.Fatalf("MCP inventory result/error = %#v/%v", result, err)
+	}
+	_ = session.Close()
+	if err := command.Process.Signal(os.Interrupt); err != nil {
+		t.Fatalf("interrupt MCP: %v", err)
+	}
+	if err := command.Wait(); err != nil {
+		t.Fatalf("wait for MCP: %v\n%s", err, stderr.String())
 	}
 	stopped = true
 }

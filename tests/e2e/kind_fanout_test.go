@@ -4,10 +4,12 @@
 package e2e_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -124,6 +128,7 @@ func TestKindFleetFanout(t *testing.T) {
 	runCommand(ctx, t, root, "go", "build", "-trimpath", "-o", binary, "./cmd/sith")
 	exerciseLocalOperations(ctx, t, binary, kubeconfigPath, clusterNames)
 	exerciseWebUI(ctx, t, binary, kubeconfigPath, clusterNames)
+	exerciseMCP(ctx, t, binary, kubeconfigPath, clusterNames)
 	command := exec.CommandContext(ctx, binary, "clusters", "--output", "json")
 	command.Env = append(os.Environ(), "KUBECONFIG="+kubeconfigPath, "XDG_CONFIG_HOME="+t.TempDir())
 	output, err := command.CombinedOutput()
@@ -262,7 +267,7 @@ func TestKindFleetFanout(t *testing.T) {
 	if err := hydrator.SyncOnce(ctx); err != nil {
 		t.Fatalf("initial real hydration: %v", err)
 	}
-	initialCache := store.Query(fleetcache.Query{Kind: "Pod"})
+	initialCache := store.Query(fleet.LocalWorkspace, fleetcache.Query{Kind: "Pod"})
 	assertCachedRecord(t, initialCache, "kind-"+clusterNames[1], "sith-worker-sample", false)
 
 	runCommand(ctx, t, "", kindBinary, "delete", "cluster", "--name", clusterNames[1])
@@ -270,12 +275,166 @@ func TestKindFleetFanout(t *testing.T) {
 	if err := hydrator.SyncOnce(ctx); err != nil {
 		t.Fatalf("degraded real hydration: %v", err)
 	}
-	degraded := store.Query(fleetcache.Query{Kind: "Pod"})
+	degraded := store.Query(fleet.LocalWorkspace, fleetcache.Query{Kind: "Pod"})
 	assertCachedRecord(t, degraded, "kind-"+clusterNames[1], "sith-worker-sample", true)
 	if degraded.Coverage.Reachable != 1 || !slices.Contains(degraded.Coverage.Unreachable, "kind-"+clusterNames[1]) ||
 		!slices.Contains(degraded.Coverage.Unreachable, deadContext) {
 		t.Fatalf("degraded coverage = %#v, want beta and dead context unreachable", degraded.Coverage)
 	}
+}
+
+func exerciseMCP(ctx context.Context, t *testing.T, binary, kubeconfigPath string, clusters []string) {
+	t.Helper()
+	command := exec.CommandContext(ctx, binary, "serve", "--mcp", "--address", "127.0.0.1", "--port", "0")
+	command.Env = append(os.Environ(),
+		"KUBECONFIG="+kubeconfigPath,
+		"XDG_CONFIG_HOME="+filepath.Join(filepath.Dir(kubeconfigPath), "mcp-config-home"),
+	)
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatalf("MCP stdout: %v", err)
+	}
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	if err := command.Start(); err != nil {
+		t.Fatalf("start MCP against kind: %v", err)
+	}
+	stopped := false
+	defer func() {
+		if !stopped {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	}()
+	lineReady := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		if scanner.Scan() {
+			lineReady <- scanner.Text()
+		}
+		close(lineReady)
+	}()
+	var line string
+	select {
+	case line = <-lineReady:
+	case <-time.After(15 * time.Second):
+		t.Fatalf("MCP did not start against kind: %s", stderr.String())
+	case <-ctx.Done():
+		t.Fatalf("MCP startup context: %v", ctx.Err())
+	}
+	const prefix = "sith MCP listening on "
+	if !strings.HasPrefix(line, prefix) {
+		t.Fatalf("MCP startup line = %q", line)
+	}
+	endpoint := strings.TrimPrefix(line, prefix)
+	client := mcp.NewClient(&mcp.Implementation{Name: "kind-e2e", Version: "test"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint: endpoint,
+		HTTPClient: &http.Client{
+			Transport: &http.Transport{Proxy: nil},
+			Timeout:   10 * time.Second,
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("connect MCP against kind: %v\n%s", err, stderr.String())
+	}
+	defer func() { _ = session.Close() }()
+	listed, err := session.ListTools(ctx, nil)
+	if err != nil || len(listed.Tools) != 4 {
+		t.Fatalf("MCP tools = %#v, %v", listed, err)
+	}
+	for _, tool := range listed.Tools {
+		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
+			t.Fatalf("MCP tool %s is not annotated read-only: %#v", tool.Name, tool.Annotations)
+		}
+	}
+
+	var inventory mcpFleetOutput
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		inventory = callMCPTool(ctx, t, session, "fleet.inventory", map[string]any{"kind": "Pod"})
+		if inventory.Snapshot.Coverage.Reachable == 2 && len(inventory.Snapshot.Records) >= 2 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if inventory.Workspace != fleet.LocalWorkspace || inventory.Snapshot.Coverage.Requested != 3 ||
+		inventory.Snapshot.Coverage.Reachable != 2 {
+		t.Fatalf("MCP inventory workspace/coverage = %q/%#v", inventory.Workspace, inventory.Snapshot.Coverage)
+	}
+	assertMCPRecord(t, inventory, "kind-"+clusters[0], "sith-vuln-sample")
+	assertMCPRecord(t, inventory, "kind-"+clusters[1], "sith-worker-sample")
+
+	correlated := callMCPTool(ctx, t, session, "fleet.correlate", map[string]any{
+		"expression": "deploy/sith-payments status!=Healthy",
+	})
+	if len(correlated.Snapshot.Records) != 1 || correlated.Snapshot.Records[0].Cluster != "kind-"+clusters[1] {
+		t.Fatalf("MCP correlation = %#v", correlated)
+	}
+	imageSearch := callMCPTool(ctx, t, session, "fleet.cve-search", map[string]any{"image": "*log4j*"})
+	if len(imageSearch.Snapshot.Records) != 1 || imageSearch.Snapshot.Records[0].Name != "sith-vuln-sample" {
+		t.Fatalf("MCP image/CVE search = %#v", imageSearch)
+	}
+
+	_ = session.Close()
+	if err := command.Process.Signal(os.Interrupt); err != nil {
+		t.Fatalf("interrupt MCP: %v", err)
+	}
+	if err := command.Wait(); err != nil {
+		t.Fatalf("wait for MCP: %v\n%s", err, stderr.String())
+	}
+	stopped = true
+}
+
+type mcpFleetOutput struct {
+	Workspace string `json:"workspace"`
+	Snapshot  struct {
+		Records []struct {
+			Workspace string   `json:"workspace"`
+			Cluster   string   `json:"cluster"`
+			Name      string   `json:"name"`
+			Status    string   `json:"status"`
+			Images    []string `json:"images"`
+			CVEs      []string `json:"cves"`
+		} `json:"records"`
+		Coverage fleet.Coverage `json:"coverage"`
+	} `json:"snapshot"`
+}
+
+func callMCPTool(
+	ctx context.Context,
+	t *testing.T,
+	session *mcp.ClientSession,
+	name string,
+	arguments map[string]any,
+) mcpFleetOutput {
+	t.Helper()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: arguments})
+	if err != nil || result.IsError {
+		t.Fatalf("call MCP tool %s: %#v / %v", name, result, err)
+	}
+	payload, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output mcpFleetOutput
+	if err := json.Unmarshal(payload, &output); err != nil {
+		t.Fatal(err)
+	}
+	return output
+}
+
+func assertMCPRecord(t *testing.T, output mcpFleetOutput, cluster, name string) {
+	t.Helper()
+	for _, record := range output.Snapshot.Records {
+		if record.Cluster == cluster && record.Name == name {
+			if record.Workspace != fleet.LocalWorkspace {
+				t.Fatalf("MCP record workspace = %q", record.Workspace)
+			}
+			return
+		}
+	}
+	t.Fatalf("MCP record %s/%s missing from %#v", cluster, name, output.Snapshot.Records)
 }
 
 func seedKindResources(ctx context.Context, t *testing.T, kubeconfigPath string, clusters []string) {
@@ -381,7 +540,7 @@ func waitForCacheRecord(
 	defer deadline.Stop()
 	for {
 		found := false
-		for _, record := range store.Query(fleetcache.Query{Kind: "Pod"}).Records {
+		for _, record := range store.Query(fleet.LocalWorkspace, fleetcache.Query{Kind: "Pod"}).Records {
 			if record.Cluster == cluster && record.Name == name {
 				found = true
 				break

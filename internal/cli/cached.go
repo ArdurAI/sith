@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ArdurAI/sith/internal/connector"
+	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/fleetcache"
 	"github.com/ArdurAI/sith/internal/fleetrender"
 	"github.com/ArdurAI/sith/internal/hydrate"
@@ -134,7 +135,7 @@ func runCacheCommand(
 		return err
 	}
 	syncErr := hydrator.SyncOnce(command.Context())
-	snapshot := store.Query(query)
+	snapshot := store.Query(fleet.LocalWorkspace, query)
 	if err := writeCacheSnapshot(command, root.output, query.Kind, snapshot); err != nil {
 		return err
 	}

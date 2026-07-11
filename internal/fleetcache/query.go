@@ -19,6 +19,7 @@ type Query struct {
 	Status       string
 	StatusNot    string
 	Image        string
+	CVE          string
 	Node         string
 	Labels       map[string]string
 	MinRestarts  *int64
@@ -53,6 +54,8 @@ func ParseSearch(expression string) (Query, error) {
 			}
 		case "image":
 			query.Image = value
+		case "cve":
+			query.CVE = value
 		case "node":
 			query.Node = value
 		case "label":
@@ -107,7 +110,10 @@ func ParseCorrelation(expression string) (Query, error) {
 	return query, nil
 }
 
-func (query Query) matches(record Record) bool {
+func (query Query) matches(workspace string, record Record) bool {
+	if record.Workspace != workspace {
+		return false
+	}
 	if query.Kind != "" && canonicalKind(record.Kind) != canonicalKind(query.Kind) {
 		return false
 	}
@@ -129,6 +135,9 @@ func (query Query) matches(record Record) bool {
 	if query.Image != "" && !matchesImages(record.Images, query.Image) {
 		return false
 	}
+	if query.CVE != "" && !matchesCVEs(record.CVEs, query.CVE) {
+		return false
+	}
 	if query.Node != "" && !matchesGlob(record.Node, query.Node) {
 		return false
 	}
@@ -148,6 +157,7 @@ func (query Query) matches(record Record) bool {
 		record.Status,
 		record.Reason,
 		strings.Join(record.Images, " "),
+		strings.Join(record.CVEs, " "),
 		labelsText(record.Labels),
 	}, " "))
 	for _, text := range query.Text {
@@ -156,6 +166,15 @@ func (query Query) matches(record Record) bool {
 		}
 	}
 	return true
+}
+
+func matchesCVEs(cves []string, pattern string) bool {
+	for _, identifier := range cves {
+		if matchesGlob(identifier, pattern) || strings.Contains(strings.ToLower(identifier), strings.ToLower(strings.Trim(pattern, "*"))) {
+			return true
+		}
+	}
+	return false
 }
 
 func matchesImages(images []string, pattern string) bool {

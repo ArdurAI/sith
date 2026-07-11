@@ -20,6 +20,7 @@ import (
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/fleetcache"
 	"github.com/ArdurAI/sith/internal/hydrate"
+	"github.com/ArdurAI/sith/internal/keychain"
 	"github.com/ArdurAI/sith/internal/localops"
 	"github.com/ArdurAI/sith/internal/logging"
 	"github.com/ArdurAI/sith/internal/tui"
@@ -43,6 +44,7 @@ type backend struct {
 	source   fleet.Source
 	reader   connector.Reader
 	local    localops.Client
+	secrets  keychain.Store
 	tuiInput io.Reader
 }
 
@@ -52,7 +54,8 @@ func Execute() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	return executeBackendContext(ctx, os.Args[1:], backend{
-		source: connector.AsSource(adapter), reader: adapter, local: adapter, tuiInput: os.Stdin,
+		source: connector.AsSource(adapter), reader: adapter, local: adapter,
+		secrets: keychain.NewSystemStore(), tuiInput: os.Stdin,
 	}, os.Stdout, os.Stderr)
 }
 
@@ -145,11 +148,15 @@ func newRootCommand(runtime backend, stdout, stderr io.Writer) *cobra.Command {
 	}
 	if runtime.reader != nil {
 		commands = append(commands,
+			newServeCommand(runtime.reader, runtime.secrets),
 			newTUICommand(runtime.reader, runtime.local, runtime.tuiInput, stdout),
 			newGetCommand(options, runtime.reader),
 			newSearchCommand(options, runtime.reader),
 			newCorrelateCommand(options, runtime.reader),
 		)
+	}
+	if runtime.secrets != nil {
+		commands = append(commands, newMCPTokenCommand(runtime.secrets))
 	}
 	if runtime.local != nil {
 		commands = append(commands, newLocalCommands(options, runtime.local)...)
