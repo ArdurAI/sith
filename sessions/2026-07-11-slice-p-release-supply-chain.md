@@ -20,6 +20,9 @@
 [A] Action: Consumer verification of the public v0.1.0 SBOM bundle identified that GitHub emits predicate URI `https://spdx.dev/Document/v2.3`; the runbook used the unversioned URI. Corrected the command and added a regression assertion for the exact vetted predicate.
 [T] Test: The corrected offline command verifies the darwin/arm64 archive against its attached SPDX attestation bundle. Direct Cosign checks for archive, SBOM, checksums, and formula; online/offline SLSA checks; archive extraction; embedded release metadata; Ruby syntax; and formula/checksum binding all pass.
 [C] Checkpoint #3: consumer-verification documentation correction — next: merge through dev/main and complete tap install proof.
+[A] Action: Two hosted unit/race runs exceeded the TUI microbenchmark's race-only allowance while repeated local runs and the dedicated non-race performance gate passed. Removed the invalid race-instrumented wall-clock assertion; the same test still enforces the unchanged 100 ms p95 budget through `make perf`.
+[T] Test: Race-targeted invocation skips only the latency microbenchmark; non-race `make perf` runs and passes the 100 ms acceptance test. All functional race coverage remains in the unit gate.
+[C] Checkpoint #4: isolate performance acceptance from race instrumentation — next: green remote gates and documentation promotion.
 
 ---
 
