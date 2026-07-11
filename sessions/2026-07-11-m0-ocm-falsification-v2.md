@@ -1,7 +1,7 @@
 # Session — 2026-07-11 — m0-ocm-falsification-v2
 
 **Builder:** Gnani Rahul · **Model/effort:** GPT-5, max · **Branch:** gnanirahulnutakki/exp/m0-ocm-falsification-v2
-**Slice(s):** Milestone-0 / E0 / issues #2–#6 · **Status:** in-progress
+**Slice(s):** Milestone-0 / E0 / issues #2–#6 · **Status:** complete
 
 ---
 
@@ -23,7 +23,10 @@
 [T] Test: The corrected retained-lab `verify` passed scoped service reach, secrets/nodes denial, both active hub-to-node denials with exact firewall-counter increments, both FORWARD rules, and spoke-originated conntrack. After a second bypass review closed parent-rename, cluster-query, token-acquisition, and probe-error gaps, the scratch path was bound to a held trusted-parent working directory. Fifteen focused assertions passed, including writable-ancestor replacement and a validate-to-`cd` inode swap. A final clean-room retained run from zero returned `M0_RESULT=PASS ... boundary=active-deny` in 151 seconds; the refreshed 1.7 KiB cast records the hardened verify path. Cleanup removed all three clusters and owned scratch, and Docker cleanup reclaimed 920.8 MB.
 [T] Test: Three independent post-fix reviewer lanes returned clean on path lifecycle, credential/Docker lifecycle, and active network-evidence boundaries; the only residual is `clusteradm` 1.3.1's short unavoidable token-in-argv interface, already scoped non-reportable for this same-user disposable lab. Final `make ci`, Bash syntax, ShellCheck, `git diff --check`, asciicast JSON/redaction, and zero-cluster/zero-scratch checks pass. README was reviewed before commit; its existing `make ci` contract already covers the newly included shell gate, so no README change is required.
 [C] Checkpoint #3: red-team defects closed with executable regression evidence — next: commit, PR, remote CI, merge, and issue closure.
+[A] Action: Published the hardened M0 evidence as PR #73 and merged it into `dev` at `017eec0097a012fd8ce0349e32001397d91e4093`. Closed issues #2–#6 as completed with acceptance-specific evidence, added the consolidated closure record to roadmap issue #39, replaced five malformed shell-quoted comments with unambiguous pointers to their corrected evidence, and closed stale one-spoke PR #13 as superseded rather than merging its obsolete `docs/initial-plan` target. Closed E0 umbrella #18 after checking every exit criterion, closed completed Phase-L local-client umbrella #29, and updated only their completed roadmap checkboxes while leaving E9 #27 open for its unfinished hub-era packaging scope.
+[T] Test: PR CI run 29172067820 and post-merge `dev` CI run 29172228828 are green across build, vet, formatting, lint, govulncheck, race tests, performance, compiled smoke, the real two-cluster kind gate, reproducible archives, SPDX SBOMs, and Homebrew formula validation. Dependabot, code-scanning, and secret-scanning each report zero open alerts. All five M0 child issues plus E0 #18 and E11 #29 are `CLOSED` with reason `COMPLETED`, PR #13 is `CLOSED`, roadmap issue #39 and E9 #27 remain `OPEN`, and the host has zero kind clusters and zero M0 scratch directories.
+[C] Checkpoint #4: this commit — M0 merged, post-merge verified, and publicly closed; next: begin the first Phase-1 E1/E2 slice from live roadmap state.
 
 ---
 
-**Session close:** ready for PR · **Open questions touched:** none
+**Session close:** complete via PR #73 · **Open questions touched:** none
