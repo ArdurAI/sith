@@ -153,6 +153,7 @@ func newRootCommand(runtime backend, stdout, stderr io.Writer) *cobra.Command {
 			newGetCommand(options, runtime.reader),
 			newSearchCommand(options, runtime.reader),
 			newCorrelateCommand(options, runtime.reader),
+			newInvestigateCommand(options, runtime.reader),
 		)
 	}
 	if runtime.secrets != nil {
