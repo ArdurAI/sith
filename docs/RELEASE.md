@@ -14,9 +14,14 @@ The workflow follows the primary guidance for [GitHub artifact attestations](htt
 
 ```bash
 brew tap ArdurAI/tap
+brew trust --formula ArdurAI/tap/sith
 brew install sith
 sith version --output json
 ```
+
+Homebrew 6 requires explicit trust for third-party taps. Trust only the Sith formula as shown; do
+not disable tap trust or broaden it to the whole tap. Older Homebrew releases without tap trust can
+omit the `brew trust` command.
 
 The tap formula is generated from the release checksum manifest; it does not carry hand-entered
 URLs or hashes. The release workflow signs the formula itself. The tap's own repository automation
@@ -71,7 +76,7 @@ Verify that the platform SBOM is cryptographically tied to the same archive:
 gh attestation verify "$archive" \
   --repo ArdurAI/sith \
   --signer-workflow ArdurAI/sith/.github/workflows/release.yml \
-  --predicate-type https://spdx.dev/Document \
+  --predicate-type https://spdx.dev/Document/v2.3 \
   --bundle "sith_${version}_${platform}.sbom.sigstore.json"
 ```
 

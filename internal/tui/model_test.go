@@ -152,6 +152,9 @@ func TestWarmViewP95UnderOneHundredMilliseconds(t *testing.T) {
 	if testing.Short() {
 		t.Skip("performance acceptance test")
 	}
+	if raceDetectorEnabled {
+		t.Skip("race instrumentation invalidates the latency budget; make perf runs this test without race")
+	}
 	store := populatedStore(t, 3000)
 	model, err := NewModel(context.Background(), store, &countingSyncer{})
 	if err != nil {
@@ -167,9 +170,6 @@ func TestWarmViewP95UnderOneHundredMilliseconds(t *testing.T) {
 	slices.Sort(durations)
 	p95 := durations[37]
 	budget := 100 * time.Millisecond
-	if raceDetectorEnabled {
-		budget = 250 * time.Millisecond
-	}
 	if p95 >= budget {
 		t.Fatalf("warm View() p95 = %s, want <%s (samples=%v)", p95, budget, durations)
 	}
