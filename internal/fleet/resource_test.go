@@ -71,6 +71,28 @@ func TestFactKindValid(t *testing.T) {
 	}
 }
 
+func TestQueryValidateHealthNegation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		query Query
+		want  bool
+	}{
+		{name: "exact unhealthy health", query: Query{Kinds: []FactKind{FactHealth}, Selector: Selector{Name: "payments", HealthNot: "Healthy"}}, want: true},
+		{name: "both health predicates", query: Query{Kinds: []FactKind{FactHealth}, Selector: Selector{Health: "Degraded", HealthNot: "Healthy"}}},
+		{name: "unknown health negation", query: Query{Kinds: []FactKind{FactHealth}, Selector: Selector{HealthNot: "Broken"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.query.Validate()
+			if (err == nil) != test.want {
+				t.Fatalf("Validate() error = %v, want valid = %t", err, test.want)
+			}
+		})
+	}
+}
+
 func TestQueryValidate(t *testing.T) {
 	t.Parallel()
 

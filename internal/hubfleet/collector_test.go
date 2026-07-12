@@ -109,6 +109,8 @@ func TestValidateSnapshotRejectsUnsafeOrAmbiguousEvidence(t *testing.T) {
 
 	now := time.Date(2026, time.July, 12, 15, 0, 0, 0, time.UTC)
 	spoke := Spoke{ID: "spoke-a", ManagedClusterRef: "ocm/spoke-a"}
+	duplicate := validSnapshot("spoke-a", now)
+	duplicate.Facts = append(duplicate.Facts, duplicate.Facts[0])
 	tests := []struct {
 		name     string
 		snapshot Snapshot
@@ -125,6 +127,7 @@ func TestValidateSnapshotRejectsUnsafeOrAmbiguousEvidence(t *testing.T) {
 		{name: "deep link", snapshot: snapshotWith(func(fact *fleet.Evidence) { fact.Provenance.DeepLink = "https://private.example" }, now)},
 		{name: "untyped display", snapshot: snapshotWith(func(fact *fleet.Evidence) { fact.Display = []fleet.DisplayField{{Name: "Status", Value: "Healthy"}} }, now)},
 		{name: "raw native identifier", snapshot: snapshotWith(func(fact *fleet.Evidence) { fact.Provenance.NativeID = "opaque-source-value" }, now)},
+		{name: "duplicate normalized fact", snapshot: duplicate},
 		{name: "old observation", snapshot: validSnapshot("spoke-a", now.Add(-6*time.Minute))},
 	}
 	for _, test := range tests {

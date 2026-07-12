@@ -322,8 +322,15 @@ func queryFacts(ctx context.Context, tx pgx.Tx, workspaceID tenancy.WorkspaceID,
 		prefix := placeholder(query.Selector.NamePrefix)
 		conditions = append(conditions, "LEFT(fact.resource_ref->>'name', char_length("+prefix+")) = "+prefix)
 	}
+	if query.Selector.Name != "" {
+		conditions = append(conditions, "fact.resource_ref->>'name' = "+placeholder(query.Selector.Name))
+	}
 	if query.Selector.Health != "" {
 		conditions = append(conditions, "fact.payload->>'status' = "+placeholder(query.Selector.Health))
+	}
+	if query.Selector.HealthNot != "" {
+		conditions = append(conditions, "fact.payload ? 'status'")
+		conditions = append(conditions, "fact.payload->>'status' <> "+placeholder(query.Selector.HealthNot))
 	}
 	limit := query.Limit
 	if limit == 0 {
@@ -418,6 +425,10 @@ func normalizeFleetQuery(query fleet.Query) (fleet.Query, []string, error) {
 		if kind != fleet.FactInventory && kind != fleet.FactHealth {
 			return fleet.Query{}, nil, fmt.Errorf("fact kind %q is not available from persisted spoke snapshots", kind)
 		}
+	}
+	if (query.Selector.Health != "" || query.Selector.HealthNot != "") &&
+		(len(query.Kinds) != 1 || query.Kinds[0] != fleet.FactHealth) {
+		return fleet.Query{}, nil, fmt.Errorf("health selectors require exactly the health fact kind")
 	}
 	if len(query.Selector.Labels) != 0 || query.Selector.Image != "" || query.Selector.CVE != "" {
 		return fleet.Query{}, nil, fmt.Errorf("requested selector is not available from persisted spoke snapshots")

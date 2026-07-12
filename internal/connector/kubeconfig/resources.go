@@ -265,6 +265,9 @@ func (adapter *Adapter) queryScope(
 		}
 	}
 	for _, object := range list.Items {
+		if query.Selector.Name != "" && object.GetName() != query.Selector.Name {
+			continue
+		}
 		if query.Selector.NamePrefix != "" && !strings.HasPrefix(object.GetName(), query.Selector.NamePrefix) {
 			continue
 		}

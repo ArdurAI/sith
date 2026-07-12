@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -56,12 +57,34 @@ func exerciseReadFederationSnapshots(
 			t.Fatalf("real kind snapshot for %s = %#v", spokeID, snapshot)
 		}
 	}
+	correlator, err := hubfleet.NewCorrelator(hubfleet.CorrelatorConfig{Querier: store, Freshness: time.Minute})
+	if err != nil {
+		store.mu.Unlock()
+		t.Fatalf("construct kind correlator: %v", err)
+	}
+	store.mu.Unlock()
+	correlated, err := correlator.Correlate(ctx, scope, hubfleet.CorrelationRequest{
+		ResourceKind: "Pod", Name: "sith-worker-sample", Namespace: "default", HealthNot: "Healthy",
+	})
+	if err != nil || len(correlated.Facts) != 1 || correlated.Facts[0].Ref.Scope != "spoke-b" ||
+		correlated.Facts[0].Stale || correlated.Coverage.Requested != 2 || correlated.Coverage.Reachable != 2 {
+		t.Fatalf("real two-spoke correlation = %#v, error = %v", correlated, err)
+	}
+	store.mu.Lock()
 	store.spokes[1].ManagedClusterRef = "kind-sith-e2e-unreachable"
 	store.mu.Unlock()
 	coverage, err = collector.Collect(ctx, scope)
 	if err != nil || coverage.Reachable != 1 || len(coverage.Unreachable) != 1 || coverage.Unreachable[0] != "spoke-b" ||
 		len(coverage.Stale) != 1 || coverage.Stale[0] != "spoke-b" {
 		t.Fatalf("degraded real spoke collection = %#v, error = %v", coverage, err)
+	}
+	staleCorrelation, err := correlator.Correlate(ctx, scope, hubfleet.CorrelationRequest{
+		ResourceKind: "Pod", Name: "sith-worker-sample", Namespace: "default", HealthNot: "Healthy",
+	})
+	if err != nil || len(staleCorrelation.Facts) != 1 || staleCorrelation.Facts[0].Ref.Scope != "spoke-b" ||
+		!staleCorrelation.Facts[0].Stale || len(staleCorrelation.Coverage.Stale) != 1 ||
+		staleCorrelation.Coverage.Stale[0] != "spoke-b" {
+		t.Fatalf("stale real two-spoke correlation = %#v, error = %v", staleCorrelation, err)
 	}
 }
 
@@ -115,7 +138,7 @@ func (transport kindSnapshotTransport) Snapshot(
 			fleet.Evidence{
 				Ref:        resourceRef,
 				Kind:       fleet.FactHealth,
-				Observed:   json.RawMessage(`{"status":"Healthy"}`),
+				Observed:   healthObservation(spoke.ID, fact.Ref.Name),
 				ObservedAt: now,
 				Source:     spoke.ID,
 				Provenance: fleet.Provenance{Adapter: hubfleet.SourceKind, ProtocolV: "1.0.0"},
@@ -123,6 +146,13 @@ func (transport kindSnapshotTransport) Snapshot(
 		)
 	}
 	return hubfleet.Snapshot{ObservedAt: now, Facts: facts}, nil
+}
+
+func healthObservation(spokeID, resourceName string) json.RawMessage {
+	if spokeID == "spoke-b" && resourceName == "sith-worker-sample" {
+		return json.RawMessage(`{"status":"Degraded"}`)
+	}
+	return json.RawMessage(`{"status":"Healthy"}`)
 }
 
 type kindSnapshotStore struct {
@@ -164,6 +194,69 @@ func (store *kindSnapshotStore) MarkSnapshotFailure(
 	_, retained := store.snapshots[spoke.ID]
 	store.failures[spoke.ID] = failure
 	return retained, nil
+}
+
+func (store *kindSnapshotStore) QueryFleet(
+	_ context.Context,
+	scope tenancy.Scope,
+	query fleet.Query,
+	_ time.Duration,
+	_ time.Time,
+) (fleet.QueryResult, error) {
+	if err := scope.Authorize(tenancy.ActionRead); err != nil {
+		return fleet.QueryResult{}, err
+	}
+	if err := query.Validate(); err != nil {
+		return fleet.QueryResult{}, err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	result := fleet.QueryResult{Facts: []fleet.Fact{}, Coverage: fleet.Coverage{Requested: len(store.spokes)}}
+	for _, spoke := range store.spokes {
+		snapshot, hasSnapshot := store.snapshots[spoke.ID]
+		failure := store.failures[spoke.ID]
+		if !hasSnapshot || failure != "" {
+			result.Coverage.Unreachable = append(result.Coverage.Unreachable, spoke.ID)
+			if hasSnapshot {
+				result.Coverage.Stale = append(result.Coverage.Stale, spoke.ID)
+			}
+		} else {
+			result.Coverage.Reachable++
+		}
+		for _, evidence := range snapshot.Facts {
+			if !matchesKindCorrelation(query, evidence) {
+				continue
+			}
+			fact := fleet.Fact{Evidence: evidence, Workspace: string(scope.WorkspaceID())}
+			if failure != "" {
+				fact.Stale = true
+				fact.StaleFor = "collection failed"
+			}
+			result.Facts = append(result.Facts, fact)
+		}
+	}
+	sort.Strings(result.Coverage.Unreachable)
+	sort.Strings(result.Coverage.Stale)
+	return result, nil
+}
+
+func matchesKindCorrelation(query fleet.Query, evidence fleet.Evidence) bool {
+	if len(query.Kinds) != 1 || query.Kinds[0] != evidence.Kind ||
+		(query.Selector.ResourceKind != "" && query.Selector.ResourceKind != evidence.Ref.Kind) ||
+		(query.Selector.Name != "" && query.Selector.Name != evidence.Ref.Name) ||
+		(query.Selector.Namespace != "" && query.Selector.Namespace != evidence.Ref.Namespace) {
+		return false
+	}
+	var observed struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(evidence.Observed, &observed); err != nil {
+		return false
+	}
+	if query.Selector.Health != "" && observed.Status != query.Selector.Health {
+		return false
+	}
+	return query.Selector.HealthNot == "" || observed.Status != query.Selector.HealthNot
 }
 
 func e2eReaderScope(t *testing.T) tenancy.Scope {

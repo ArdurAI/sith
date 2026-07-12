@@ -274,10 +274,16 @@ func validateSnapshot(spoke Spoke, snapshot Snapshot, now time.Time, maximumAge 
 	if len(snapshot.Facts) > maxSnapshotFacts {
 		return fmt.Errorf("snapshot contains more than %d facts", maxSnapshotFacts)
 	}
+	seenFacts := make(map[string]struct{}, len(snapshot.Facts))
 	for index := range snapshot.Facts {
 		if err := validateEvidence(spoke, snapshot.Facts[index], snapshot.ObservedAt, now, maximumAge); err != nil {
 			return fmt.Errorf("invalid snapshot fact at index %d: %w", index, err)
 		}
+		factKey := string(snapshot.Facts[index].Kind) + "\x00" + snapshot.Facts[index].Ref.String()
+		if _, exists := seenFacts[factKey]; exists {
+			return fmt.Errorf("snapshot contains duplicate normalized fact %q", snapshot.Facts[index].Ref.String())
+		}
+		seenFacts[factKey] = struct{}{}
 	}
 	return nil
 }

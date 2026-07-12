@@ -136,11 +136,12 @@ func (query Query) Validate() error {
 			return fmt.Errorf("label selector key must not be empty")
 		}
 	}
-	if query.Selector.Health != "" {
-		switch query.Selector.Health {
-		case "Healthy", "Degraded", "Progressing", "Unknown":
-		default:
-			return fmt.Errorf("invalid health selector %q", query.Selector.Health)
+	if query.Selector.Health != "" && query.Selector.HealthNot != "" {
+		return fmt.Errorf("health and health-not selectors are mutually exclusive")
+	}
+	for _, health := range []string{query.Selector.Health, query.Selector.HealthNot} {
+		if health != "" && !validHealth(health) {
+			return fmt.Errorf("invalid health selector %q", health)
 		}
 	}
 
@@ -151,11 +152,22 @@ func (query Query) Validate() error {
 type Selector struct {
 	ResourceKind string            `json:"resource_kind,omitempty"`
 	Namespace    string            `json:"namespace,omitempty"`
+	Name         string            `json:"name,omitempty"`
 	NamePrefix   string            `json:"name_prefix,omitempty"`
 	Labels       map[string]string `json:"labels,omitempty"`
 	Health       string            `json:"health,omitempty"`
+	HealthNot    string            `json:"health_not,omitempty"`
 	Image        string            `json:"image,omitempty"`
 	CVE          string            `json:"cve,omitempty"`
+}
+
+func validHealth(health string) bool {
+	switch health {
+	case "Healthy", "Degraded", "Progressing", "Unknown":
+		return true
+	default:
+		return false
+	}
 }
 
 // QueryResult contains normalized facts and honest scope coverage.
