@@ -9,8 +9,12 @@ GOLANGCI ?= golangci-lint
 GOVULNCHECK ?= govulncheck
 KIND     ?= kind
 GORELEASER ?= goreleaser
+DOCKER      ?= docker
 
 KIND_NODE_IMAGE ?= kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+POSTGRES_IMAGE  ?= postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e
+ISOLATION_FUZZ_BUDGET  ?= 50000x
+ISOLATION_FUZZ_WORKERS ?= 4
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
@@ -21,7 +25,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/buildinfo.Commit=$(COMMIT) \
 	-X $(PKG)/internal/buildinfo.Date=$(DATE)
 
-.PHONY: all build test perf e2e e2e-kind lint vuln fmt fmt-check vet tidy clean run ci release-check help
+.PHONY: all build test test-scripts perf e2e e2e-kind e2e-postgres e2e-isolation lint vuln fmt fmt-check vet tidy clean run ci release-check help
 
 all: build
 
@@ -32,6 +36,9 @@ build: ## Build the sith binary into bin/
 test: ## Run unit tests with the race detector and report coverage
 	go test -race -count=1 -coverprofile=coverage.out ./...
 
+test-scripts: ## Run focused safety tests for operator-facing shell harnesses
+	bash tests/scripts/m0_ocm_falsification_safety_test.sh
+
 perf: ## Enforce the warm-cache TUI p95 latency budget without race overhead
 	go test -count=1 -run '^TestWarmViewP95UnderOneHundredMilliseconds$$' ./internal/tui
 
@@ -41,6 +48,18 @@ e2e: ## Build and exercise the real binary as a subprocess
 e2e-kind: ## Exercise adapter and binary against two real kind clusters
 	KIND_BIN="$(KIND)" KIND_NODE_IMAGE="$(KIND_NODE_IMAGE)" \
 		go test -race -count=1 -timeout=15m -tags='e2e kind' -run '^TestKindFleetFanout$$' ./tests/e2e
+
+e2e-postgres: ## Prove forced RLS against a temporary digest-pinned PostgreSQL container
+	DOCKER_BIN="$(DOCKER)" POSTGRES_IMAGE="$(POSTGRES_IMAGE)" \
+		go test -race -count=1 -cover -timeout=5m -tags=postgres -run '^TestPostgresRLSBackstop$$' ./internal/hubdb
+
+e2e-isolation: ## Run signed-identity, scoped-query, and real PostgreSQL isolation invariants together
+	DOCKER_BIN="$(DOCKER)" POSTGRES_IMAGE="$(POSTGRES_IMAGE)" \
+		go test -race -count=1 -cover -timeout=5m -tags=postgres \
+			./internal/hubauth ./internal/hubserver ./internal/fleetcache ./internal/hubdb
+	go test -run '^$$' -fuzz '^FuzzQueryScopedNeverLeaksForeignWorkspace$$' \
+		-fuzztime="$(ISOLATION_FUZZ_BUDGET)" -parallel="$(ISOLATION_FUZZ_WORKERS)" \
+		-timeout=2m ./internal/fleetcache
 
 lint: ## Run golangci-lint (v2)
 	$(GOLANGCI) run ./...
@@ -68,7 +87,7 @@ clean: ## Remove build and coverage artifacts
 run: build ## Build then run sith version
 	$(BIN_DIR)/$(BINARY) version
 
-ci: fmt-check vet lint vuln test perf e2e build ## Run the full CI gate locally
+ci: fmt-check vet lint vuln test test-scripts perf e2e build ## Run the full CI gate locally
 
 release-check: ## Build and verify the reproducible multi-platform release snapshot twice
 	@command -v "$(GORELEASER)" >/dev/null || { echo "goreleaser is required" >&2; exit 1; }

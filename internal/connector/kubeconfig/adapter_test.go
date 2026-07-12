@@ -4,15 +4,18 @@ package kubeconfig
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -398,52 +401,111 @@ func TestQueryTimesOutClientThatIgnoresContext(t *testing.T) {
 	}
 }
 
-func TestDefaultProbeExecutesExecCredentialLocally(t *testing.T) {
+func TestDefaultProbeExecCredentialMixedCloudIsolatedAndMemoryOnly(t *testing.T) {
 	if os.Getenv("SITH_EXEC_HELPER") == "1" {
 		runExecCredentialHelper()
 	}
 
-	const token = "ephemeral-test-token"
-	marker := filepath.Join(t.TempDir(), "exec-called")
-	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/version" {
-			http.NotFound(writer, request)
-			return
+	sandbox := t.TempDir()
+	for variable, directory := range map[string]string{
+		"HOME":            filepath.Join(sandbox, "home"),
+		"TMPDIR":          filepath.Join(sandbox, "tmp"),
+		"XDG_CACHE_HOME":  filepath.Join(sandbox, "cache"),
+		"XDG_CONFIG_HOME": filepath.Join(sandbox, "config-home"),
+	} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatalf("create %s sandbox: %v", variable, err)
 		}
-		if request.Header.Get("Authorization") != "Bearer "+token {
-			http.Error(writer, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"gitVersion":"v1.36.1"}`))
-	}))
-	t.Cleanup(server.Close)
-
-	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
-	config := clientcmdapi.Config{
-		Clusters: map[string]*clientcmdapi.Cluster{
-			"exec": {Server: server.URL, CertificateAuthorityData: certificate},
-		},
-		AuthInfos: map[string]*clientcmdapi.AuthInfo{
-			"exec": {Exec: &clientcmdapi.ExecConfig{
-				Command:         os.Args[0],
-				Args:            []string{"-test.run=TestDefaultProbeExecutesExecCredentialLocally"},
-				APIVersion:      "client.authentication.k8s.io/v1",
-				InteractiveMode: clientcmdapi.NeverExecInteractiveMode,
-				Env: []clientcmdapi.ExecEnvVar{
-					{Name: "SITH_EXEC_HELPER", Value: "1"},
-					{Name: "SITH_EXEC_MARKER", Value: marker},
-					{Name: "SITH_EXEC_TOKEN", Value: token},
-				},
-			}},
-		},
-		Contexts: map[string]*clientcmdapi.Context{
-			"exec": {Cluster: "exec", AuthInfo: "exec"},
-		},
-		CurrentContext: "exec",
+		t.Setenv(variable, directory)
 	}
+
+	type cloudContext struct {
+		name       string
+		apiVersion string
+		tokenEnv   string
+		token      string
+		calls      atomic.Int32
+	}
+	clouds := []*cloudContext{
+		{name: "aws", apiVersion: "client.authentication.k8s.io/v1", tokenEnv: "SITH_EXEC_TEST_AWS", token: "aws-ephemeral-token-81"},
+		{name: "azure", apiVersion: "client.authentication.k8s.io/v1beta1", tokenEnv: "SITH_EXEC_TEST_AZURE", token: "azure-ephemeral-token-81"},
+		{name: "gcp", apiVersion: "client.authentication.k8s.io/v1", tokenEnv: "SITH_EXEC_TEST_GCP", token: "gcp-ephemeral-token-81"},
+	}
+	config := clientcmdapi.NewConfig()
+	secretMaterial := make([]string, 0, len(clouds)+1)
+	for _, cloud := range clouds {
+		cloud := cloud
+		t.Setenv(cloud.tokenEnv, cloud.token)
+		secretMaterial = append(secretMaterial, cloud.token)
+		server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			cloud.calls.Add(1)
+			if request.URL.Path != "/version" {
+				http.NotFound(writer, request)
+				return
+			}
+			if request.Header.Get("Authorization") != "Bearer "+cloud.token {
+				http.Error(writer, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"gitVersion":"v1.36.1"}`))
+		}))
+		t.Cleanup(server.Close)
+
+		execEnv := []clientcmdapi.ExecEnvVar{
+			{Name: "SITH_EXEC_HELPER", Value: "1"},
+			{Name: "SITH_EXEC_TOKEN_ENV", Value: cloud.tokenEnv},
+		}
+		if cloud.name == "gcp" {
+			keyDER, err := x509.MarshalPKCS8PrivateKey(server.TLS.Certificates[0].PrivateKey)
+			if err != nil {
+				t.Fatalf("marshal test client key: %v", err)
+			}
+			clientCertificate := string(pem.EncodeToMemory(&pem.Block{
+				Type: "CERTIFICATE", Bytes: server.Certificate().Raw,
+			}))
+			clientKey := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
+			const certificateEnv = "SITH_EXEC_TEST_GCP_CERTIFICATE"
+			const keyEnv = "SITH_EXEC_TEST_GCP_KEY"
+			t.Setenv(certificateEnv, clientCertificate)
+			t.Setenv(keyEnv, clientKey)
+			secretMaterial = append(secretMaterial, clientKey)
+			execEnv = append(execEnv,
+				clientcmdapi.ExecEnvVar{Name: "SITH_EXEC_CERTIFICATE_ENV", Value: certificateEnv},
+				clientcmdapi.ExecEnvVar{Name: "SITH_EXEC_KEY_ENV", Value: keyEnv},
+			)
+		}
+
+		config.Clusters[cloud.name] = &clientcmdapi.Cluster{
+			Server: server.URL,
+			CertificateAuthorityData: pem.EncodeToMemory(&pem.Block{
+				Type: "CERTIFICATE", Bytes: server.Certificate().Raw,
+			}),
+		}
+		config.AuthInfos[cloud.name] = &clientcmdapi.AuthInfo{Exec: &clientcmdapi.ExecConfig{
+			Command:         os.Args[0],
+			Args:            []string{"-test.run=TestDefaultProbeExecCredentialMixedCloudIsolatedAndMemoryOnly"},
+			APIVersion:      cloud.apiVersion,
+			InteractiveMode: clientcmdapi.NeverExecInteractiveMode,
+			Env:             execEnv,
+		}}
+		config.Contexts[cloud.name] = &clientcmdapi.Context{Cluster: cloud.name, AuthInfo: cloud.name}
+	}
+	config.Clusters["broken"] = config.Clusters["aws"].DeepCopy()
+	config.AuthInfos["broken"] = &clientcmdapi.AuthInfo{Exec: &clientcmdapi.ExecConfig{
+		Command:         filepath.Join(sandbox, "missing-exec-helper"),
+		APIVersion:      "client.authentication.k8s.io/v1",
+		InteractiveMode: clientcmdapi.NeverExecInteractiveMode,
+	}}
+	config.Contexts["broken"] = &clientcmdapi.Context{Cluster: "broken", AuthInfo: "broken"}
+	config.CurrentContext = "aws"
+	kubeconfigPath := filepath.Join(sandbox, "kubeconfig")
+	if err := clientcmd.WriteToFile(*config, kubeconfigPath); err != nil {
+		t.Fatalf("write mixed-cloud kubeconfig: %v", err)
+	}
+
 	adapter, err := New(
-		WithLoadingRules(testLoadingRules(t, config)),
+		WithExplicitPath(kubeconfigPath),
 		withDynamicFactory(func(_ *rest.Config) (dynamic.Interface, error) { return fakeClient(), nil }),
 	)
 	if err != nil {
@@ -453,28 +515,95 @@ func TestDefaultProbeExecutesExecCredentialLocally(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Discover() error = %v", err)
 	}
-	if len(discovery.Scopes) != 1 || !discovery.Scopes[0].Reachable {
-		t.Fatalf("Discover() = %#v, want reachable exec context", discovery)
+	if len(discovery.Scopes) != 4 || !slices.Equal(discovery.Unreachable, []string{"broken"}) {
+		t.Fatalf("Discover() = %#v, want three reachable contexts and isolated broken helper", discovery)
 	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("exec marker: %v", err)
+	for _, cloud := range clouds {
+		if cloud.calls.Load() != 1 {
+			t.Errorf("%s probe calls = %d, want one authenticated request", cloud.name, cloud.calls.Load())
+		}
 	}
+
+	discoveryJSON, err := json.Marshal(discovery)
+	if err != nil {
+		t.Fatalf("marshal discovery: %v", err)
+	}
+	assertNoSecretMaterial(t, "fleet discovery", discoveryJSON, secretMaterial)
+	adapter.mu.RLock()
+	for name, retained := range adapter.configs {
+		if retained.BearerToken != "" || retained.BearerTokenFile != "" || len(retained.KeyData) != 0 {
+			t.Errorf("%s retained credential output in rest.Config", name)
+		}
+		execConfigJSON, marshalErr := json.Marshal(retained.ExecProvider)
+		if marshalErr != nil {
+			t.Errorf("marshal %s exec provider: %v", name, marshalErr)
+			continue
+		}
+		assertNoSecretMaterial(t, name+" retained exec config", execConfigJSON, secretMaterial)
+	}
+	adapter.mu.RUnlock()
+	assertSandboxExcludesSecrets(t, sandbox, secretMaterial)
 }
 
 func runExecCredentialHelper() {
-	marker := os.Getenv("SITH_EXEC_MARKER")
-	if marker == "" || os.WriteFile(marker, []byte("called"), 0o600) != nil {
+	var input struct {
+		APIVersion string `json:"apiVersion"`
+	}
+	if err := json.Unmarshal([]byte(os.Getenv("KUBERNETES_EXEC_INFO")), &input); err != nil || input.APIVersion == "" {
 		os.Exit(2)
 	}
+	tokenEnv := os.Getenv("SITH_EXEC_TOKEN_ENV")
+	if tokenEnv == "" || os.Getenv(tokenEnv) == "" {
+		os.Exit(2)
+	}
+	status := map[string]any{"token": os.Getenv(tokenEnv)}
+	certificateEnv, keyEnv := os.Getenv("SITH_EXEC_CERTIFICATE_ENV"), os.Getenv("SITH_EXEC_KEY_ENV")
+	if certificateEnv != "" || keyEnv != "" {
+		if certificateEnv == "" || keyEnv == "" || os.Getenv(certificateEnv) == "" || os.Getenv(keyEnv) == "" {
+			os.Exit(2)
+		}
+		status["clientCertificateData"] = os.Getenv(certificateEnv)
+		status["clientKeyData"] = os.Getenv(keyEnv)
+	}
 	credential := map[string]any{
-		"apiVersion": "client.authentication.k8s.io/v1",
+		"apiVersion": input.APIVersion,
 		"kind":       "ExecCredential",
-		"status":     map[string]any{"token": os.Getenv("SITH_EXEC_TOKEN")},
+		"status":     status,
 	}
 	if json.NewEncoder(os.Stdout).Encode(credential) != nil {
 		os.Exit(2)
 	}
 	os.Exit(0)
+}
+
+func assertNoSecretMaterial(t *testing.T, subject string, payload []byte, secrets []string) {
+	t.Helper()
+	for index, secret := range secrets {
+		if secret != "" && strings.Contains(string(payload), secret) {
+			t.Errorf("%s contains secret material %d", subject, index)
+		}
+	}
+}
+
+func assertSandboxExcludesSecrets(t *testing.T, root string, secrets []string) {
+	t.Helper()
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		payload, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		assertNoSecretMaterial(t, "sandbox file "+filepath.Base(path), payload, secrets)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan credential sandbox: %v", err)
+	}
 }
 
 func testLoadingRules(t *testing.T, config clientcmdapi.Config) *clientcmd.ClientConfigLoadingRules {

@@ -1,6 +1,6 @@
 # Sith
 
-**Status: Phase-L client plus release supply-chain gate.** The CLI, TUI, browser IDE, optional MCP server,
+**Status: Phase-L client plus E1 hub-authentication foundations and release supply-chain gate.** The CLI, TUI, browser IDE, optional MCP server,
 deterministic advisory brain, and reproducible multi-platform release pipeline
 discover every context resolved by client-go, hydrate one local in-memory fleet cache through
 per-context watches, serve coverage-honest fleet search/correlation, and provide explicit-context
@@ -63,7 +63,10 @@ make build
 
 `sith clusters` follows standard client-go loading rules: set `KUBECONFIG` to an OS path-list or
 use the default `~/.kube/config`. Exec-credential helpers run locally, exactly as they do for
-`kubectl`; Sith does not copy kubeconfigs or credentials elsewhere.
+`kubectl`; Sith accepts the client-go `v1` and `v1beta1` ExecCredential contracts independently
+for every context. One broken helper only marks its context unreachable. Helper tokens and client
+keys remain in the client-go transport's process memory and never enter Sith's config, fleet cache,
+or filesystem.
 
 Sith-owned persisted secrets use the host credential store under the fixed `io.ardur.sith`
 service: macOS Keychain, Windows Credential Manager, or freedesktop Secret Service. If that store
@@ -72,6 +75,83 @@ The optional local MCP capability is the first consumer: it uses a unique short-
 entry and deletes it on clean server shutdown.
 The dependency can invoke the fixed macOS `/usr/bin/security` tool or the Linux session D-Bus only
 during an explicit keychain operation; it creates no account, hosted service, or cloud cost.
+
+The governed-hub foundation supports one deliberately narrow API-key exchange contract. An
+administrator issues a high-entropy `sith_api_v1` key for an existing workspace member; only its
+HMAC-SHA-256 verifier—not the plaintext secret—is stored with its subject and lifecycle metadata,
+behind forced PostgreSQL RLS. The plaintext is returned once. Machine callers present that
+credential only as `Authorization: SithKey ...` to the
+exchange handler. Sith resolves the subject's current membership server-side and returns a
+15-minute, type-pinned Ed25519 session for normal `Authorization: Bearer ...` requests. A raw API
+key is never a role-bearing bearer token.
+
+API keys expire, support an administrator-bounded rotation overlap of at most 24 hours, and can be
+revoked immediately. Exchange responses, including generic failures, are non-cacheable. The
+handler includes a bounded per-process attempt limiter; a replicated hub must additionally enforce
+a shared limit at its ingress or gateway. Deployments must provide the HMAC pepper and Ed25519
+private key through a secret manager, keep both out of logs and configuration repositories, and
+rotate them under an explicit operational procedure. These are E1 library and HTTP boundaries;
+the `sith hub` runtime remains staged behind later hub epics rather than exposing an incomplete
+service.
+
+Pinned OIDC federation uses the same exchange model. Each endpoint is fixed to one requested
+workspace, and each provider configuration allowlists an exact HTTPS issuer, audience, token type,
+asymmetric algorithm set, upstream lifetime, cache TTL, and key-count bound. Discovery metadata
+must repeat the configured issuer exactly; JWKS stays on the same origin and is fetched through a
+TLS 1.2+ transport that disables proxies, rejects private and special-use network targets, blocks
+off-origin redirects, caps response size, and binds each connection to a validated DNS result.
+Duplicate JSON claims and token-controlled `jku`, `x5u`, embedded-key, certificate-chain, critical,
+nested, and compressed JOSE headers fail closed.
+
+The verified upstream issuer and subject select a server-side binding under the requested
+workspace's forced RLS policy. Upstream workspace and role claims are ignored. Sith reads the
+member's current role and issues the same 15-minute Ed25519 session used by API-key exchange.
+Unknown keys trigger one bounded JWKS refresh that atomically replaces the cache, enabling key
+rollover without retaining retired keys; an expired cache is never used through an issuer outage.
+This follows [OpenID Connect Discovery 1.0](https://openid.net/specs/openid-connect-discovery-1_0.html),
+[RFC 7517](https://www.rfc-editor.org/rfc/rfc7517.html), and the
+[JWT BCP, RFC 8725](https://www.rfc-editor.org/rfc/rfc8725.html). Discovery and refresh add small
+outbound request and availability dependencies but create no cloud resources by themselves.
+
+Cloud-IAM identity starts from the same fail-closed exchange boundary. The foundation accepts only
+a verifier-normalized provider, explicit realm, immutable subject, audience, and bounded lifetime;
+it maps that identity through a current forced-RLS membership binding and consumes only an HMAC
+proof digest until expiry. AWS now accepts only a base64url-encoded, pre-signed SigV4
+`GetCallerIdentity` URL for one configured regional STS endpoint (commercial, GovCloud, or China),
+with a 60-second-or-shorter `X-Amz-Expires` and an exact `x-sith-audience` signed header. Sith
+reconstructs a header-minimal GET only to that endpoint, disables redirects, accepts only a
+short-lived assumed-role response, and binds the STS account plus immutable role ID through RLS.
+It never stores or logs an AWS access key, session token, signature, or raw proof. No provider or
+endpoint fallback is accepted.
+
+Azure Entra workload federation accepts only tenant-specific v2.0 `JWT` access tokens from one
+configured Microsoft public, US Government, or China authority. The verifier pins the derived
+tenant issuer, audience, RS256 key policy, JWKS origin, expiry, `tid`, immutable workload `oid`,
+and app-only `idtyp=app`; an optional configured `azp` further pins the actor. Tenant-independent
+`common`/`organizations`, delegated identities, token-controlled authority selection, upstream
+roles/groups/scopes, and cloud fallback are rejected or ignored. The resulting tenant+object
+identity still needs the same server-side RLS binding and one-time replay consumption before Sith
+issues a session.
+
+Google service-account federation accepts only Google-signed public-cloud ID tokens with the exact
+`https://accounts.google.com` issuer and `https://www.googleapis.com/oauth2/v3/certs` JWKS endpoint.
+It requires RS256, one exact audience, a verified `*.gserviceaccount.com` email, matching immutable
+numeric `sub`/`azp`, a one-hour-or-shorter lifetime, and an explicitly configured Google
+organization number carried in the `google.organization_number` claim. Operators must mint with the
+IAM Credentials `organizationNumberIncluded` option; Sith does not infer a project or realm from an
+email address. Self-signed service-account JWT assertions, user tokens, unbound organizations,
+alternate/restricted/sovereign/private endpoints, upstream authorization claims, and raw-token
+persistence are rejected. The resulting organization+service-account ID still resolves only through
+the server-side RLS binding and replay guard before a Sith session is issued.
+
+This AWS contract uses [STS GetCallerIdentity](https://docs.aws.amazon.com/STS/latest/APIReference/API_GetCallerIdentity.html)
+and regional STS endpoint guidance: the global STS endpoint is deliberately rejected because Sith
+requires a configured regional authority and bounded proof lifetime.
+
+The Google contract follows the [service-account ID-token profile](https://cloud.google.com/docs/authentication/token-types)
+and [IAM Credentials `generateIdToken` contract](https://cloud.google.com/iam/docs/reference/credentials/rest/v1/projects.serviceAccounts/generateIdToken):
+service-account ID tokens are Google-JWKS signed, while client-created service-account assertions are
+not accepted as Sith proofs.
 
 `sith serve --mcp` exposes `fleet.inventory`, `fleet.health`, `fleet.correlate`, and
 `fleet.cve-search` over MCP Streamable HTTP. All four tools are cache-only and carry
@@ -183,6 +263,28 @@ additional CI time, disk, and memory:
 
 ```bash
 make e2e-kind
+```
+
+The hub tenancy gate starts a temporary, digest-pinned PostgreSQL 18.4 container and proves the
+application role is a non-owner without `BYPASSRLS`, every current workspace table—including API
+key verifier and OIDC binding rows—has forced RLS, direct unscoped reads are default-deny, foreign writes fail, and
+transaction-local scope does not bleed through a reused pool connection. It also exercises real
+API-key issuance, current-membership exchange, bounded rotation overlap, immediate revocation,
+OIDC binding resolution, and cross-workspace negative controls. It requires Docker and adds one
+official PostgreSQL image pull plus a short-lived local container:
+
+```bash
+make e2e-postgres
+```
+
+The complete tenant-isolation suite combines the real PostgreSQL boundary with signed-token,
+injected-header, scoped-query, and deterministic selector-fuzz invariants. It also removes and
+weakens a live RLS policy and requires the suite to detect both mutations before restoring the
+steady state. The native Go fuzzer runs exactly 50,000 generated selector mutations with four
+workers; coverage no longer depends on CI runner speed, while a separate timeout catches hangs:
+
+```bash
+make e2e-isolation
 ```
 
 The architecture, threat model, ADRs, and roadmap live under [`docs/`](docs/). Build-session
