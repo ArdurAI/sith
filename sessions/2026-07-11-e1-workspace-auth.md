@@ -1,7 +1,7 @@
 # Session — 2026-07-11 — e1-workspace-auth
 
 **Builder:** Gnani Rahul · **Model/effort:** GPT-5, max · **Branch:** gnanirahulnutakki/feat/e1-workspace-auth
-**Slice(s):** Phase 1 / E1 / issue #7 · **Status:** in-progress
+**Slice(s):** Phase 1 / E1 / issue #7 · **Status:** complete
 
 ---
 
@@ -28,7 +28,10 @@
 [T] Test: Final `make ci` is green after hardening: gofmt, vet, golangci-lint with zero findings, govulncheck with no vulnerabilities, the full race suite, 100% privacy-boundary coverage, 15 shell-safety assertions, the warm-view performance guard, compiled e2e, and the production build. New-package coverage is 96.3% for hubauth and 90.2% for hubserver.
 [T] Test: The pinned real kind multi-cluster fanout gate passed under the race detector in 94.844s using Kubernetes v1.36.1 by digest. Cleanup confirmed zero kind clusters before and after Docker pruning and reclaimed 913.1 MB. GitHub Dependabot, code-scanning, and secret-scanning queues were each zero immediately before publication.
 [C] Checkpoint #6: all local repository, vulnerability, privacy, and real-cluster gates green — next: signed checkpoint commit, remote CI, review, and merge.
+[A] Action: Published PR #75 with five SSH-signed, DCO-signed commits and explicit manual red-team evidence. Both required PR jobs passed in run 29175976225, including the GitHub-hosted vulnerability scan, reproducible archives, SPDX SBOM, race tests, and a second real two-cluster fan-out test. Merged to `dev` as `81fd7937ee36ba5b21f16019ce5e71ad0b7dea26`.
+[T] Test: Post-merge `dev` run 29176136498 passed both required jobs against the exact merge commit. Closed #7 with evidence, checked F1.1–F1.4 in epic #19 while leaving RLS and the destructive isolation suite open, updated roadmap #39, and rechecked zero Dependabot, code-scanning, and secret-scanning alerts.
+[C] Checkpoint #7: E1 signed-workspace foundation accepted on `dev` — next: issue #8 forced PostgreSQL RLS backstop.
 
 ---
 
-**Session close:** in progress · **Open questions touched:** none
+**Session close:** PR #75 merged; issue #7 closed; local, PR, and post-merge gates green · **Open questions touched:** none
