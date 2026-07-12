@@ -1,7 +1,7 @@
 # Session — 2026-07-12 — e1-google-service-account-federation
 
 **Builder:** Gnani Rahul · **Branch:** gnanirahulnutakki/feat/e1-google-service-account-federation
-**Slice(s):** E1 Google service-account identity verifier ([#94](https://github.com/ArdurAI/sith/issues/94)) · **Status:** validated, publication pending
+**Slice(s):** E1 Google service-account identity verifier ([#94](https://github.com/ArdurAI/sith/issues/94)) · **Status:** delivered
 
 ---
 
@@ -68,4 +68,14 @@ permanent numeric service-account ID into Sith's replay-safe cloud principal con
 - Final publication queues: Dependabot 0, code scanning 0, secret scanning 0. Cleanup found no kind
   clusters; Docker prune removed the disposable kind network, test images, and build cache, reclaiming
   2.727 GB without stopping active containers.
-- Signed/DCO/GSTACK commit, PR, and exact post-merge evidence remain required.
+- Signed/DCO/GSTACK commit: `7332864`
+  (`2026-07-12/e1-google-service-account-federation#1`).
+- Delivery PR [#98](https://github.com/ArdurAI/sith/pull/98) merged cleanly into `dev` as
+  `1588efc4ecb44d0f84029db0f5c1ad72d861965a` on 2026-07-12 after both PR gates passed:
+  build/vet/gofmt/lint/test/e2e in 6m49s and reproducible archives/SPDX SBOM/Homebrew formula in
+  1m01s.
+- Exact post-merge `dev` CI [29186266625](https://github.com/ArdurAI/sith/actions/runs/29186266625)
+  passed: reproducible archives/SPDX SBOM/Homebrew formula in 54s and the full build, race,
+  isolation, binary-smoke, and real two-kind-cluster fan-out suite in 6m25s.
+- #94 and parent E1 #85 are closed, with #19/#39 and the E1 design record updated. Final post-merge
+  queues are Dependabot 0, code scanning 0, secret scanning 0; no kind clusters remain.
