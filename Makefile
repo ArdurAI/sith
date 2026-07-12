@@ -13,7 +13,8 @@ DOCKER      ?= docker
 
 KIND_NODE_IMAGE ?= kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
 POSTGRES_IMAGE  ?= postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e
-ISOLATION_FUZZTIME ?= 5s
+ISOLATION_FUZZ_BUDGET  ?= 50000x
+ISOLATION_FUZZ_WORKERS ?= 4
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
@@ -57,7 +58,8 @@ e2e-isolation: ## Run signed-identity, scoped-query, and real PostgreSQL isolati
 		go test -race -count=1 -cover -timeout=5m -tags=postgres \
 			./internal/hubauth ./internal/hubserver ./internal/fleetcache ./internal/hubdb
 	go test -run '^$$' -fuzz '^FuzzQueryScopedNeverLeaksForeignWorkspace$$' \
-		-fuzztime="$(ISOLATION_FUZZTIME)" ./internal/fleetcache
+		-fuzztime="$(ISOLATION_FUZZ_BUDGET)" -parallel="$(ISOLATION_FUZZ_WORKERS)" \
+		-timeout=2m ./internal/fleetcache
 
 lint: ## Run golangci-lint (v2)
 	$(GOLANGCI) run ./...
