@@ -71,18 +71,7 @@ func ScopeFromContext(ctx context.Context, workspaceID tenancy.WorkspaceID) (ten
 }
 
 func bearerToken(values []string) (string, bool) {
-	if len(values) != 1 {
-		return "", false
-	}
-	value := values[0]
-	scheme, credentials, found := strings.Cut(value, " ")
-	if !found || !strings.EqualFold(scheme, "Bearer") || credentials == "" || len(credentials) > maxBearerTokenBytes {
-		return "", false
-	}
-	if strings.TrimSpace(credentials) != credentials || strings.ContainsAny(credentials, " \t\r\n,") {
-		return "", false
-	}
-	return credentials, true
+	return authorizationCredential(values, "Bearer", maxBearerTokenBytes)
 }
 
 func stripUntrustedIdentityHeaders(headers http.Header) {

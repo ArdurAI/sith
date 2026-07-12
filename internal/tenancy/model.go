@@ -13,6 +13,11 @@ const maxIdentityLength = 256
 // WorkspaceID is the immutable tenancy boundary carried by every hub-scoped entity.
 type WorkspaceID string
 
+// ValidateWorkspaceID validates an untrusted workspace identifier before it reaches a data boundary.
+func ValidateWorkspaceID(workspaceID WorkspaceID) error {
+	return validateIdentity("workspace ID", string(workspaceID))
+}
+
 // Role is one fail-safe workspace permission set.
 type Role string
 

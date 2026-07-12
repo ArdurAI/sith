@@ -4,7 +4,9 @@
 package hubdb
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -19,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/ArdurAI/sith/internal/hubauth"
 	"github.com/ArdurAI/sith/internal/tenancy"
 )
 
@@ -95,7 +98,7 @@ func TestPostgresRLSBackstop(t *testing.T) {
 		t.Fatalf("workspace A query: %v", err)
 	}
 
-	tables := []string{"workspaces", "memberships", "clusters", "fleet_facts"}
+	tables := []string{"workspaces", "memberships", "clusters", "fleet_facts", "api_keys"}
 	for _, table := range tables {
 		var count int
 		if err := database.pool.QueryRow(ctx, `SELECT count(*) FROM sith.`+pgx.Identifier{table}.Sanitize()).Scan(&count); err != nil {
@@ -118,6 +121,8 @@ func TestPostgresRLSBackstop(t *testing.T) {
 			VALUES ('workspace-b', 'cluster-b2', 'ocm/cluster-b2')`},
 		{name: "fleet fact", statement: `INSERT INTO sith.fleet_facts(workspace_id, cluster_id, kind, payload, observed_at)
 			VALUES ('workspace-b', 'cluster-b', 'health', '{}', now())`},
+		{name: "API key", statement: `INSERT INTO sith.api_keys(workspace_id, id, subject, verifier, created_at, expires_at)
+			VALUES ('workspace-b', 'CCCCCCCCCCCCCCCCCCCCCC', 'user:bob', decode(repeat('cc', 32), 'hex'), now(), now() + interval '1 day')`},
 	}
 	for _, test := range foreignWrites {
 		t.Run("foreign "+test.name+" write denied", func(t *testing.T) {
@@ -218,11 +223,13 @@ func TestPostgresRLSBackstop(t *testing.T) {
 	if err := AuditIsolation(ctx, owner, appRole); err != nil {
 		t.Fatalf("restored AuditIsolation() error = %v", err)
 	}
+
+	assertAPIKeyStoreIntegration(t, ctx, database, admin)
 }
 
 func assertWorkspaceAIsolation(ctx context.Context, database *AppDB, scope tenancy.Scope) error {
 	return database.InWorkspace(ctx, scope, func(tx pgx.Tx) error {
-		for _, table := range []string{"workspaces", "memberships", "clusters", "fleet_facts"} {
+		for _, table := range []string{"workspaces", "memberships", "clusters", "fleet_facts", "api_keys"} {
 			var count int
 			if err := tx.QueryRow(ctx, `SELECT count(*) FROM sith.`+pgx.Identifier{table}.Sanitize()).Scan(&count); err != nil {
 				return err
@@ -330,17 +337,107 @@ func seedTenantRows(t *testing.T, ctx context.Context, admin *pgx.Conn) {
 			('workspace-a', 'Workspace A', 'shared-display-key'),
 			('workspace-b', 'Workspace B', 'shared-display-key')`,
 		`INSERT INTO sith.memberships(workspace_id, subject, role) VALUES
-			('workspace-a', 'user:alice', 'reader'), ('workspace-b', 'user:bob', 'admin')`,
+			('workspace-a', 'user:alice', 'admin'), ('workspace-b', 'user:bob', 'admin')`,
 		`INSERT INTO sith.clusters(workspace_id, id, managed_cluster_ref) VALUES
 			('workspace-a', 'cluster-a', 'ocm/cluster-a'), ('workspace-b', 'cluster-b', 'ocm/cluster-b')`,
 		`INSERT INTO sith.fleet_facts(workspace_id, cluster_id, kind, payload, observed_at) VALUES
 			('workspace-a', 'cluster-a', 'health', '{"status":"ok"}', now()),
 			('workspace-b', 'cluster-b', 'health', '{"status":"degraded"}', now())`,
+		`INSERT INTO sith.api_keys(workspace_id, id, subject, verifier, created_at, expires_at) VALUES
+			('workspace-a', 'AAAAAAAAAAAAAAAAAAAAAA', 'user:alice', decode(repeat('aa', 32), 'hex'), now(), now() + interval '1 day'),
+			('workspace-b', 'BBBBBBBBBBBBBBBBBBBBBB', 'user:bob', decode(repeat('bb', 32), 'hex'), now(), now() + interval '1 day')`,
 	}
 	for _, statement := range statements {
 		if _, err := admin.Exec(ctx, statement); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func assertAPIKeyStoreIntegration(t *testing.T, ctx context.Context, database *AppDB, admin *pgx.Conn) {
+	t.Helper()
+	seeded, membership, err := database.LookupAPIKey(ctx, "workspace-a", "AAAAAAAAAAAAAAAAAAAAAA")
+	if err != nil || membership.Subject != "user:alice" || len(seeded.Verifier) != 32 {
+		t.Fatalf("scoped API key lookup record = %#v, membership = %#v, error = %v", seeded, membership, err)
+	}
+	if _, _, err := database.LookupAPIKey(ctx, "workspace-a", "BBBBBBBBBBBBBBBBBBBBBB"); !errors.Is(err, hubauth.ErrAPIKeyNotFound) {
+		t.Fatalf("cross-workspace key lookup error = %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x42}, ed25519.SeedSize))
+	issuer, err := hubauth.NewSessionIssuer(hubauth.SessionIssuerConfig{
+		Issuer: "https://issuer.sith.test", Audience: "https://hub.sith.test", KeyID: "postgres-session",
+		PrivateKey: privateKey, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := hubauth.NewAPIKeyService(hubauth.APIKeyServiceConfig{
+		Store: database, Issuer: issuer, Pepper: bytes.Repeat([]byte{0x24}, 32), Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := tenancy.NewPrincipal("user:alice", map[tenancy.WorkspaceID]tenancy.Role{"workspace-a": tenancy.RoleAdmin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := principal.Scope("workspace-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, record, err := service.Issue(ctx, scope, "user:alice")
+	if err != nil {
+		t.Fatalf("issue PostgreSQL-backed API key: %v", err)
+	}
+	stored, _, err := database.LookupAPIKey(ctx, "workspace-a", record.ID)
+	if err != nil || bytes.Contains(stored.Verifier, []byte(raw)) {
+		t.Fatalf("stored API key verifier leaked plaintext or lookup failed: %v", err)
+	}
+	if _, err := admin.Exec(ctx, `UPDATE sith.memberships SET role = 'operator'
+		WHERE workspace_id = 'workspace-a' AND subject = 'user:alice'`); err != nil {
+		t.Fatal(err)
+	}
+	session, err := service.Exchange(ctx, raw)
+	if err != nil {
+		t.Fatalf("exchange PostgreSQL-backed API key: %v", err)
+	}
+	verifier, err := hubauth.NewJWTVerifier(hubauth.JWTConfig{
+		Issuer: "https://issuer.sith.test", Audience: "https://hub.sith.test",
+		Keys: map[string]ed25519.PublicKey{"postgres-session": privateKey.Public().(ed25519.PublicKey)},
+		Now:  func() time.Time { return now }, MaxLifetime: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := verifier.Verify(ctx, session.AccessToken)
+	if err != nil {
+		t.Fatalf("verify exchanged PostgreSQL session: %v", err)
+	}
+	currentScope, err := verified.Scope("workspace-a")
+	if err != nil || currentScope.Role() != tenancy.RoleOperator {
+		t.Fatalf("exchanged current role = %q, error = %v", currentScope.Role(), err)
+	}
+	replacement, replacementRecord, err := service.Rotate(ctx, scope, record.ID, "user:alice", time.Minute)
+	if err != nil {
+		t.Fatalf("rotate PostgreSQL-backed API key: %v", err)
+	}
+	if _, _, err := service.Rotate(ctx, scope, record.ID, "user:alice", time.Minute); err == nil {
+		t.Fatal("already-rotated PostgreSQL key accepted a second replacement")
+	}
+	if _, err := service.Exchange(ctx, raw); err != nil {
+		t.Fatalf("original key rejected during PostgreSQL overlap: %v", err)
+	}
+	now = now.Add(time.Minute)
+	if _, err := service.Exchange(ctx, raw); !errors.Is(err, hubauth.ErrInvalidAPIKey) {
+		t.Fatalf("retired PostgreSQL key error = %v", err)
+	}
+	if err := service.Revoke(ctx, scope, replacementRecord.ID); err != nil {
+		t.Fatalf("revoke PostgreSQL-backed API key: %v", err)
+	}
+	if _, err := service.Exchange(ctx, replacement); !errors.Is(err, hubauth.ErrInvalidAPIKey) {
+		t.Fatalf("revoked PostgreSQL key error = %v", err)
 	}
 }
 
