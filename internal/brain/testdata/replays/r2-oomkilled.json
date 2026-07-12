@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "name": "r2-oomkilled",
+  "sanitized": true,
+  "investigation": {
+    "workspace": "local",
+    "coverage": {
+      "live": {"available": true, "stale": false},
+      "telemetry": {"available": true, "stale": false}
+    },
+    "observations": [
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Pod", "namespace": "synthetic", "name": "payments-0"}, "lens": "live", "key": "pod.reason", "value": "OOMKilled", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false},
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Pod", "namespace": "synthetic", "name": "payments-0"}, "lens": "live", "key": "pod.restarts", "value": "7", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false},
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Pod", "namespace": "synthetic", "name": "payments-0"}, "lens": "telemetry", "key": "memory.variant", "value": "near-limit", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false}
+    ]
+  },
+  "expect": {
+    "top_rule": "R2",
+    "status": "confirmed",
+    "scope": "alpha",
+    "fleet_wide": false,
+    "cause_of": [],
+    "citation_evidence": [
+      {"lens": "live", "predicate": "pod.reason", "observed": "OOMKilled"},
+      {"lens": "live", "predicate": "pod.restarts", "observed": "7"},
+      {"lens": "telemetry", "predicate": "memory.variant", "observed": "near-limit"}
+    ],
+    "missing_lenses": [],
+    "advisory": {"command": false, "pr_diff": true, "sensitive": false}
+  }
+}

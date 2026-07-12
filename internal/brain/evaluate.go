@@ -83,7 +83,7 @@ func evaluateRule(candidate rule, observations []Observation, coverage map[fleet
 			}
 		}
 	}
-	sort.Slice(verdict.Citations, func(i, j int) bool { return verdict.Citations[i].Weight > verdict.Citations[j].Weight })
+	sortCitations(verdict.Citations)
 	return verdict, true
 }
 
@@ -168,6 +168,7 @@ func correlateFleet(verdicts []Verdict, observations map[string][]Observation) [
 	}
 	result := make([]Verdict, 0)
 	for key, group := range groups {
+		sortVerdicts(group)
 		clusters := uniqueClusters(group)
 		if len(clusters) < 2 {
 			continue
@@ -186,9 +187,37 @@ func correlateFleet(verdicts []Verdict, observations map[string][]Observation) [
 				correlated.Status = verdict.Status
 			}
 		}
+		sortCitations(correlated.Citations)
 		result = append(result, correlated)
 	}
 	return result
+}
+
+func sortCitations(citations []Citation) {
+	sort.Slice(citations, func(left, right int) bool {
+		if citations[left].Weight != citations[right].Weight {
+			return citations[left].Weight > citations[right].Weight
+		}
+		if citations[left].Ref.String() != citations[right].Ref.String() {
+			return citations[left].Ref.String() < citations[right].Ref.String()
+		}
+		if citations[left].Lens != citations[right].Lens {
+			return citations[left].Lens < citations[right].Lens
+		}
+		if citations[left].Predicate != citations[right].Predicate {
+			return citations[left].Predicate < citations[right].Predicate
+		}
+		if citations[left].Observed != citations[right].Observed {
+			return citations[left].Observed < citations[right].Observed
+		}
+		if !citations[left].ObservedAt.Equal(citations[right].ObservedAt) {
+			return citations[left].ObservedAt.Before(citations[right].ObservedAt)
+		}
+		if citations[left].Source != citations[right].Source {
+			return citations[left].Source < citations[right].Source
+		}
+		return !citations[left].Stale && citations[right].Stale
+	})
 }
 
 func unionLenses(left, right []fleet.Lens) []fleet.Lens {

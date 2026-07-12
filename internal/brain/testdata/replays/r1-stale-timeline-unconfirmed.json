@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "name": "r1-stale-timeline-unconfirmed",
+  "sanitized": true,
+  "investigation": {
+    "workspace": "local",
+    "coverage": {
+      "live": {"available": true, "stale": false},
+      "timeline": {"available": true, "stale": true, "reason": "synthetic stale watch"}
+    },
+    "observations": [
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Deployment", "namespace": "synthetic", "name": "payments"}, "lens": "live", "key": "workload.status", "value": "Degraded", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false},
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Deployment", "namespace": "synthetic", "name": "payments"}, "lens": "timeline", "key": "change.kind", "value": "deploy", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false}
+    ]
+  },
+  "expect": {
+    "top_rule": "R1",
+    "status": "unconfirmed",
+    "scope": "alpha",
+    "fleet_wide": false,
+    "cause_of": [],
+    "citation_evidence": [
+      {"lens": "live", "predicate": "workload.status", "observed": "Degraded"},
+      {"lens": "timeline", "predicate": "change.kind", "observed": "deploy"}
+    ],
+    "missing_lenses": ["timeline"],
+    "advisory": {"command": true, "pr_diff": false, "sensitive": false}
+  }
+}

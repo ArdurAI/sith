@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "name": "r6-node-pressure",
+  "sanitized": true,
+  "investigation": {
+    "workspace": "local",
+    "coverage": {
+      "live": {"available": true, "stale": false},
+      "telemetry": {"available": true, "stale": false}
+    },
+    "observations": [
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Node", "name": "worker-a"}, "lens": "live", "key": "node.condition", "value": "MemoryPressure", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false},
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Node", "name": "worker-a"}, "lens": "live", "key": "event.reason", "value": "Evicted", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false},
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Node", "name": "worker-a"}, "lens": "telemetry", "key": "node.saturation", "value": "high", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false}
+    ]
+  },
+  "expect": {
+    "top_rule": "R6",
+    "status": "confirmed",
+    "scope": "alpha",
+    "fleet_wide": false,
+    "cause_of": [],
+    "citation_evidence": [
+      {"lens": "live", "predicate": "node.condition", "observed": "MemoryPressure"},
+      {"lens": "live", "predicate": "event.reason", "observed": "Evicted"},
+      {"lens": "telemetry", "predicate": "node.saturation", "observed": "high"}
+    ],
+    "missing_lenses": [],
+    "advisory": {"command": true, "pr_diff": false, "sensitive": true}
+  }
+}

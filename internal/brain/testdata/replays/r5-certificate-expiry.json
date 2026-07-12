@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "name": "r5-certificate-expiry",
+  "sanitized": true,
+  "investigation": {
+    "workspace": "local",
+    "coverage": {
+      "live": {"available": true, "stale": false},
+      "telemetry": {"available": true, "stale": false}
+    },
+    "observations": [
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Certificate", "namespace": "synthetic", "name": "payments-tls"}, "lens": "live", "key": "certificate.expiry", "value": "lt-7d", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false},
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Certificate", "namespace": "synthetic", "name": "payments-tls"}, "lens": "telemetry", "key": "certificate.renewal", "value": "failing", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false}
+    ]
+  },
+  "expect": {
+    "top_rule": "R5",
+    "status": "confirmed",
+    "scope": "alpha",
+    "fleet_wide": false,
+    "cause_of": [],
+    "citation_evidence": [
+      {"lens": "live", "predicate": "certificate.expiry", "observed": "lt-7d"},
+      {"lens": "telemetry", "predicate": "certificate.renewal", "observed": "failing"}
+    ],
+    "missing_lenses": [],
+    "advisory": {"command": true, "pr_diff": false, "sensitive": true}
+  }
+}
