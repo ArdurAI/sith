@@ -116,9 +116,17 @@ outbound request and availability dependencies but create no cloud resources by 
 Cloud-IAM identity starts from the same fail-closed exchange boundary. The foundation accepts only
 a verifier-normalized provider, explicit realm, immutable subject, audience, and bounded lifetime;
 it maps that identity through a current forced-RLS membership binding and consumes only an HMAC
-proof digest until expiry. Provider-specific AWS, Azure Entra, and Google verification remains
-separately staged, so no native cloud proof format or public-cloud fallback is accepted by the hub
-until its exact endpoint and audience policy is implemented.
+proof digest until expiry. AWS now accepts only a base64url-encoded, pre-signed SigV4
+`GetCallerIdentity` URL for one configured regional STS endpoint (commercial, GovCloud, or China),
+with a 60-second-or-shorter `X-Amz-Expires` and an exact `x-sith-audience` signed header. Sith
+reconstructs a header-minimal GET only to that endpoint, disables redirects, accepts only a
+short-lived assumed-role response, and binds the STS account plus immutable role ID through RLS.
+It never stores or logs an AWS access key, session token, signature, or raw proof. Azure Entra and
+Google verification remain separate slices; no provider or endpoint fallback is accepted.
+
+This AWS contract uses [STS GetCallerIdentity](https://docs.aws.amazon.com/STS/latest/APIReference/API_GetCallerIdentity.html)
+and regional STS endpoint guidance: the global STS endpoint is deliberately rejected because Sith
+requires a configured regional authority and bounded proof lifetime.
 
 `sith serve --mcp` exposes `fleet.inventory`, `fleet.health`, `fleet.correlate`, and
 `fleet.cve-search` over MCP Streamable HTTP. All four tools are cache-only and carry

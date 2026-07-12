@@ -1,7 +1,7 @@
 # Session — 2026-07-12 — e1-cloud-principal-contract
 
 **Builder:** Gnani Rahul · **Branch:** gnanirahulnutakki/feat/e1-cloud-principal-contract
-**Slice(s):** E1 cloud-IAM principal contract ([#91](https://github.com/ArdurAI/sith/issues/91)) · **Status:** in-progress
+**Slice(s):** E1 cloud-IAM principal contract ([#91](https://github.com/ArdurAI/sith/issues/91)) · **Status:** complete
 
 ---
 
@@ -63,5 +63,19 @@ AWS, Azure Entra, and Google service-account proof verifiers can authenticate a 
 
 ## [C] Checkpoint #2
 
-- The validation evidence journal is ready for its signed documentation checkpoint
-  (2026-07-12/e1-cloud-principal-contract#2). PR and exact post-merge evidence remain pending.
+- Signed/DCO evidence commit: ed7b41f (2026-07-12/e1-cloud-principal-contract#2). It records the
+  provider research, security boundary, local validation, release verification, and initial queue
+  state.
+
+## [C] Delivery evidence
+
+- PR [#95](https://github.com/ArdurAI/sith/pull/95) was green and clean before normal merge into
+  `dev` as `d9b4d2bc69707a4bd8bafa316057c8b99ed4a04f` on 2026-07-12. No force-merge or rule bypass
+  was needed.
+- Exact post-merge CI run [29183783678](https://github.com/ArdurAI/sith/actions/runs/29183783678)
+  passed: reproducible archives/SPDX SBOM/Homebrew formula in 1m02s and the core pipeline in 6m58s,
+  including race, tenant-isolation, binary smoke, and real two-cluster kind fan-out.
+- #91 was closed with the merge and CI evidence. Parent #85, E1 #19, and roadmap #39 were updated
+  to retain the AWS #92, Azure #93, and Google #94 verifier ordering.
+- Final delivery recheck: Dependabot 0, code scanning 0, secret scanning 0; no kind clusters; final
+  Docker prune reclaimed 0B because the prior cleanup had already removed disposable artifacts.
