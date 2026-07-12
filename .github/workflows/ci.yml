@@ -73,6 +73,9 @@ jobs:
       - name: Unit tests with race detector
         run: go test -race -count=1 -coverprofile=coverage.out ./...
 
+      - name: Real PostgreSQL forced-RLS test
+        run: make e2e-postgres
+
       - name: Warm-cache TUI p95 latency
         run: make perf
 
