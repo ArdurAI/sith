@@ -49,6 +49,10 @@ workspace binding; only Sith's current membership state determines the resulting
 - The full CI and destructive isolation gates passed on the final source before handoff, including
   50,000 fixed-seed selector-fuzz mutations. Hubauth coverage was 84.6%, hubserver 89.2%, and
   hubdb destructive-suite coverage 70.0%.
+- Fresh branch verification: make ci PASS after both signed commits (format, vet,
+  golangci-lint, govulncheck with no vulnerabilities, race/coverage tests, source-boundary and
+  operator-script safety checks, binary E2E, latency check, and reproducible build). Hubauth
+  coverage remains 84.6% and hubserver coverage 89.2%.
 - Final real integration rerun: make e2e-kind PASS in 88.207s against two Kubernetes 1.36.1 kind
   clusters; the test cleanup removed both clusters.
 - Final release rerun: make release-check PASS. GoReleaser built and verified reproducible snapshot
@@ -68,5 +72,9 @@ workspace binding; only Sith's current membership state determines the resulting
 
 ## [C] Checkpoint #2
 
-- Evidence journal update is ready for the signed documentation checkpoint
-  (2026-07-12/e1-oidc-federation#2). PR, merge, and exact post-merge evidence remain pending.
+- Signed/DCO evidence checkpoint: 71d0626 (2026-07-12/e1-oidc-federation#2).
+
+## [C] Checkpoint #3
+
+- The fresh CI evidence update is ready for its signed documentation checkpoint
+  (2026-07-12/e1-oidc-federation#3). PR, merge, and exact post-merge evidence remain pending.
