@@ -415,6 +415,26 @@ func matchingDelimiter(open json.Delim) json.Delim {
 }
 
 func (service *OIDCService) providerKey(ctx context.Context, provider *oidcProvider, keyID, algorithm string) (any, error) {
+	return service.providerKeyWithFetcher(ctx, provider, keyID, algorithm, service.fetchProviderKeys)
+}
+
+// providerKeyFromJWKS loads a verifier's explicitly pinned JWKS without provider-controlled discovery.
+func (service *OIDCService) providerKeyFromJWKS(ctx context.Context, provider *oidcProvider, rawJWKSURL, keyID, algorithm string) (any, error) {
+	return service.providerKeyWithFetcher(ctx, provider, keyID, algorithm, func(ctx context.Context, provider *oidcProvider) (map[string]any, error) {
+		jwksURL, err := parsePinnedOIDCJWKSURL(rawJWKSURL, service.allowPrivateTest)
+		if err != nil {
+			return nil, err
+		}
+		return service.fetchJWKSKeys(ctx, provider, jwksURL)
+	})
+}
+
+func (service *OIDCService) providerKeyWithFetcher(
+	ctx context.Context,
+	provider *oidcProvider,
+	keyID, algorithm string,
+	fetch func(context.Context, *oidcProvider) (map[string]any, error),
+) (any, error) {
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
 	now := service.now().UTC()
@@ -423,7 +443,7 @@ func (service *OIDCService) providerKey(ctx context.Context, provider *oidcProvi
 			return key, nil
 		}
 	}
-	keys, err := service.fetchProviderKeys(ctx, provider)
+	keys, err := fetch(ctx, provider)
 	if err != nil {
 		return nil, err
 	}
@@ -448,6 +468,10 @@ func (service *OIDCService) fetchProviderKeys(ctx context.Context, provider *oid
 	if err != nil || validateOIDCURL(jwksURL, service.allowPrivateTest) != nil || !sameOrigin(provider.url, jwksURL) {
 		return nil, fmt.Errorf("OIDC JWKS URL escaped pinned issuer origin")
 	}
+	return service.fetchJWKSKeys(ctx, provider, jwksURL)
+}
+
+func (service *OIDCService) fetchJWKSKeys(ctx context.Context, provider *oidcProvider, jwksURL *url.URL) (map[string]any, error) {
 	var set oidcJWKSet
 	if err := service.getOIDCJSON(ctx, jwksURL, &set); err != nil {
 		return nil, err
@@ -570,6 +594,15 @@ func validateOIDCURL(endpoint *url.URL, allowPrivateForTest bool) error {
 		return fmt.Errorf("OIDC endpoint uses a prohibited address")
 	}
 	return nil
+}
+
+func parsePinnedOIDCJWKSURL(rawURL string, allowPrivateForTest bool) (*url.URL, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || validateOIDCURL(parsed, allowPrivateForTest) != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil ||
+		strings.HasSuffix(rawURL, "/") {
+		return nil, fmt.Errorf("OIDC JWKS URL is invalid")
+	}
+	return parsed, nil
 }
 
 func publicOIDCAddress(ip netip.Addr) bool {

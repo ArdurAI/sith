@@ -1,7 +1,7 @@
 # Session — 2026-07-12 — e1-azure-entra-federation
 
 **Builder:** Gnani Rahul · **Branch:** gnanirahulnutakki/feat/e1-azure-entra-federation
-**Slice(s):** E1 Azure Entra workload identity verifier ([#93](https://github.com/ArdurAI/sith/issues/93)) · **Status:** in-progress
+**Slice(s):** E1 Azure Entra workload identity verifier ([#93](https://github.com/ArdurAI/sith/issues/93)) · **Status:** delivered
 
 ---
 
@@ -70,5 +70,14 @@ workload object identity into Sith's replay-safe cloud principal contract.
 
 ## [C] Checkpoint #2
 
-- Final local validation and review evidence is ready for its signed documentation checkpoint
-  (2026-07-12/e1-azure-entra-federation#2). PR and exact post-merge evidence remain pending.
+- Signed/DCO documentation checkpoint: `6a0fdff`
+  (`2026-07-12/e1-azure-entra-federation#2`).
+- Delivery PR [#97](https://github.com/ArdurAI/sith/pull/97) merged cleanly into `dev` as
+  `2c0df7b21bf4663bcc5db65682846624cb62cb85` on 2026-07-12 after both PR gates passed:
+  build/vet/gofmt/lint/test/e2e in 6m57s and reproducible archives/SPDX SBOM/Homebrew formula in
+  1m0s.
+- Exact post-merge `dev` CI [29185420419](https://github.com/ArdurAI/sith/actions/runs/29185420419)
+  passed: reproducible archives/SPDX SBOM/Homebrew formula in 58s and the full build, race,
+  isolation, binary-smoke, and real two-kind-cluster fan-out suite in 6m40s.
+- #93 is closed with the delivery evidence; parent E1 #85 and roadmap #19/#39 are updated before
+  moving to Google service-account federation #94.
