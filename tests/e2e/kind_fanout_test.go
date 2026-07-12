@@ -125,6 +125,7 @@ func TestKindFleetFanout(t *testing.T) {
 			t.Errorf("query did not return a source-stamped namespace from %s", scope)
 		}
 	}
+	exerciseReadFederationSnapshots(ctx, t, adapter, clusterNames)
 
 	binary := filepath.Join(t.TempDir(), "sith")
 	runCommand(ctx, t, root, "go", "build", "-trimpath", "-o", binary, "./cmd/sith")

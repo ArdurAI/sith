@@ -153,6 +153,15 @@ and [IAM Credentials `generateIdToken` contract](https://cloud.google.com/iam/do
 service-account ID tokens are Google-JWKS signed, while client-created service-account assertions are
 not accepted as Sith proofs.
 
+The Phase-1 read-federation foundation persists a tenant-scoped, bounded snapshot from each
+registered OCM spoke through the same normalized fleet model used locally. A transport receives
+only the workspace boundary and registered managed-cluster reference; it never receives a raw
+kubeconfig, endpoint, or token through the Sith collector contract. Only normalized `inventory`
+and `health` facts are accepted, source-stamped, freshness-bounded, and stored behind forced RLS.
+Failed refreshes retain the last snapshot as explicitly stale evidence and record only a closed
+failure category. The concrete OCM ClusterGateway transport is deliberately not exposed by the
+`sith hub` stub until its projected-token lifecycle is wired and exercised as a product adapter.
+
 `sith serve --mcp` exposes `fleet.inventory`, `fleet.health`, `fleet.correlate`, and
 `fleet.cve-search` over MCP Streamable HTTP. All four tools are cache-only and carry
 `readOnlyHint:true`; they use the exact workspace-required query path used by the CLI, TUI, and web
