@@ -18,6 +18,9 @@
 [C] Checkpoint #3: production PostgreSQL tenancy boundary committed with SSH signature, DCO, and immutable migration evidence — next: commit the real-container/CI harness, then run all repository and real-environment gates.
 [A] Action: Manual database red-team review removed a global `tenant_key` uniqueness constraint. PostgreSQL documents that unique and foreign-key integrity checks bypass RLS; since `Workspace.ID` is already the unique isolation key, global tenant-key uniqueness would add a needless cross-workspace existence oracle. The real test now seeds the same display key in two workspaces to preserve this property.
 [C] Checkpoint #4: constraint-level existence oracle removed — next: repeat database falsification and all repository gates.
+[T] Test: Final local `make ci` is green: formatting, vet, zero golangci-lint findings, govulncheck with no vulnerabilities on Go 1.26.5, the full race suite, privacy and PostgreSQL import boundaries, 15 shell-safety assertions, warm-view performance, compiled e2e, and production build. The committed PostgreSQL gate passed again in 2.466s at 67.8% tagged coverage; the pinned real kind two-cluster regression passed in 90.473s.
+[T] Test: Cleanup confirmed zero kind clusters and no `sith-rls` containers before and after Docker pruning, which reclaimed 1.31 GB. GitHub Dependabot, code-scanning, and secret-scanning queues were each zero immediately before publication. All three branch commits have valid SSH signatures, exact DCO sign-off, and GSTACK checkpoint trailers.
+[C] Checkpoint #5: all local repository, vulnerability, PostgreSQL, and Kubernetes gates green — next: signed evidence commit, remote CI, review, and merge.
 
 ---
 
