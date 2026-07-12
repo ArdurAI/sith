@@ -64,5 +64,11 @@ workload object identity into Sith's replay-safe cloud principal contract.
 
 ## [C] Checkpoint #1
 
-- Implementation and final local validation are complete; README was reviewed and updated before
-  the first commit. Next: cleanup, queue recheck, signed/DCO/GSTACK commits, and PR delivery.
+- Signed/DCO feature commit: 44660eb (2026-07-12/e1-azure-entra-federation#1). It contains the
+  tenant-pinned Entra verifier, TLS/JWKS emulator and RLS/replay controls, reused OIDC verifier
+  transport, README boundary, Azure journal, and the missing AWS #92 delivery evidence.
+
+## [C] Checkpoint #2
+
+- Final local validation and review evidence is ready for its signed documentation checkpoint
+  (2026-07-12/e1-azure-entra-federation#2). PR and exact post-merge evidence remain pending.
