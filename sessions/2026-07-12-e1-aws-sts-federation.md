@@ -77,5 +77,18 @@ contract and current forced-RLS workspace membership mapping.
 
 ## [C] Checkpoint #2
 
-- The final local validation and review evidence is ready for its signed documentation checkpoint
-  (2026-07-12/e1-aws-sts-federation#2). PR and exact post-merge evidence remain pending.
+- Signed/DCO evidence commit: 3e9123c (2026-07-12/e1-aws-sts-federation#2). It records the final
+  local validation, red-team review, cleanup, and pre-publication security state.
+
+## [C] Delivery evidence
+
+- PR [#96](https://github.com/ArdurAI/sith/pull/96) was green and clean before normal merge into
+  `dev` as `e92be16d009679c79ed1da48b4f731c9ffee749f` on 2026-07-12. No force-merge or rule bypass
+  was needed.
+- Exact post-merge CI run [29184666475](https://github.com/ArdurAI/sith/actions/runs/29184666475)
+  passed: reproducible archives/SPDX SBOM/Homebrew formula in 1m00s and the core pipeline in 6m41s,
+  including race, tenant-isolation, binary smoke, and real two-cluster kind fan-out.
+- #92 was closed with the merge and CI evidence. Parent #85, E1 #19, and roadmap #39 were updated
+  to retain the Azure #93 then Google #94 ordering.
+- Final delivery recheck: Dependabot 0, code scanning 0, secret scanning 0; no kind clusters; final
+  Docker prune reclaimed 0B because the prior cleanup had already removed disposable artifacts.

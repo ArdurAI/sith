@@ -137,6 +137,12 @@ func newOIDCService(config OIDCServiceConfig, allowPrivateForTest bool) (*OIDCSe
 	if config.Store == nil || config.Issuer == nil || len(config.Providers) == 0 {
 		return nil, fmt.Errorf("construct OIDC service: store, session issuer, and providers are required")
 	}
+	return newOIDCVerifierTransport(config, allowPrivateForTest)
+}
+
+// newOIDCVerifierTransport creates the pinned discovery and JWKS boundary without an authorization store.
+// Provider-specific adapters use it only for verification; OIDCService owns OIDC workspace authorization.
+func newOIDCVerifierTransport(config OIDCServiceConfig, allowPrivateForTest bool) (*OIDCService, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
