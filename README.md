@@ -113,6 +113,13 @@ This follows [OpenID Connect Discovery 1.0](https://openid.net/specs/openid-conn
 [JWT BCP, RFC 8725](https://www.rfc-editor.org/rfc/rfc8725.html). Discovery and refresh add small
 outbound request and availability dependencies but create no cloud resources by themselves.
 
+Cloud-IAM identity starts from the same fail-closed exchange boundary. The foundation accepts only
+a verifier-normalized provider, explicit realm, immutable subject, audience, and bounded lifetime;
+it maps that identity through a current forced-RLS membership binding and consumes only an HMAC
+proof digest until expiry. Provider-specific AWS, Azure Entra, and Google verification remains
+separately staged, so no native cloud proof format or public-cloud fallback is accepted by the hub
+until its exact endpoint and audience policy is implemented.
+
 `sith serve --mcp` exposes `fleet.inventory`, `fleet.health`, `fleet.correlate`, and
 `fleet.cve-search` over MCP Streamable HTTP. All four tools are cache-only and carry
 `readOnlyHint:true`; they use the exact workspace-required query path used by the CLI, TUI, and web

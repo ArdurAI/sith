@@ -98,7 +98,7 @@ func TestPostgresRLSBackstop(t *testing.T) {
 		t.Fatalf("workspace A query: %v", err)
 	}
 
-	tables := []string{"workspaces", "memberships", "clusters", "fleet_facts", "api_keys", "oidc_bindings"}
+	tables := []string{"workspaces", "memberships", "clusters", "fleet_facts", "api_keys", "oidc_bindings", "cloud_identity_bindings"}
 	for _, table := range tables {
 		var count int
 		if err := database.pool.QueryRow(ctx, `SELECT count(*) FROM sith.`+pgx.Identifier{table}.Sanitize()).Scan(&count); err != nil {
@@ -125,6 +125,7 @@ func TestPostgresRLSBackstop(t *testing.T) {
 			VALUES ('workspace-b', 'CCCCCCCCCCCCCCCCCCCCCC', 'user:bob', decode(repeat('cc', 32), 'hex'), now(), now() + interval '1 day')`},
 		{name: "OIDC binding", statement: `INSERT INTO sith.oidc_bindings(workspace_id, issuer, upstream_subject, member_subject)
 			VALUES ('workspace-b', 'https://idp.example', 'upstream:mallory', 'user:bob')`},
+		{name: "cloud identity binding", statement: "INSERT INTO sith.cloud_identity_bindings(workspace_id, provider, realm, upstream_subject, member_subject)\n\t\t\tVALUES ('workspace-b', 'aws', '222222222222', 'AROAX:mallory', 'user:bob')"},
 	}
 	for _, test := range foreignWrites {
 		t.Run("foreign "+test.name+" write denied", func(t *testing.T) {
@@ -228,11 +229,12 @@ func TestPostgresRLSBackstop(t *testing.T) {
 
 	assertAPIKeyStoreIntegration(t, ctx, database, admin)
 	assertOIDCStoreIntegration(t, ctx, database)
+	assertCloudIdentityStoreIntegration(t, ctx, database)
 }
 
 func assertWorkspaceAIsolation(ctx context.Context, database *AppDB, scope tenancy.Scope) error {
 	return database.InWorkspace(ctx, scope, func(tx pgx.Tx) error {
-		for _, table := range []string{"workspaces", "memberships", "clusters", "fleet_facts", "api_keys", "oidc_bindings"} {
+		for _, table := range []string{"workspaces", "memberships", "clusters", "fleet_facts", "api_keys", "oidc_bindings", "cloud_identity_bindings"} {
 			var count int
 			if err := tx.QueryRow(ctx, `SELECT count(*) FROM sith.`+pgx.Identifier{table}.Sanitize()).Scan(&count); err != nil {
 				return err
@@ -352,6 +354,9 @@ func seedTenantRows(t *testing.T, ctx context.Context, admin *pgx.Conn) {
 		`INSERT INTO sith.oidc_bindings(workspace_id, issuer, upstream_subject, member_subject) VALUES
 			('workspace-a', 'https://idp.example', 'upstream:alice', 'user:alice'),
 			('workspace-b', 'https://idp.example', 'upstream:bob', 'user:bob')`,
+		"INSERT INTO sith.cloud_identity_bindings(workspace_id, provider, realm, upstream_subject, member_subject) VALUES\n" +
+			"('workspace-a', 'aws', '111111111111', 'AROAX:alice', 'user:alice'),\n" +
+			"('workspace-b', 'aws', '222222222222', 'AROAX:bob', 'user:bob')",
 	}
 	for _, statement := range statements {
 		if _, err := admin.Exec(ctx, statement); err != nil {
@@ -470,6 +475,35 @@ func assertOIDCStoreIntegration(t *testing.T, ctx context.Context, database *App
 	secondary, err := database.LookupOIDCMembership(ctx, "workspace-a", "https://idp.example", "upstream:alice-secondary")
 	if err != nil || secondary.Subject != "user:alice" || secondary.Role != tenancy.RoleOperator {
 		t.Fatalf("secondary OIDC membership = %#v, error = %v", secondary, err)
+	}
+}
+
+func assertCloudIdentityStoreIntegration(t *testing.T, ctx context.Context, database *AppDB) {
+	t.Helper()
+	identity := hubauth.CloudIdentity{Provider: hubauth.CloudProviderAWS, Realm: "111111111111", Subject: "AROAX:alice"}
+	membership, err := database.LookupCloudIdentityMembership(ctx, "workspace-a", identity)
+	if err != nil || membership.Subject != "user:alice" || !membership.Role.Valid() {
+		t.Fatalf("cloud identity membership = %#v, error = %v", membership, err)
+	}
+	foreignIdentity := hubauth.CloudIdentity{Provider: hubauth.CloudProviderAWS, Realm: "222222222222", Subject: "AROAX:bob"}
+	if _, err := database.LookupCloudIdentityMembership(ctx, "workspace-a", foreignIdentity); !errors.Is(err, hubauth.ErrCloudBindingNotFound) {
+		t.Fatalf("cross-workspace cloud identity lookup error = %v", err)
+	}
+	principal, err := tenancy.NewPrincipal("user:alice", map[tenancy.WorkspaceID]tenancy.Role{"workspace-a": tenancy.RoleAdmin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := principal.Scope("workspace-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondary := hubauth.CloudIdentity{Provider: hubauth.CloudProviderAWS, Realm: "111111111111", Subject: "AROAX:alice-secondary"}
+	if err := database.CreateCloudIdentityBinding(ctx, scope, secondary, "user:alice"); err != nil {
+		t.Fatalf("create cloud identity binding: %v", err)
+	}
+	created, err := database.LookupCloudIdentityMembership(ctx, "workspace-a", secondary)
+	if err != nil || created.Subject != "user:alice" || !created.Role.Valid() {
+		t.Fatalf("secondary cloud identity membership = %#v, error = %v", created, err)
 	}
 }
 

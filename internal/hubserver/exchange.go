@@ -20,6 +20,8 @@ const maxSithKeyBytes = 512
 
 const maxOIDCTokenBytes = 16 * 1024
 
+const maxCloudProofBytes = 32 * 1024
+
 // SessionExchanger trades one API key for a short-lived signed session.
 type SessionExchanger interface {
 	Exchange(context.Context, string) (hubauth.IssuedSession, error)
@@ -28,6 +30,11 @@ type SessionExchanger interface {
 // OIDCSessionExchanger validates an upstream identity for one requested workspace.
 type OIDCSessionExchanger interface {
 	Exchange(context.Context, tenancy.WorkspaceID, string) (hubauth.IssuedSession, error)
+}
+
+// CloudSessionExchanger validates a provider-fixed cloud proof for one requested workspace.
+type CloudSessionExchanger interface {
+	Exchange(context.Context, tenancy.WorkspaceID, hubauth.CloudProvider, string) (hubauth.IssuedSession, error)
 }
 
 // AttemptLimiterConfig bounds failed and successful exchange attempts per client address.
@@ -125,6 +132,21 @@ func NewOIDCExchangeHandler(
 	}
 	return newCredentialExchangeHandler("OIDC", maxOIDCTokenBytes, limiter, func(ctx context.Context, raw string) (hubauth.IssuedSession, error) {
 		return exchanger.Exchange(ctx, workspaceID, raw)
+	}), nil
+}
+
+// NewCloudExchangeHandler constructs a workspace- and provider-fixed cloud proof endpoint.
+func NewCloudExchangeHandler(
+	workspaceID tenancy.WorkspaceID,
+	provider hubauth.CloudProvider,
+	exchanger CloudSessionExchanger,
+	limiter *AttemptLimiter,
+) (http.Handler, error) {
+	if tenancy.ValidateWorkspaceID(workspaceID) != nil || !provider.Valid() || exchanger == nil || limiter == nil {
+		return nil, fmt.Errorf("construct cloud exchange handler: workspace, provider, exchanger, and limiter are required")
+	}
+	return newCredentialExchangeHandler("CloudProof", maxCloudProofBytes, limiter, func(ctx context.Context, raw string) (hubauth.IssuedSession, error) {
+		return exchanger.Exchange(ctx, workspaceID, provider, raw)
 	}), nil
 }
 
