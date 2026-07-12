@@ -185,5 +185,15 @@ additional CI time, disk, and memory:
 make e2e-kind
 ```
 
+The hub tenancy gate starts a temporary, digest-pinned PostgreSQL 18.4 container and proves the
+application role is a non-owner without `BYPASSRLS`, every current workspace table has forced RLS,
+direct unscoped reads are default-deny, foreign writes fail, and transaction-local scope does not
+bleed through a reused pool connection. It requires Docker and adds one official PostgreSQL image
+pull plus a short-lived local container:
+
+```bash
+make e2e-postgres
+```
+
 The architecture, threat model, ADRs, and roadmap live under [`docs/`](docs/). Build-session
 checkpoints are recorded under [`sessions/`](sessions/).

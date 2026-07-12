@@ -9,8 +9,10 @@ GOLANGCI ?= golangci-lint
 GOVULNCHECK ?= govulncheck
 KIND     ?= kind
 GORELEASER ?= goreleaser
+DOCKER      ?= docker
 
 KIND_NODE_IMAGE ?= kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+POSTGRES_IMAGE  ?= postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
@@ -21,7 +23,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/buildinfo.Commit=$(COMMIT) \
 	-X $(PKG)/internal/buildinfo.Date=$(DATE)
 
-.PHONY: all build test test-scripts perf e2e e2e-kind lint vuln fmt fmt-check vet tidy clean run ci release-check help
+.PHONY: all build test test-scripts perf e2e e2e-kind e2e-postgres lint vuln fmt fmt-check vet tidy clean run ci release-check help
 
 all: build
 
@@ -44,6 +46,10 @@ e2e: ## Build and exercise the real binary as a subprocess
 e2e-kind: ## Exercise adapter and binary against two real kind clusters
 	KIND_BIN="$(KIND)" KIND_NODE_IMAGE="$(KIND_NODE_IMAGE)" \
 		go test -race -count=1 -timeout=15m -tags='e2e kind' -run '^TestKindFleetFanout$$' ./tests/e2e
+
+e2e-postgres: ## Prove forced RLS against a temporary digest-pinned PostgreSQL container
+	DOCKER_BIN="$(DOCKER)" POSTGRES_IMAGE="$(POSTGRES_IMAGE)" \
+		go test -race -count=1 -cover -timeout=5m -tags=postgres -run '^TestPostgresRLSBackstop$$' ./internal/hubdb
 
 lint: ## Run golangci-lint (v2)
 	$(GOLANGCI) run ./...
