@@ -1,6 +1,6 @@
 # Sith
 
-**Status: Phase-L client plus release supply-chain gate.** The CLI, TUI, browser IDE, optional MCP server,
+**Status: Phase-L client plus E1 hub-authentication foundations and release supply-chain gate.** The CLI, TUI, browser IDE, optional MCP server,
 deterministic advisory brain, and reproducible multi-platform release pipeline
 discover every context resolved by client-go, hydrate one local in-memory fleet cache through
 per-context watches, serve coverage-honest fleet search/correlation, and provide explicit-context
@@ -75,6 +75,24 @@ The optional local MCP capability is the first consumer: it uses a unique short-
 entry and deletes it on clean server shutdown.
 The dependency can invoke the fixed macOS `/usr/bin/security` tool or the Linux session D-Bus only
 during an explicit keychain operation; it creates no account, hosted service, or cloud cost.
+
+The governed-hub foundation supports one deliberately narrow API-key exchange contract. An
+administrator issues a high-entropy `sith_api_v1` key for an existing workspace member; only its
+HMAC-SHA-256 verifier—not the plaintext secret—is stored with its subject and lifecycle metadata,
+behind forced PostgreSQL RLS. The plaintext is returned once. Machine callers present that
+credential only as `Authorization: SithKey ...` to the
+exchange handler. Sith resolves the subject's current membership server-side and returns a
+15-minute, type-pinned Ed25519 session for normal `Authorization: Bearer ...` requests. A raw API
+key is never a role-bearing bearer token.
+
+API keys expire, support an administrator-bounded rotation overlap of at most 24 hours, and can be
+revoked immediately. Exchange responses, including generic failures, are non-cacheable. The
+handler includes a bounded per-process attempt limiter; a replicated hub must additionally enforce
+a shared limit at its ingress or gateway. Deployments must provide the HMAC pepper and Ed25519
+private key through a secret manager, keep both out of logs and configuration repositories, and
+rotate them under an explicit operational procedure. These are E1 library and HTTP boundaries;
+the `sith hub` runtime remains staged behind later hub epics rather than exposing an incomplete
+service.
 
 `sith serve --mcp` exposes `fleet.inventory`, `fleet.health`, `fleet.correlate`, and
 `fleet.cve-search` over MCP Streamable HTTP. All four tools are cache-only and carry
@@ -189,10 +207,12 @@ make e2e-kind
 ```
 
 The hub tenancy gate starts a temporary, digest-pinned PostgreSQL 18.4 container and proves the
-application role is a non-owner without `BYPASSRLS`, every current workspace table has forced RLS,
-direct unscoped reads are default-deny, foreign writes fail, and transaction-local scope does not
-bleed through a reused pool connection. It requires Docker and adds one official PostgreSQL image
-pull plus a short-lived local container:
+application role is a non-owner without `BYPASSRLS`, every current workspace table—including API
+key verifier rows—has forced RLS, direct unscoped reads are default-deny, foreign writes fail, and
+transaction-local scope does not bleed through a reused pool connection. It also exercises real
+API-key issuance, current-membership exchange, bounded rotation overlap, immediate revocation, and
+cross-workspace negative controls. It requires Docker and adds one official PostgreSQL image pull
+plus a short-lived local container:
 
 ```bash
 make e2e-postgres

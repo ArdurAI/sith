@@ -21,7 +21,7 @@ type AppConfig struct {
 	AllowInsecure bool
 }
 
-// AppDB deliberately hides its raw pool so production callers can only query inside a workspace transaction.
+// AppDB hides its raw pool so callers use either a validated scope or a fixed bootstrap query.
 type AppDB struct {
 	pool *pgxpool.Pool
 }
@@ -84,12 +84,8 @@ func (database *AppDB) InWorkspace(ctx context.Context, scope tenancy.Scope, run
 		IsoLevel:   pgx.ReadCommitted,
 		AccessMode: pgx.ReadWrite,
 	}, func(tx pgx.Tx) error {
-		var configured string
-		if err := tx.QueryRow(ctx, `SELECT set_config('sith.workspace_id', $1, true)`, string(workspaceID)).Scan(&configured); err != nil {
-			return fmt.Errorf("set workspace transaction scope: %w", err)
-		}
-		if configured != string(workspaceID) {
-			return fmt.Errorf("set workspace transaction scope: database returned a mismatched value")
+		if err := setWorkspaceScope(ctx, tx, workspaceID); err != nil {
+			return err
 		}
 		if err := run(tx); err != nil {
 			return fmt.Errorf("run workspace transaction: %w", err)
