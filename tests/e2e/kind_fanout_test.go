@@ -125,6 +125,8 @@ func TestKindFleetFanout(t *testing.T) {
 			t.Errorf("query did not return a source-stamped namespace from %s", scope)
 		}
 	}
+	assertRealKindEntityGraph(ctx, t, adapter, clusterNames)
+	exerciseReadFederationSnapshots(ctx, t, adapter, clusterNames)
 
 	binary := filepath.Join(t.TempDir(), "sith")
 	runCommand(ctx, t, root, "go", "build", "-trimpath", "-o", binary, "./cmd/sith")
@@ -300,6 +302,30 @@ func TestKindFleetFanout(t *testing.T) {
 	if degraded.Coverage.Reachable != 1 || !slices.Contains(degraded.Coverage.Unreachable, "kind-"+clusterNames[1]) ||
 		!slices.Contains(degraded.Coverage.Unreachable, deadContext) {
 		t.Fatalf("degraded coverage = %#v, want beta and dead context unreachable", degraded.Coverage)
+	}
+}
+
+func assertRealKindEntityGraph(ctx context.Context, t *testing.T, adapter *kubeconfig.Adapter, clusterNames []string) {
+	t.Helper()
+	result, err := adapter.Query(ctx, fleet.Query{
+		Kinds:    []fleet.FactKind{fleet.FactInventory},
+		Selector: fleet.Selector{ResourceKind: "Deployment", Name: "sith-payments", Namespace: "default"},
+	})
+	if err != nil || result.Coverage.Reachable != 2 || len(result.Facts) != 2 {
+		t.Fatalf("query real same-name deployments = %#v, error = %v", result, err)
+	}
+	graphFacts := make([]fleet.GraphFact, 0, len(result.Facts))
+	for _, fact := range result.Facts {
+		entity := fleet.EntityRef{Cluster: fact.Ref.Scope, Namespace: fact.Ref.Namespace, Kind: fact.Ref.Kind, Name: fact.Ref.Name}
+		graphFacts = append(graphFacts, fleet.GraphFact{Fact: fact, Lens: fleet.LensLive, Entity: &entity})
+	}
+	graph, err := fleet.NewGraph(fleet.LocalWorkspace, graphFacts)
+	if err != nil || len(graph.Nodes) != 2 || graph.Nodes[0].Entity.Name != "sith-payments" || graph.Nodes[1].Entity.Name != "sith-payments" ||
+		graph.Nodes[0].Entity.Cluster == graph.Nodes[1].Entity.Cluster || len(graph.Unattached) != 0 || len(graph.ImageCorrelations()) != 0 {
+		t.Fatalf("real kind entity graph = %#v, error = %v", graph, err)
+	}
+	if !slices.Equal([]string{graph.Nodes[0].Entity.Cluster, graph.Nodes[1].Entity.Cluster}, []string{"kind-" + clusterNames[0], "kind-" + clusterNames[1]}) {
+		t.Fatalf("real kind graph clusters = %#v", graph.Nodes)
 	}
 }
 

@@ -136,11 +136,12 @@ func (query Query) Validate() error {
 			return fmt.Errorf("label selector key must not be empty")
 		}
 	}
-	if query.Selector.Health != "" {
-		switch query.Selector.Health {
-		case "Healthy", "Degraded", "Progressing", "Unknown":
-		default:
-			return fmt.Errorf("invalid health selector %q", query.Selector.Health)
+	if query.Selector.Health != "" && query.Selector.HealthNot != "" {
+		return fmt.Errorf("health and health-not selectors are mutually exclusive")
+	}
+	for _, health := range []string{query.Selector.Health, query.Selector.HealthNot} {
+		if health != "" && !validHealth(health) {
+			return fmt.Errorf("invalid health selector %q", health)
 		}
 	}
 
@@ -151,11 +152,22 @@ func (query Query) Validate() error {
 type Selector struct {
 	ResourceKind string            `json:"resource_kind,omitempty"`
 	Namespace    string            `json:"namespace,omitempty"`
+	Name         string            `json:"name,omitempty"`
 	NamePrefix   string            `json:"name_prefix,omitempty"`
 	Labels       map[string]string `json:"labels,omitempty"`
 	Health       string            `json:"health,omitempty"`
+	HealthNot    string            `json:"health_not,omitempty"`
 	Image        string            `json:"image,omitempty"`
 	CVE          string            `json:"cve,omitempty"`
+}
+
+func validHealth(health string) bool {
+	switch health {
+	case "Healthy", "Degraded", "Progressing", "Unknown":
+		return true
+	default:
+		return false
+	}
 }
 
 // QueryResult contains normalized facts and honest scope coverage.
@@ -187,14 +199,16 @@ type DiffHunk struct {
 
 // Graph is the source-abstract operational graph assembled from facts.
 type Graph struct {
-	Nodes []Node `json:"nodes"`
-	Edges []Edge `json:"edges"`
+	Workspace  string      `json:"workspace"`
+	Nodes      []Node      `json:"nodes"`
+	Unattached []GraphFact `json:"unattached,omitempty"`
+	Edges      []Edge      `json:"edges"`
 }
 
-// Node is one addressed resource and its latest fact.
+// Node is one validated entity and its bounded, lens-stamped fact bundle.
 type Node struct {
-	Ref  ResourceRef `json:"ref"`
-	Fact Fact        `json:"fact"`
+	Entity EntityRef   `json:"entity"`
+	Facts  []GraphFact `json:"facts"`
 }
 
 // Relation is the closed taxonomy of cross-resource graph edges.
@@ -213,7 +227,7 @@ const (
 
 // Edge is one typed relationship between fleet resources.
 type Edge struct {
-	From ResourceRef `json:"from"`
-	To   ResourceRef `json:"to"`
-	Rel  Relation    `json:"rel"`
+	From EntityRef `json:"from"`
+	To   EntityRef `json:"to"`
+	Rel  Relation  `json:"rel"`
 }

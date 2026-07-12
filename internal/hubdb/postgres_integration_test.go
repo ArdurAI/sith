@@ -21,7 +21,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/hubauth"
+	"github.com/ArdurAI/sith/internal/hubfleet"
 	"github.com/ArdurAI/sith/internal/tenancy"
 )
 
@@ -230,6 +232,7 @@ func TestPostgresRLSBackstop(t *testing.T) {
 	assertAPIKeyStoreIntegration(t, ctx, database, admin)
 	assertOIDCStoreIntegration(t, ctx, database)
 	assertCloudIdentityStoreIntegration(t, ctx, database)
+	assertFleetStoreIntegration(t, ctx, database)
 }
 
 func assertWorkspaceAIsolation(ctx context.Context, database *AppDB, scope tenancy.Scope) error {
@@ -504,6 +507,152 @@ func assertCloudIdentityStoreIntegration(t *testing.T, ctx context.Context, data
 	created, err := database.LookupCloudIdentityMembership(ctx, "workspace-a", secondary)
 	if err != nil || created.Subject != "user:alice" || !created.Role.Valid() {
 		t.Fatalf("secondary cloud identity membership = %#v, error = %v", created, err)
+	}
+}
+
+func assertFleetStoreIntegration(t *testing.T, ctx context.Context, database *AppDB) {
+	t.Helper()
+	now := time.Date(2026, time.July, 12, 15, 0, 0, 0, time.UTC)
+	principal, err := tenancy.NewPrincipal("user:alice", map[tenancy.WorkspaceID]tenancy.Role{"workspace-a": tenancy.RoleReader})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := principal.Scope("workspace-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spokes, err := database.RegisteredSpokes(ctx, scope)
+	if err != nil || len(spokes) != 1 || spokes[0].ID != "cluster-a" || spokes[0].ManagedClusterRef != "ocm/cluster-a" {
+		t.Fatalf("workspace-a registered spokes = %#v, error = %v", spokes, err)
+	}
+	snapshot := hubfleet.Snapshot{ObservedAt: now, Facts: []fleet.Evidence{
+		{
+			Ref:        fleet.ResourceRef{SourceKind: hubfleet.SourceKind, Scope: "cluster-a", Kind: "Deployment", Namespace: "payments", Name: "payments"},
+			Kind:       fleet.FactInventory,
+			Observed:   []byte(`{"replicas":3}`),
+			ObservedAt: now,
+			Source:     "cluster-a",
+			Provenance: fleet.Provenance{Adapter: hubfleet.SourceKind, ProtocolV: "1.0.0"},
+		},
+		{
+			Ref:        fleet.ResourceRef{SourceKind: hubfleet.SourceKind, Scope: "cluster-a", Kind: "Deployment", Namespace: "payments", Name: "payments"},
+			Kind:       fleet.FactHealth,
+			Observed:   []byte(`{"status":"Degraded"}`),
+			ObservedAt: now,
+			Source:     "cluster-a",
+			Provenance: fleet.Provenance{Adapter: hubfleet.SourceKind, ProtocolV: "1.0.0"},
+		},
+		{
+			Ref:        fleet.ResourceRef{SourceKind: hubfleet.SourceKind, Scope: "cluster-a", Kind: "Deployment", Namespace: "payments", Name: "payments-canary"},
+			Kind:       fleet.FactHealth,
+			Observed:   []byte(`{"status":"Degraded"}`),
+			ObservedAt: now,
+			Source:     "cluster-a",
+			Provenance: fleet.Provenance{Adapter: hubfleet.SourceKind, ProtocolV: "1.0.0"},
+		},
+	}}
+	if err := database.ReplaceSnapshot(ctx, scope, spokes[0], snapshot, now); err != nil {
+		t.Fatalf("replace workspace-a snapshot: %v", err)
+	}
+	fleetResult, err := database.ReadFleet(ctx, scope, time.Minute, now)
+	if err != nil || len(fleetResult.Clusters) != 1 || fleetResult.Clusters[0].Name != "cluster-a" ||
+		!fleetResult.Clusters[0].Reachable || fleetResult.Coverage.Requested != 1 || fleetResult.Coverage.Reachable != 1 {
+		t.Fatalf("workspace-a fleet = %#v, error = %v", fleetResult, err)
+	}
+	queryResult, err := database.QueryFleet(ctx, scope, fleet.Query{
+		Kinds:  []fleet.FactKind{fleet.FactHealth},
+		Scopes: []string{"cluster-a"},
+		Selector: fleet.Selector{
+			ResourceKind: "Deployment", Namespace: "payments", Name: "payments", HealthNot: "Healthy",
+		},
+	}, time.Minute, now)
+	if err != nil || len(queryResult.Facts) != 1 || queryResult.Facts[0].Workspace != "workspace-a" || queryResult.Facts[0].Stale {
+		t.Fatalf("workspace-a health query = %#v, error = %v", queryResult, err)
+	}
+	if err := database.InWorkspace(ctx, scope, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO sith.clusters(workspace_id, id, managed_cluster_ref)
+			VALUES ($1, $2, $3)`, scope.WorkspaceID(), "cluster-a2", "ocm/cluster-a2")
+		return err
+	}); err != nil {
+		t.Fatalf("register second workspace-a spoke: %v", err)
+	}
+	spokes, err = database.RegisteredSpokes(ctx, scope)
+	if err != nil || len(spokes) != 2 {
+		t.Fatalf("two workspace-a registered spokes = %#v, error = %v", spokes, err)
+	}
+	secondSnapshot := hubfleet.Snapshot{ObservedAt: now, Facts: []fleet.Evidence{{
+		Ref:        fleet.ResourceRef{SourceKind: hubfleet.SourceKind, Scope: "cluster-a2", Kind: "Deployment", Namespace: "payments", Name: "payments"},
+		Kind:       fleet.FactHealth,
+		Observed:   []byte(`{"status":"Healthy"}`),
+		ObservedAt: now,
+		Source:     "cluster-a2",
+		Provenance: fleet.Provenance{Adapter: hubfleet.SourceKind, ProtocolV: "1.0.0"},
+	}}}
+	if err := database.ReplaceSnapshot(ctx, scope, spokes[1], secondSnapshot, now); err != nil {
+		t.Fatalf("replace second workspace-a snapshot: %v", err)
+	}
+	correlator, err := hubfleet.NewCorrelator(hubfleet.CorrelatorConfig{
+		Querier: database, Freshness: time.Minute, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	correlated, err := correlator.Correlate(ctx, scope, hubfleet.CorrelationRequest{
+		ResourceKind: "Deployment", Name: "payments", Namespace: "payments", HealthNot: "Healthy",
+	})
+	if err != nil || len(correlated.Facts) != 1 || correlated.Facts[0].Ref.Scope != "cluster-a" ||
+		correlated.Coverage.Requested != 2 || correlated.Coverage.Reachable != 2 || len(correlated.Coverage.Stale) != 0 {
+		t.Fatalf("two-spoke correlation = %#v, error = %v", correlated, err)
+	}
+	foreignPrincipal, err := tenancy.NewPrincipal("user:bob", map[tenancy.WorkspaceID]tenancy.Role{"workspace-b": tenancy.RoleReader})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignScope, err := foreignPrincipal.Scope("workspace-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignCorrelation, err := correlator.Correlate(ctx, foreignScope, hubfleet.CorrelationRequest{
+		ResourceKind: "Deployment", Name: "payments", Namespace: "payments", HealthNot: "Healthy",
+	})
+	if err != nil || len(foreignCorrelation.Facts) != 0 {
+		t.Fatalf("cross-workspace correlation = %#v, error = %v", foreignCorrelation, err)
+	}
+	foreignResult, err := database.QueryFleet(ctx, foreignScope, fleet.Query{Scopes: []string{"cluster-a"}}, time.Minute, now)
+	if err != nil || len(foreignResult.Facts) != 0 || foreignResult.Coverage.Requested != 1 ||
+		len(foreignResult.Coverage.Unreachable) != 1 || foreignResult.Coverage.Unreachable[0] != "cluster-a" {
+		t.Fatalf("cross-workspace fleet query = %#v, error = %v", foreignResult, err)
+	}
+	foreignSnapshot := hubfleet.Snapshot{ObservedAt: now, Facts: []fleet.Evidence{{
+		Ref:        fleet.ResourceRef{SourceKind: hubfleet.SourceKind, Scope: "cluster-b", Kind: "Deployment", Name: "foreign"},
+		Kind:       fleet.FactInventory,
+		Observed:   []byte(`{"replicas":1}`),
+		ObservedAt: now,
+		Source:     "cluster-b",
+		Provenance: fleet.Provenance{Adapter: hubfleet.SourceKind, ProtocolV: "1.0.0"},
+	}}}
+	if err := database.ReplaceSnapshot(ctx, scope, hubfleet.Spoke{ID: "cluster-b", ManagedClusterRef: "ocm/cluster-b"}, foreignSnapshot, now); !errors.Is(err, ErrSpokeNotRegistered) {
+		t.Fatalf("cross-workspace snapshot replacement error = %v", err)
+	}
+	retained, err := database.MarkSnapshotFailure(ctx, scope, spokes[0], hubfleet.FailureDeadline, now.Add(time.Second))
+	if err != nil || !retained {
+		t.Fatalf("mark retained snapshot stale = %t, error = %v", retained, err)
+	}
+	if _, err := database.MarkSnapshotFailure(ctx, scope, spokes[1], hubfleet.FailureDeadline, now.Add(time.Second)); err != nil {
+		t.Fatalf("mark healthy non-match spoke stale: %v", err)
+	}
+	staleCorrelation, err := correlator.Correlate(ctx, scope, hubfleet.CorrelationRequest{
+		ResourceKind: "Deployment", Name: "payments", Namespace: "payments", HealthNot: "Healthy",
+	})
+	if err != nil || len(staleCorrelation.Facts) != 1 || staleCorrelation.Facts[0].Ref.Scope != "cluster-a" ||
+		len(staleCorrelation.Coverage.Stale) != 2 || staleCorrelation.Coverage.Stale[0] != "cluster-a" ||
+		staleCorrelation.Coverage.Stale[1] != "cluster-a2" {
+		t.Fatalf("stale two-spoke correlation = %#v, error = %v", staleCorrelation, err)
+	}
+	staleResult, err := database.QueryFleet(ctx, scope, fleet.Query{Scopes: []string{"cluster-a"}}, time.Minute, now.Add(time.Second))
+	if err != nil || len(staleResult.Facts) != 3 || !staleResult.Facts[0].Stale || staleResult.Facts[0].StaleFor != "collection failed" ||
+		staleResult.Coverage.Reachable != 0 || len(staleResult.Coverage.Unreachable) != 1 || len(staleResult.Coverage.Stale) != 1 {
+		t.Fatalf("retained stale query = %#v, error = %v", staleResult, err)
 	}
 }
 
