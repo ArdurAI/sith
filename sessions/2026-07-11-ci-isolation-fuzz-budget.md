@@ -39,5 +39,14 @@ boundary.
 
 ## [C] Checkpoint
 
-The fixed-count target is locally green under repeated constrained execution and every repository
-gate. Signed/DCO publication, PR CI, merge, post-merge CI, and PR #86 refresh remain pending.
+- Signed/DCO/GSTACK feature commit: `eb1692d312252ba93b559bc1d7dd8c4ceae7777b`.
+- Feature PR [#88](https://github.com/ArdurAI/sith/pull/88) passed CI run `29179821061`; its server
+  log records exactly 50,000 mutations with four workers in `8.48s` before all remaining gates
+  passed.
+- PR #88 merged to `dev` as `1fa9375bb75c8642f0ac1d37e32858610177b422`.
+- Exact post-merge run `29180191466` passed the main job, including deterministic isolation and
+  real two-cluster kind. Its release job initially failed before repository execution when the
+  Syft installer received an unhandled GitHub asset HTTP 302; rerunning only that failed job on the
+  same SHA passed the full reproducible archive/SBOM/formula gate in `59s`.
+- Issue #87 is closed. PR #86 is rebased onto the fixed `dev` history and must pass a fresh run.
+- Final GitHub open queues: Dependabot `0`, code scanning `0`, secret scanning `0`.

@@ -54,5 +54,13 @@ helper output.
 
 ## [C] Checkpoint
 
-The acceptance implementation is locally green and ready for signed/DCO publication. PR CI,
-merge SHA, post-merge CI, issue closure, and epic/roadmap updates remain pending.
+- Signed/DCO/GSTACK feature commit: `929be8000607d6b0ccba208f73c70d3bfea73398`.
+- Feature PR [#82](https://github.com/ArdurAI/sith/pull/82) passed CI run
+  `29179060642` and merged to `dev` as `1772b1d1afc4376223de3d12baf46d3521a63922`.
+- Exact post-merge `dev` CI run `29179248164` passed every build, race, destructive isolation,
+  real two-cluster, reproducible archive, SPDX SBOM, and Homebrew formula gate.
+- Issue #81 is closed as completed; the F1.x checkbox and progress evidence are recorded on E1
+  #19 and roadmap #39.
+- E1 intentionally remains open because its hub API-key, OIDC, and cloud-IAM promises are not yet
+  implemented; residual work is now explicit in #83, #84, and #85.
+- Final GitHub open security queues: Dependabot `0`, code scanning `0`, secret scanning `0`.
