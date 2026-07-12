@@ -70,8 +70,11 @@ func recordObservations(record fleetcache.Record) []Observation {
 		if record.Restarts > 0 {
 			result = append(result, add(fleet.LensLive, "pod.restarts", strconv.FormatInt(record.Restarts, 10)))
 		}
-		for _, digest := range record.ImageDigests {
-			result = append(result, add(fleet.LensLive, "container.image.digest", digest))
+		if len(record.ImageRepoDigests) == 1 {
+			repoDigest := record.ImageRepoDigests[0]
+			if _, err := fleet.ImageDigestFromRepoDigest(repoDigest); err == nil {
+				result = append(result, add(fleet.LensLive, fleet.OTelContainerImageRepoDigests, repoDigest))
+			}
 		}
 	case "Deployment", "StatefulSet", "DaemonSet", "Rollout":
 		if record.Status != "" {

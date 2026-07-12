@@ -18,30 +18,33 @@ import (
 
 // Record is a render-ready projection of one cached fleet fact.
 type Record struct {
-	Fact         fleet.Fact           `json:"fact"`
-	Workspace    string               `json:"workspace"`
-	Kind         string               `json:"kind"`
-	Cluster      string               `json:"cluster"`
-	Namespace    string               `json:"namespace,omitempty"`
-	Name         string               `json:"name"`
-	Ready        string               `json:"ready,omitempty"`
-	Status       string               `json:"status,omitempty"`
-	Reason       string               `json:"reason,omitempty"`
-	Reasons      []string             `json:"reasons,omitempty"`
-	Message      string               `json:"message,omitempty"`
-	Node         string               `json:"node,omitempty"`
-	Version      string               `json:"version,omitempty"`
-	Restarts     int64                `json:"restarts,omitempty"`
-	Images       []string             `json:"images,omitempty"`
-	ImageDigests []string             `json:"image_digests,omitempty"`
-	CVEs         []string             `json:"cves,omitempty"`
-	Conditions   []string             `json:"conditions,omitempty"`
-	Labels       map[string]string    `json:"labels,omitempty"`
-	Display      []fleet.DisplayField `json:"display,omitempty"`
-	CreatedAt    time.Time            `json:"created_at,omitempty"`
-	ObservedAt   time.Time            `json:"observed_at"`
-	Stale        bool                 `json:"stale"`
-	StaleFor     time.Duration        `json:"stale_for,omitempty"`
+	Fact         fleet.Fact `json:"fact"`
+	Workspace    string     `json:"workspace"`
+	Kind         string     `json:"kind"`
+	Cluster      string     `json:"cluster"`
+	Namespace    string     `json:"namespace,omitempty"`
+	Name         string     `json:"name"`
+	Ready        string     `json:"ready,omitempty"`
+	Status       string     `json:"status,omitempty"`
+	Reason       string     `json:"reason,omitempty"`
+	Reasons      []string   `json:"reasons,omitempty"`
+	Message      string     `json:"message,omitempty"`
+	Node         string     `json:"node,omitempty"`
+	Version      string     `json:"version,omitempty"`
+	Restarts     int64      `json:"restarts,omitempty"`
+	Images       []string   `json:"images,omitempty"`
+	ImageDigests []string   `json:"image_digests,omitempty"`
+	// ImageRepoDigests contains only canonical repository@sha256 references proven from Pod status.
+	// It is deliberately distinct from runtime-only ImageDigests, which must never be correlated.
+	ImageRepoDigests []string             `json:"image_repo_digests,omitempty"`
+	CVEs             []string             `json:"cves,omitempty"`
+	Conditions       []string             `json:"conditions,omitempty"`
+	Labels           map[string]string    `json:"labels,omitempty"`
+	Display          []fleet.DisplayField `json:"display,omitempty"`
+	CreatedAt        time.Time            `json:"created_at,omitempty"`
+	ObservedAt       time.Time            `json:"observed_at"`
+	Stale            bool                 `json:"stale"`
+	StaleFor         time.Duration        `json:"stale_for,omitempty"`
 }
 
 func normalize(fact fleet.Fact) (Record, error) {
@@ -127,6 +130,9 @@ func normalizePod(record *Record, object unstructured.Unstructured) {
 		if digest := imageDigest(nestedString(status, "imageID")); digest != "" {
 			record.ImageDigests = appendUnique(record.ImageDigests, digest)
 		}
+		if repoDigest := imageRepoDigest(nestedString(status, "imageID")); repoDigest != "" {
+			record.ImageRepoDigests = appendUnique(record.ImageRepoDigests, repoDigest)
+		}
 		if reason := nestedString(status, "state", "waiting", "reason"); reason != "" {
 			record.Reasons = appendUnique(record.Reasons, reason)
 			record.Status = reason
@@ -209,6 +215,21 @@ func imageDigest(imageID string) string {
 		return imageID[index:]
 	}
 	return ""
+}
+
+// imageRepoDigest accepts a runtime image ID only when it already carries a complete canonical
+// repository digest. A bare runtime digest, mutable tag, or ambiguous value remains display-only.
+func imageRepoDigest(imageID string) string {
+	for _, prefix := range []string{"docker-pullable://", "containerd://", "cri-o://", "docker://"} {
+		if strings.HasPrefix(imageID, prefix) {
+			imageID = strings.TrimPrefix(imageID, prefix)
+			break
+		}
+	}
+	if _, err := fleet.ImageDigestFromRepoDigest(imageID); err != nil {
+		return ""
+	}
+	return imageID
 }
 
 func appendUnique(values []string, value string) []string {

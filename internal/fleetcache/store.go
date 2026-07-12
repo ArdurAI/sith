@@ -616,6 +616,7 @@ func cloneRecord(record Record, includeEvidence bool) Record {
 	}
 	record.Images = append([]string(nil), record.Images...)
 	record.ImageDigests = append([]string(nil), record.ImageDigests...)
+	record.ImageRepoDigests = append([]string(nil), record.ImageRepoDigests...)
 	record.CVEs = append([]string(nil), record.CVEs...)
 	record.Conditions = append([]string(nil), record.Conditions...)
 	record.Reasons = append([]string(nil), record.Reasons...)

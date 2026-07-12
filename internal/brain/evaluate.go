@@ -155,10 +155,15 @@ func correlateFleet(verdicts []Verdict, observations map[string][]Observation) [
 	groups := make(map[groupKey][]Verdict)
 	for _, verdict := range verdicts {
 		for _, observation := range observations[entityKey(verdict.Ref)] {
-			if observation.Key == "container.image.digest" && strings.HasPrefix(observation.Value, "sha256:") {
-				key := groupKey{verdict.Rule, observation.Value}
-				groups[key] = append(groups[key], verdict)
+			if observation.Key != fleet.OTelContainerImageRepoDigests {
+				continue
 			}
+			digest, err := fleet.ImageDigestFromRepoDigest(observation.Value)
+			if err != nil {
+				continue
+			}
+			key := groupKey{verdict.Rule, digest}
+			groups[key] = append(groups[key], verdict)
 		}
 	}
 	result := make([]Verdict, 0)
