@@ -94,6 +94,25 @@ rotate them under an explicit operational procedure. These are E1 library and HT
 the `sith hub` runtime remains staged behind later hub epics rather than exposing an incomplete
 service.
 
+Pinned OIDC federation uses the same exchange model. Each endpoint is fixed to one requested
+workspace, and each provider configuration allowlists an exact HTTPS issuer, audience, token type,
+asymmetric algorithm set, upstream lifetime, cache TTL, and key-count bound. Discovery metadata
+must repeat the configured issuer exactly; JWKS stays on the same origin and is fetched through a
+TLS 1.2+ transport that disables proxies, rejects private and special-use network targets, blocks
+off-origin redirects, caps response size, and binds each connection to a validated DNS result.
+Duplicate JSON claims and token-controlled `jku`, `x5u`, embedded-key, certificate-chain, critical,
+nested, and compressed JOSE headers fail closed.
+
+The verified upstream issuer and subject select a server-side binding under the requested
+workspace's forced RLS policy. Upstream workspace and role claims are ignored. Sith reads the
+member's current role and issues the same 15-minute Ed25519 session used by API-key exchange.
+Unknown keys trigger one bounded JWKS refresh that atomically replaces the cache, enabling key
+rollover without retaining retired keys; an expired cache is never used through an issuer outage.
+This follows [OpenID Connect Discovery 1.0](https://openid.net/specs/openid-connect-discovery-1_0.html),
+[RFC 7517](https://www.rfc-editor.org/rfc/rfc7517.html), and the
+[JWT BCP, RFC 8725](https://www.rfc-editor.org/rfc/rfc8725.html). Discovery and refresh add small
+outbound request and availability dependencies but create no cloud resources by themselves.
+
 `sith serve --mcp` exposes `fleet.inventory`, `fleet.health`, `fleet.correlate`, and
 `fleet.cve-search` over MCP Streamable HTTP. All four tools are cache-only and carry
 `readOnlyHint:true`; they use the exact workspace-required query path used by the CLI, TUI, and web
@@ -208,11 +227,11 @@ make e2e-kind
 
 The hub tenancy gate starts a temporary, digest-pinned PostgreSQL 18.4 container and proves the
 application role is a non-owner without `BYPASSRLS`, every current workspace table—including API
-key verifier rows—has forced RLS, direct unscoped reads are default-deny, foreign writes fail, and
+key verifier and OIDC binding rows—has forced RLS, direct unscoped reads are default-deny, foreign writes fail, and
 transaction-local scope does not bleed through a reused pool connection. It also exercises real
-API-key issuance, current-membership exchange, bounded rotation overlap, immediate revocation, and
-cross-workspace negative controls. It requires Docker and adds one official PostgreSQL image pull
-plus a short-lived local container:
+API-key issuance, current-membership exchange, bounded rotation overlap, immediate revocation,
+OIDC binding resolution, and cross-workspace negative controls. It requires Docker and adds one
+official PostgreSQL image pull plus a short-lived local container:
 
 ```bash
 make e2e-postgres

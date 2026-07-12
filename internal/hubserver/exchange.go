@@ -13,13 +13,21 @@ import (
 	"time"
 
 	"github.com/ArdurAI/sith/internal/hubauth"
+	"github.com/ArdurAI/sith/internal/tenancy"
 )
 
 const maxSithKeyBytes = 512
 
+const maxOIDCTokenBytes = 16 * 1024
+
 // SessionExchanger trades one API key for a short-lived signed session.
 type SessionExchanger interface {
 	Exchange(context.Context, string) (hubauth.IssuedSession, error)
+}
+
+// OIDCSessionExchanger validates an upstream identity for one requested workspace.
+type OIDCSessionExchanger interface {
+	Exchange(context.Context, tenancy.WorkspaceID, string) (hubauth.IssuedSession, error)
 }
 
 // AttemptLimiterConfig bounds failed and successful exchange attempts per client address.
@@ -103,6 +111,29 @@ func NewExchangeHandler(exchanger SessionExchanger, limiter *AttemptLimiter) (ht
 	if exchanger == nil || limiter == nil {
 		return nil, fmt.Errorf("construct API key exchange handler: exchanger and limiter are required")
 	}
+	return newCredentialExchangeHandler("SithKey", maxSithKeyBytes, limiter, exchanger.Exchange), nil
+}
+
+// NewOIDCExchangeHandler constructs a workspace-fixed endpoint that accepts only the OIDC scheme.
+func NewOIDCExchangeHandler(
+	workspaceID tenancy.WorkspaceID,
+	exchanger OIDCSessionExchanger,
+	limiter *AttemptLimiter,
+) (http.Handler, error) {
+	if tenancy.ValidateWorkspaceID(workspaceID) != nil || exchanger == nil || limiter == nil {
+		return nil, fmt.Errorf("construct OIDC exchange handler: workspace, exchanger, and limiter are required")
+	}
+	return newCredentialExchangeHandler("OIDC", maxOIDCTokenBytes, limiter, func(ctx context.Context, raw string) (hubauth.IssuedSession, error) {
+		return exchanger.Exchange(ctx, workspaceID, raw)
+	}), nil
+}
+
+func newCredentialExchangeHandler(
+	scheme string,
+	maxCredentialBytes int,
+	limiter *AttemptLimiter,
+	exchange func(context.Context, string) (hubauth.IssuedSession, error),
+) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		setNoStore(response.Header())
 		if request.Method != http.MethodPost {
@@ -115,12 +146,12 @@ func NewExchangeHandler(exchanger SessionExchanger, limiter *AttemptLimiter) (ht
 			writeExchangeError(response, http.StatusTooManyRequests)
 			return
 		}
-		raw, ok := authorizationCredential(request.Header.Values("Authorization"), "SithKey", maxSithKeyBytes)
+		raw, ok := authorizationCredential(request.Header.Values("Authorization"), scheme, maxCredentialBytes)
 		if !ok {
 			writeExchangeError(response, http.StatusUnauthorized)
 			return
 		}
-		session, err := exchanger.Exchange(request.Context(), raw)
+		session, err := exchange(request.Context(), raw)
 		if err != nil || session.AccessToken == "" || session.TokenType != "Bearer" || !session.ExpiresAt.After(time.Now().Add(-time.Minute)) {
 			writeExchangeError(response, http.StatusUnauthorized)
 			return
@@ -136,7 +167,7 @@ func NewExchangeHandler(exchanger SessionExchanger, limiter *AttemptLimiter) (ht
 		_ = json.NewEncoder(response).Encode(exchangeResponse{
 			AccessToken: session.AccessToken, TokenType: session.TokenType, ExpiresIn: expiresIn,
 		})
-	}), nil
+	})
 }
 
 func authorizationCredential(values []string, expectedScheme string, maxBytes int) (string, bool) {

@@ -98,7 +98,7 @@ func TestPostgresRLSBackstop(t *testing.T) {
 		t.Fatalf("workspace A query: %v", err)
 	}
 
-	tables := []string{"workspaces", "memberships", "clusters", "fleet_facts", "api_keys"}
+	tables := []string{"workspaces", "memberships", "clusters", "fleet_facts", "api_keys", "oidc_bindings"}
 	for _, table := range tables {
 		var count int
 		if err := database.pool.QueryRow(ctx, `SELECT count(*) FROM sith.`+pgx.Identifier{table}.Sanitize()).Scan(&count); err != nil {
@@ -123,6 +123,8 @@ func TestPostgresRLSBackstop(t *testing.T) {
 			VALUES ('workspace-b', 'cluster-b', 'health', '{}', now())`},
 		{name: "API key", statement: `INSERT INTO sith.api_keys(workspace_id, id, subject, verifier, created_at, expires_at)
 			VALUES ('workspace-b', 'CCCCCCCCCCCCCCCCCCCCCC', 'user:bob', decode(repeat('cc', 32), 'hex'), now(), now() + interval '1 day')`},
+		{name: "OIDC binding", statement: `INSERT INTO sith.oidc_bindings(workspace_id, issuer, upstream_subject, member_subject)
+			VALUES ('workspace-b', 'https://idp.example', 'upstream:mallory', 'user:bob')`},
 	}
 	for _, test := range foreignWrites {
 		t.Run("foreign "+test.name+" write denied", func(t *testing.T) {
@@ -225,11 +227,12 @@ func TestPostgresRLSBackstop(t *testing.T) {
 	}
 
 	assertAPIKeyStoreIntegration(t, ctx, database, admin)
+	assertOIDCStoreIntegration(t, ctx, database)
 }
 
 func assertWorkspaceAIsolation(ctx context.Context, database *AppDB, scope tenancy.Scope) error {
 	return database.InWorkspace(ctx, scope, func(tx pgx.Tx) error {
-		for _, table := range []string{"workspaces", "memberships", "clusters", "fleet_facts", "api_keys"} {
+		for _, table := range []string{"workspaces", "memberships", "clusters", "fleet_facts", "api_keys", "oidc_bindings"} {
 			var count int
 			if err := tx.QueryRow(ctx, `SELECT count(*) FROM sith.`+pgx.Identifier{table}.Sanitize()).Scan(&count); err != nil {
 				return err
@@ -346,6 +349,9 @@ func seedTenantRows(t *testing.T, ctx context.Context, admin *pgx.Conn) {
 		`INSERT INTO sith.api_keys(workspace_id, id, subject, verifier, created_at, expires_at) VALUES
 			('workspace-a', 'AAAAAAAAAAAAAAAAAAAAAA', 'user:alice', decode(repeat('aa', 32), 'hex'), now(), now() + interval '1 day'),
 			('workspace-b', 'BBBBBBBBBBBBBBBBBBBBBB', 'user:bob', decode(repeat('bb', 32), 'hex'), now(), now() + interval '1 day')`,
+		`INSERT INTO sith.oidc_bindings(workspace_id, issuer, upstream_subject, member_subject) VALUES
+			('workspace-a', 'https://idp.example', 'upstream:alice', 'user:alice'),
+			('workspace-b', 'https://idp.example', 'upstream:bob', 'user:bob')`,
 	}
 	for _, statement := range statements {
 		if _, err := admin.Exec(ctx, statement); err != nil {
@@ -438,6 +444,32 @@ func assertAPIKeyStoreIntegration(t *testing.T, ctx context.Context, database *A
 	}
 	if _, err := service.Exchange(ctx, replacement); !errors.Is(err, hubauth.ErrInvalidAPIKey) {
 		t.Fatalf("revoked PostgreSQL key error = %v", err)
+	}
+}
+
+func assertOIDCStoreIntegration(t *testing.T, ctx context.Context, database *AppDB) {
+	t.Helper()
+	membership, err := database.LookupOIDCMembership(ctx, "workspace-a", "https://idp.example", "upstream:alice")
+	if err != nil || membership.Subject != "user:alice" || membership.Role != tenancy.RoleOperator {
+		t.Fatalf("OIDC membership = %#v, error = %v", membership, err)
+	}
+	if _, err := database.LookupOIDCMembership(ctx, "workspace-a", "https://idp.example", "upstream:bob"); !errors.Is(err, hubauth.ErrOIDCBindingNotFound) {
+		t.Fatalf("cross-workspace OIDC lookup error = %v", err)
+	}
+	principal, err := tenancy.NewPrincipal("user:alice", map[tenancy.WorkspaceID]tenancy.Role{"workspace-a": tenancy.RoleAdmin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := principal.Scope("workspace-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CreateOIDCBinding(ctx, scope, "https://idp.example", "upstream:alice-secondary", "user:alice"); err != nil {
+		t.Fatalf("create OIDC binding: %v", err)
+	}
+	secondary, err := database.LookupOIDCMembership(ctx, "workspace-a", "https://idp.example", "upstream:alice-secondary")
+	if err != nil || secondary.Subject != "user:alice" || secondary.Role != tenancy.RoleOperator {
+		t.Fatalf("secondary OIDC membership = %#v, error = %v", secondary, err)
 	}
 }
 

@@ -12,10 +12,23 @@ import (
 	"time"
 
 	"github.com/ArdurAI/sith/internal/hubauth"
+	"github.com/ArdurAI/sith/internal/tenancy"
 )
 
 type exchangeStub struct {
 	want string
+}
+
+type oidcExchangeStub struct {
+	wantWorkspace tenancy.WorkspaceID
+	wantToken     string
+}
+
+func (stub oidcExchangeStub) Exchange(_ context.Context, workspaceID tenancy.WorkspaceID, raw string) (hubauth.IssuedSession, error) {
+	if workspaceID != stub.wantWorkspace || raw != stub.wantToken {
+		return hubauth.IssuedSession{}, errors.New("invalid")
+	}
+	return hubauth.IssuedSession{AccessToken: "oidc-session", TokenType: "Bearer", ExpiresAt: time.Now().Add(15 * time.Minute)}, nil
 }
 
 func (stub exchangeStub) Exchange(_ context.Context, raw string) (hubauth.IssuedSession, error) {
@@ -120,5 +133,33 @@ func TestExchangeHandlerRejectsWrongMethodAndUnsafeConstruction(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != http.MethodPost {
 		t.Fatalf("status = %d, Allow = %q", response.Code, response.Header().Get("Allow"))
+	}
+}
+
+func TestOIDCExchangeHandlerFixesWorkspaceAndScheme(t *testing.T) {
+	limiter, err := NewAttemptLimiter(AttemptLimiterConfig{Attempts: 3, Window: time.Minute, MaxKeys: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewOIDCExchangeHandler("workspace-a", oidcExchangeStub{wantWorkspace: "workspace-a", wantToken: "upstream.jwt.token"}, limiter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://hub.sith.test/v1/workspaces/workspace-a/session/oidc", nil)
+	request.Header.Set("Authorization", "OIDC upstream.jwt.token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"access_token":"oidc-session"`) {
+		t.Fatalf("status = %d, body = %q", response.Code, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodPost, "https://hub.sith.test/v1/workspaces/workspace-a/session/oidc", nil)
+	request.Header.Set("Authorization", "Bearer upstream.jwt.token")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("Bearer upstream token status = %d", response.Code)
+	}
+	if _, err := NewOIDCExchangeHandler("", oidcExchangeStub{}, limiter); err == nil {
+		t.Fatal("empty workspace accepted")
 	}
 }
