@@ -121,8 +121,8 @@ proof digest until expiry. AWS now accepts only a base64url-encoded, pre-signed 
 with a 60-second-or-shorter `X-Amz-Expires` and an exact `x-sith-audience` signed header. Sith
 reconstructs a header-minimal GET only to that endpoint, disables redirects, accepts only a
 short-lived assumed-role response, and binds the STS account plus immutable role ID through RLS.
-It never stores or logs an AWS access key, session token, signature, or raw proof. Azure Entra and
-Google verification remain separate slices; no provider or endpoint fallback is accepted.
+It never stores or logs an AWS access key, session token, signature, or raw proof. No provider or
+endpoint fallback is accepted.
 
 Azure Entra workload federation accepts only tenant-specific v2.0 `JWT` access tokens from one
 configured Microsoft public, US Government, or China authority. The verifier pins the derived
@@ -133,9 +133,25 @@ roles/groups/scopes, and cloud fallback are rejected or ignored. The resulting t
 identity still needs the same server-side RLS binding and one-time replay consumption before Sith
 issues a session.
 
+Google service-account federation accepts only Google-signed public-cloud ID tokens with the exact
+`https://accounts.google.com` issuer and `https://www.googleapis.com/oauth2/v3/certs` JWKS endpoint.
+It requires RS256, one exact audience, a verified `*.gserviceaccount.com` email, matching immutable
+numeric `sub`/`azp`, a one-hour-or-shorter lifetime, and an explicitly configured Google
+organization number carried in the `google.organization_number` claim. Operators must mint with the
+IAM Credentials `organizationNumberIncluded` option; Sith does not infer a project or realm from an
+email address. Self-signed service-account JWT assertions, user tokens, unbound organizations,
+alternate/restricted/sovereign/private endpoints, upstream authorization claims, and raw-token
+persistence are rejected. The resulting organization+service-account ID still resolves only through
+the server-side RLS binding and replay guard before a Sith session is issued.
+
 This AWS contract uses [STS GetCallerIdentity](https://docs.aws.amazon.com/STS/latest/APIReference/API_GetCallerIdentity.html)
 and regional STS endpoint guidance: the global STS endpoint is deliberately rejected because Sith
 requires a configured regional authority and bounded proof lifetime.
+
+The Google contract follows the [service-account ID-token profile](https://cloud.google.com/docs/authentication/token-types)
+and [IAM Credentials `generateIdToken` contract](https://cloud.google.com/iam/docs/reference/credentials/rest/v1/projects.serviceAccounts/generateIdToken):
+service-account ID tokens are Google-JWKS signed, while client-created service-account assertions are
+not accepted as Sith proofs.
 
 `sith serve --mcp` exposes `fleet.inventory`, `fleet.health`, `fleet.correlate`, and
 `fleet.cve-search` over MCP Streamable HTTP. All four tools are cache-only and carry
