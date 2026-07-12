@@ -87,7 +87,9 @@ evaluate the attached SBOM against their own policy and current advisory data.
 ## Maintainer release procedure
 
 1. Merge the feature PR into `dev`, ensure the full CI and release-snapshot jobs are green, then
-   merge a reviewed `dev` to `main` release PR.
+   merge a reviewed `dev` to `main` release PR. `dev` is the durable integration source: never use
+   `--delete-branch` for this release PR. Automatic branch deletion is reserved for merged feature
+   branches.
 2. From an up-to-date `main`, run `make ci` and `make release-check`. The latter compares archive
    SHA-256 digests across two complete builds; SBOM creation timestamps and Sigstore signatures are
    intentionally not expected to be byte-for-byte reproducible.
@@ -97,6 +99,8 @@ evaluate the attached SBOM against their own policy and current advisory data.
 5. Verify one archive with the commands above, dispatch the `ArdurAI/homebrew-tap` sync workflow,
    and prove a clean `brew install sith && sith version` before announcing the release.
 6. Check Dependabot, code-scanning, and secret-scanning alerts after publication.
+7. Confirm `dev` still exists at the intended integration tip before starting the next feature
+   branch.
 
 Published versions are immutable. A bad public release is corrected with a new patch version; do
 not replace its tag or silently rewrite assets. The release job uses only short-lived GitHub OIDC
