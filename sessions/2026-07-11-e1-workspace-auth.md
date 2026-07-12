@@ -16,6 +16,9 @@
 [A] Action: Added HTTP authentication middleware that requires exactly one unambiguous Bearer credential, clones the request, removes inbound identity/role/tenant/workspace/membership headers, verifies the token, and exposes an immutable principal plus signed-membership scope through private context keys. Authentication failures return one generic non-cacheable response and never echo the credential or claim failure.
 [T] Test: Race-enabled auth tests cover valid signed membership, expired/not-yet-valid/missing claims, issuer and audience substitution, unknown roles and keys, missing/wrong type, remote key/certificate URLs, unsupported critical headers, forged signatures, HS256 algorithm substitution, canceled/oversized inputs, key-copy immutability, ambiguous Authorization headers, and injected admin/foreign-tenant headers. Focused vet and golangci-lint are green with zero findings.
 [C] Checkpoint #2: signed-token identity and no-header-trust middleware — next: full repository gates and adversarial review.
+[A] Action: Added the hub-facing `fleetcache.QueryScoped` seam so handlers pass a verified `tenancy.Scope`, not a raw header-derived workspace string. The wrapper queries only the signed workspace and revalidates every returned record. Existing local-mode callers keep their zero-overhead string path.
+[T] Test: Race tests populate two workspaces and prove a workspace-A principal receives only workspace-A records. Guessed foreign and nonexistent scope names both return the same synthetic, unreachable, zero-observation echo, proving the cache does not create a cross-workspace existence oracle while retaining honest requested-scope coverage.
+[C] Checkpoint #3: signed scope wired to the shared fleet cache — next: full repository gates and adversarial review.
 
 ---
 
