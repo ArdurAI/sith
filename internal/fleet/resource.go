@@ -199,14 +199,16 @@ type DiffHunk struct {
 
 // Graph is the source-abstract operational graph assembled from facts.
 type Graph struct {
-	Nodes []Node `json:"nodes"`
-	Edges []Edge `json:"edges"`
+	Workspace  string      `json:"workspace"`
+	Nodes      []Node      `json:"nodes"`
+	Unattached []GraphFact `json:"unattached,omitempty"`
+	Edges      []Edge      `json:"edges"`
 }
 
-// Node is one addressed resource and its latest fact.
+// Node is one validated entity and its bounded, lens-stamped fact bundle.
 type Node struct {
-	Ref  ResourceRef `json:"ref"`
-	Fact Fact        `json:"fact"`
+	Entity EntityRef   `json:"entity"`
+	Facts  []GraphFact `json:"facts"`
 }
 
 // Relation is the closed taxonomy of cross-resource graph edges.
@@ -225,7 +227,7 @@ const (
 
 // Edge is one typed relationship between fleet resources.
 type Edge struct {
-	From ResourceRef `json:"from"`
-	To   ResourceRef `json:"to"`
-	Rel  Relation    `json:"rel"`
+	From EntityRef `json:"from"`
+	To   EntityRef `json:"to"`
+	Rel  Relation  `json:"rel"`
 }

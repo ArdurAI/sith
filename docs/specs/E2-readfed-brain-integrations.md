@@ -152,7 +152,7 @@ facts keyed the same way and the graph joins without heuristics.
 | Namespace | `k8s.namespace.name` | K8s, Argo, mesh |
 | Workload | `k8s.{deployment,statefulset,daemonset}.name` + `k8s.pod.name` | K8s, Prom, logs, mesh |
 | Node | `k8s.node.name` | K8s, Prom, cloud |
-| Image | `container.image.name` + **`container.image.digest`** (`sha256:…`) | K8s, registry, Docker |
+| Image | `container.image.name` + stable **`container.image.repo_digests`** (normalize exactly one `sha256:…` value) | K8s, registry, Docker |
 | Service (telemetry) | `service.name`, `service.namespace` | OTel traces, mesh, Prom |
 | Desired unit | Argo `Application` name / Git `repo@path@revision` | Argo, GitHub, Helm |
 
@@ -164,8 +164,9 @@ brain blame the wrong entity:
 2. **Joins are cluster+namespace-scoped by default.** User-controlled keys (`service.name`,
    workload names) collide across teams and clusters — two namespaces can both run a `service.name =
    api`. So every join is qualified by `k8s.cluster.name` (+ `k8s.namespace.name`) *first*; a bare
-   name never joins across that boundary. The **only** genuinely global key is the content-addressed
-   **`container.image.digest`** (`sha256:…`) — it is safe to join fleet-wide, and it is exactly the
+   name never joins across that boundary. The **only** genuinely global key is an immutable
+   `sha256:…` digest normalized from stable **`container.image.repo_digests`** — it is safe to join
+   fleet-wide, and it is exactly the
    key behind "the same image on 4 clusters." Any other cross-cluster correlation must be an explicit,
    named query (e.g. "same Argo `Application` name across clusters"), never an implicit key collision.
 
@@ -198,7 +199,8 @@ type EntityRef struct {
     Name      string `json:"name,omitempty"`
     Pod       string `json:"k8s.pod.name,omitempty"`
     Node      string `json:"k8s.node.name,omitempty"`
-    ImageDigest string `json:"container.image.digest,omitempty"` // sha256:...
+    // ImageDigest is normalized from stable container.image.repo_digests; mutable tags never join.
+    ImageDigest string `json:"image_digest,omitempty"` // sha256:...
     Service   string `json:"service.name,omitempty"`
     App       string `json:"argocd.application,omitempty"`
 }
