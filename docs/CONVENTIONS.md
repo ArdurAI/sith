@@ -18,8 +18,8 @@ Related: [`ARCHITECTURE.md`](ARCHITECTURE.md), [`adr/0002-stack-and-language.md`
 
 | Branch | Role | Rules |
 |---|---|---|
-| `main` | **Release.** Seed + tagged releases only. | Protected. No direct pushes. Only receives merges from `dev` at release time. Tags (`vX.Y.Z`) are cut here. **Do not touch `main` during Phase L.** |
-| `dev` | **Integration.** The default PR target and the trunk all feature work merges into. | Protected. All feature PRs target `dev`. Must stay green. |
+| `main` | **Release.** Seed + tagged releases only. | Protected from deletion and force-push. No direct pushes by process. Only receives merges from `dev` at release time. Tags (`vX.Y.Z`) are cut here. **Do not touch `main` during Phase L.** |
+| `dev` | **Integration.** The default PR target and the trunk all feature work merges into. | Protected from deletion and force-push. All feature PRs target `dev`. Must stay green. |
 | `feat/*`, `fix/*`, `docs/*`, `chore/*`, `refactor/*`, `test/*`, `ci/*`, `build/*` | **Feature branches.** One slice or one coherent change each. | Branched **off `dev`**. PR **into `dev`**. Deleted after merge. |
 
 **Naming.** `feat/<slice-or-area>-<short-slug>` — e.g. `feat/slice-0-foundation`,
@@ -38,6 +38,8 @@ identify the slice from `BUILD-SEQUENCE.md`.
 
 **Release flow (not Phase L, documented for completeness).** PR `dev → main`, then tag `main` with
 `vX.Y.Z`. Release artifacts (cosign signature, SLSA provenance, SBOM) attach to the tag per E9/#27.
+`dev` is the durable integration source: never use `--delete-branch` when merging this release PR.
+Only a merged feature branch is eligible for automatic deletion.
 
 ---
 
@@ -278,13 +280,15 @@ workflow):
 4. **build** — `go build ./...` succeeds; `cmd/sith` produces a runnable binary.
 5. **test** — `go test -race -count=1 ./...` passes.
 
-Additional merge requirements (branch protection):
+Additional merge requirements (repository discipline):
 - Every commit is **DCO signed-off** (a DCO check verifies each commit has a matching
   `Signed-off-by`).
 - Every commit is **SSH-signed** and verifies.
 - At least one approving review (owner review counts).
 - Branch is up to date with `dev` (rebased) before merge.
 - No `--no-verify`, no `--no-gpg-sign`, no squash-merge (§1).
+- Branch protection rejects deletion and force-pushes for both `dev` and `main`; it does not replace
+  these merge requirements.
 
 Toolchain is **pinned**: the Go version in CI matches `go.mod`'s `go` directive; the golangci-lint
 version is pinned in the workflow. Bumps to either are their own `ci:`/`build:` commit, reviewed
