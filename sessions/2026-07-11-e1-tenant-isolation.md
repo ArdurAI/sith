@@ -15,6 +15,8 @@
 [C] Checkpoint #2: real multi-layer suite and bounded fuzz campaign implemented — next: run the fuzz target, lint, and full repository gates.
 [T] Test: The bounded fuzzer completed 102,327 generated executions in its first standalone campaign, then the exact `make e2e-isolation` target passed all four packages and completed another 106,146 executions. Workflow YAML parses, focused race tests pass, and golangci-lint reports zero findings.
 [C] Checkpoint #3: destructive invariants and CI orchestration proved locally — next: signed checkpoint commit, full repository CI, and real kind regression.
+[T] Test: Final local `make ci` is green with zero lint findings and no vulnerabilities on Go 1.26.5; the pinned real kind two-cluster regression passed in 91.359s. Cleanup confirmed zero kind clusters and no `sith-rls` containers, then reclaimed 1.21 GB. GitHub Dependabot, code-scanning, and secret-scanning queues were each zero immediately before publication.
+[C] Checkpoint #4: full repository, mutation, fuzz, PostgreSQL, and Kubernetes gates green — next: signed evidence commit, remote CI, review, and merge.
 
 ---
 
