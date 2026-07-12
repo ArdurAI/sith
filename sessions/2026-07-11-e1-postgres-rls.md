@@ -23,6 +23,8 @@
 [C] Checkpoint #5: all local repository, vulnerability, PostgreSQL, and Kubernetes gates green — next: signed evidence commit, remote CI, review, and merge.
 [A] Action: Transport review narrowed the explicit `AllowInsecure` escape hatch to loopback IPs, `localhost`, or Unix sockets. A remote PostgreSQL host still requires TLS with no plaintext fallback even if the test-only flag is set; the new direct `net/netip` boundary is exact-allowlisted in the privacy guard.
 [C] Checkpoint #6: remote plaintext database footgun closed — next: repeat focused privacy/database gates and publish.
+[T] Test: After transport hardening, focused hubdb/privacy race tests and lint passed, the real PostgreSQL gate passed in 6.246s, and a final exact-commit `make ci` passed with no vulnerabilities or lint findings. Final cleanup found no kind or PostgreSQL test containers and reclaimed the re-pulled 296.4 MB PostgreSQL image.
+[C] Checkpoint #7: final branch state is clean and fully gated — next: publish PR, require green remote PostgreSQL and kind jobs, then merge and verify `dev`.
 
 ---
 
