@@ -24,6 +24,24 @@ type oidcExchangeStub struct {
 	wantToken     string
 }
 
+type cloudExchangeStub struct {
+	wantWorkspace tenancy.WorkspaceID
+	wantProvider  hubauth.CloudProvider
+	wantProof     string
+}
+
+func (stub cloudExchangeStub) Exchange(
+	_ context.Context,
+	workspaceID tenancy.WorkspaceID,
+	provider hubauth.CloudProvider,
+	raw string,
+) (hubauth.IssuedSession, error) {
+	if workspaceID != stub.wantWorkspace || provider != stub.wantProvider || raw != stub.wantProof {
+		return hubauth.IssuedSession{}, errors.New("invalid")
+	}
+	return hubauth.IssuedSession{AccessToken: "cloud-session", TokenType: "Bearer", ExpiresAt: time.Now().Add(15 * time.Minute)}, nil
+}
+
 func (stub oidcExchangeStub) Exchange(_ context.Context, workspaceID tenancy.WorkspaceID, raw string) (hubauth.IssuedSession, error) {
 	if workspaceID != stub.wantWorkspace || raw != stub.wantToken {
 		return hubauth.IssuedSession{}, errors.New("invalid")
@@ -161,5 +179,41 @@ func TestOIDCExchangeHandlerFixesWorkspaceAndScheme(t *testing.T) {
 	}
 	if _, err := NewOIDCExchangeHandler("", oidcExchangeStub{}, limiter); err == nil {
 		t.Fatal("empty workspace accepted")
+	}
+}
+
+func TestCloudExchangeHandlerFixesWorkspaceProviderAndScheme(t *testing.T) {
+	limiter, err := NewAttemptLimiter(AttemptLimiterConfig{Attempts: 3, Window: time.Minute, MaxKeys: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewCloudExchangeHandler(
+		"workspace-a",
+		hubauth.CloudProviderAWS,
+		cloudExchangeStub{wantWorkspace: "workspace-a", wantProvider: hubauth.CloudProviderAWS, wantProof: "encoded-proof"},
+		limiter,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://hub.sith.test/v1/workspaces/workspace-a/session/cloud/aws", nil)
+	request.Header.Set("Authorization", "CloudProof encoded-proof")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "\"access_token\":\"cloud-session\"") {
+		t.Fatalf("status = %d, body = %q", response.Code, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodPost, "https://hub.sith.test/v1/workspaces/workspace-a/session/cloud/aws", nil)
+	request.Header.Set("Authorization", "OIDC encoded-proof")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("OIDC proof status = %d", response.Code)
+	}
+	if _, err := NewCloudExchangeHandler("", hubauth.CloudProviderAWS, cloudExchangeStub{}, limiter); err == nil {
+		t.Fatal("empty workspace accepted")
+	}
+	if _, err := NewCloudExchangeHandler("workspace-a", "unknown", cloudExchangeStub{}, limiter); err == nil {
+		t.Fatal("unknown provider accepted")
 	}
 }
