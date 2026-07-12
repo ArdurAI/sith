@@ -37,6 +37,7 @@ func Authenticate(verifier Verifier, next http.Handler) (http.Handler, error) {
 			writeUnauthorized(response)
 			return
 		}
+		cloned.Header.Del("Authorization")
 		principal, err := verifier.Verify(cloned.Context(), rawToken)
 		if err != nil {
 			writeUnauthorized(response)

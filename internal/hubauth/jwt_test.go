@@ -46,6 +46,13 @@ func TestJWTVerifierAcceptsOnlyStrictSessionProfile(t *testing.T) {
 		{name: "missing expiry", claims: mutateClaims(valid, func(claims *sessionClaims) { claims.ExpiresAt = nil }), key: privateKey},
 		{name: "not active", claims: mutateClaims(valid, func(claims *sessionClaims) { claims.NotBefore = jwt.NewNumericDate(now.Add(time.Minute)) }), key: privateKey},
 		{name: "missing issued at", claims: mutateClaims(valid, func(claims *sessionClaims) { claims.IssuedAt = nil }), key: privateKey},
+		{name: "excessive lifetime", claims: mutateClaims(valid, func(claims *sessionClaims) {
+			claims.ExpiresAt = jwt.NewNumericDate(now.Add(defaultMaxSessionLifetime + time.Hour))
+		}), key: privateKey},
+		{name: "nonpositive lifetime", claims: mutateClaims(valid, func(claims *sessionClaims) {
+			claims.IssuedAt = jwt.NewNumericDate(now.Add(-time.Hour))
+			claims.ExpiresAt = jwt.NewNumericDate(now.Add(-time.Hour))
+		}), key: privateKey},
 		{name: "missing token ID", claims: mutateClaims(valid, func(claims *sessionClaims) { claims.ID = "" }), key: privateKey},
 		{name: "missing subject", claims: mutateClaims(valid, func(claims *sessionClaims) { claims.Subject = "" }), key: privateKey},
 		{name: "no memberships", claims: mutateClaims(valid, func(claims *sessionClaims) { claims.Memberships = nil }), key: privateKey},
@@ -133,6 +140,10 @@ func TestNewJWTVerifierRejectsUnsafeConfiguration(t *testing.T) {
 		{Issuer: testIssuer, Audience: testAudience, Keys: map[string]ed25519.PublicKey{"": publicKey}},
 		{Issuer: testIssuer, Audience: testAudience, Keys: map[string]ed25519.PublicKey{testKeyID: {1, 2, 3}}},
 		{Issuer: testIssuer, Audience: testAudience, Keys: map[string]ed25519.PublicKey{testKeyID: publicKey}, Leeway: time.Minute + time.Second},
+		{Issuer: " " + testIssuer, Audience: testAudience, Keys: map[string]ed25519.PublicKey{testKeyID: publicKey}},
+		{Issuer: testIssuer, Audience: testAudience + " ", Keys: map[string]ed25519.PublicKey{testKeyID: publicKey}},
+		{Issuer: testIssuer, Audience: testAudience, Keys: map[string]ed25519.PublicKey{testKeyID: publicKey}, MaxLifetime: time.Second},
+		{Issuer: testIssuer, Audience: testAudience, Keys: map[string]ed25519.PublicKey{testKeyID: publicKey}, MaxLifetime: maxSessionLifetime + time.Second},
 	}
 	for index, config := range tests {
 		if _, err := NewJWTVerifier(config); err == nil {

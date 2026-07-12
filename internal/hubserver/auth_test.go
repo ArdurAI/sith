@@ -39,6 +39,9 @@ func TestAuthenticateIgnoresInjectedIdentityHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "" {
+			t.Fatal("bearer credential reached downstream handler")
+		}
 		for _, name := range []string{"X-Sith-Role", "X-User-Tenant", "X-Forwarded-User", "X-Workspace"} {
 			if value := request.Header.Get(name); value != "" {
 				t.Errorf("untrusted header %s reached handler: %q", name, value)
@@ -70,6 +73,9 @@ func TestAuthenticateIgnoresInjectedIdentityHeaders(t *testing.T) {
 	}
 	if request.Header.Get("X-Sith-Role") != "admin" {
 		t.Fatal("authentication middleware mutated the caller's request")
+	}
+	if request.Header.Get("Authorization") == "" {
+		t.Fatal("authentication middleware removed the credential from the caller's request")
 	}
 }
 

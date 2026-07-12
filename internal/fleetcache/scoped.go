@@ -16,6 +16,9 @@ func (store *Store) QueryScoped(scope tenancy.Scope, query Query) (Snapshot, err
 	if scope.WorkspaceID() == "" {
 		return Snapshot{}, fmt.Errorf("query scoped cache: workspace scope is required")
 	}
+	if err := scope.Authorize(tenancy.ActionRead); err != nil {
+		return Snapshot{}, fmt.Errorf("query scoped cache: %w", err)
+	}
 	snapshot := store.Query(string(scope.WorkspaceID()), query)
 	if err := tenancy.RequireAll(scope, snapshot.Records, func(record Record) tenancy.WorkspaceID {
 		return tenancy.WorkspaceID(record.Workspace)

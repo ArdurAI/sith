@@ -16,9 +16,11 @@ import (
 )
 
 const (
-	defaultJWTType = "sith-session+jwt"
-	maxTokenBytes  = 16 * 1024
-	maxKeyIDBytes  = 128
+	defaultJWTType            = "sith-session+jwt"
+	defaultMaxSessionLifetime = 12 * time.Hour
+	maxSessionLifetime        = 24 * time.Hour
+	maxTokenBytes             = 16 * 1024
+	maxKeyIDBytes             = 128
 )
 
 // ErrInvalidToken deliberately hides signature and claim details from callers.
@@ -31,16 +33,17 @@ type JWTConfig struct {
 	Type     string
 	Keys     map[string]ed25519.PublicKey
 	Leeway   time.Duration
-	Now      func() time.Time
+	// MaxLifetime bounds the interval between issued-at and expiry. Zero uses 12 hours.
+	MaxLifetime time.Duration
+	Now         func() time.Time
 }
 
 // JWTVerifier verifies Ed25519 session tokens without remote key discovery or algorithm agility.
 type JWTVerifier struct {
-	issuer   string
-	audience string
-	typeName string
-	keys     map[string]ed25519.PublicKey
-	parser   *jwt.Parser
+	typeName    string
+	keys        map[string]ed25519.PublicKey
+	maxLifetime time.Duration
+	parser      *jwt.Parser
 }
 
 type sessionClaims struct {
@@ -52,6 +55,9 @@ type sessionClaims struct {
 func NewJWTVerifier(config JWTConfig) (*JWTVerifier, error) {
 	if strings.TrimSpace(config.Issuer) == "" || strings.TrimSpace(config.Audience) == "" {
 		return nil, fmt.Errorf("construct JWT verifier: issuer and audience are required")
+	}
+	if strings.TrimSpace(config.Issuer) != config.Issuer || strings.TrimSpace(config.Audience) != config.Audience {
+		return nil, fmt.Errorf("construct JWT verifier: issuer and audience must be trimmed")
 	}
 	if config.Type == "" {
 		config.Type = defaultJWTType
@@ -78,6 +84,12 @@ func NewJWTVerifier(config JWTConfig) (*JWTVerifier, error) {
 	if config.Leeway < 0 || config.Leeway > time.Minute {
 		return nil, fmt.Errorf("construct JWT verifier: leeway must be between zero and one minute")
 	}
+	if config.MaxLifetime == 0 {
+		config.MaxLifetime = defaultMaxSessionLifetime
+	}
+	if config.MaxLifetime < time.Minute || config.MaxLifetime > maxSessionLifetime {
+		return nil, fmt.Errorf("construct JWT verifier: maximum lifetime must be between one minute and 24 hours")
+	}
 	parser := jwt.NewParser(
 		jwt.WithValidMethods([]string{jwt.SigningMethodEdDSA.Alg()}),
 		jwt.WithIssuer(config.Issuer),
@@ -88,10 +100,7 @@ func NewJWTVerifier(config JWTConfig) (*JWTVerifier, error) {
 		jwt.WithTimeFunc(config.Now),
 		jwt.WithStrictDecoding(),
 	)
-	return &JWTVerifier{
-		issuer: config.Issuer, audience: config.Audience, typeName: config.Type,
-		keys: keys, parser: parser,
-	}, nil
+	return &JWTVerifier{typeName: config.Type, keys: keys, maxLifetime: config.MaxLifetime, parser: parser}, nil
 }
 
 // Verify authenticates the token and returns only validated, defensively copied claims.
@@ -117,7 +126,11 @@ func (verifier *JWTVerifier) Verify(ctx context.Context, rawToken string) (tenan
 		}
 		return key, nil
 	})
-	if err != nil || token == nil || !token.Valid || claims.IssuedAt == nil || claims.ID == "" || strings.TrimSpace(claims.Subject) == "" {
+	if err != nil || token == nil || !token.Valid || claims.IssuedAt == nil || claims.ExpiresAt == nil || claims.ID == "" || strings.TrimSpace(claims.Subject) == "" {
+		return tenancy.Principal{}, ErrInvalidToken
+	}
+	lifetime := claims.ExpiresAt.Sub(claims.IssuedAt.Time)
+	if lifetime <= 0 || lifetime > verifier.maxLifetime {
 		return tenancy.Principal{}, ErrInvalidToken
 	}
 	memberships := make(map[tenancy.WorkspaceID]tenancy.Role, len(claims.Memberships))
