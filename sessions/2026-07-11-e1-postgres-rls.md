@@ -1,7 +1,7 @@
 # Session — 2026-07-11 — e1-postgres-rls
 
 **Builder:** Gnani Rahul · **Model/effort:** GPT-5, max · **Branch:** gnanirahulnutakki/feat/e1-postgres-rls
-**Slice(s):** Phase 1 / E1 / issue #8 · **Status:** in-progress
+**Slice(s):** Phase 1 / E1 / issue #8 · **Status:** complete
 
 ---
 
@@ -25,7 +25,10 @@
 [C] Checkpoint #6: remote plaintext database footgun closed — next: repeat focused privacy/database gates and publish.
 [T] Test: After transport hardening, focused hubdb/privacy race tests and lint passed, the real PostgreSQL gate passed in 6.246s, and a final exact-commit `make ci` passed with no vulnerabilities or lint findings. Final cleanup found no kind or PostgreSQL test containers and reclaimed the re-pulled 296.4 MB PostgreSQL image.
 [C] Checkpoint #7: final branch state is clean and fully gated — next: publish PR, require green remote PostgreSQL and kind jobs, then merge and verify `dev`.
+[A] Action: Published PR #77 with six SSH-signed, DCO-signed commits and explicit repository-native database red-team evidence. Both required PR jobs passed in run 29177223200, including the new real PostgreSQL forced-RLS test, reproducible archives, SPDX SBOM, vulnerability scan, race tests, and the real two-cluster fan-out test. Merged to `dev` as `122a5f2efda443ba16481a27d0ac49f422325593`.
+[T] Test: Post-merge `dev` run 29177407504 passed both required jobs against the exact merge commit. Closed #8 with evidence, checked F1.5 in epic #19 while leaving the destructive isolation suite open, updated roadmap #39, and rechecked zero Dependabot, code-scanning, and secret-scanning alerts.
+[C] Checkpoint #8: E1 forced PostgreSQL RLS backstop accepted on `dev` — next: issue #12 unified destructive tenant-isolation suite.
 
 ---
 
-**Session close:** in progress · **Open questions touched:** none
+**Session close:** PR #77 merged; issue #8 closed; local, PR, and post-merge PostgreSQL/kind gates green · **Open questions touched:** none
