@@ -124,6 +124,15 @@ short-lived assumed-role response, and binds the STS account plus immutable role
 It never stores or logs an AWS access key, session token, signature, or raw proof. Azure Entra and
 Google verification remain separate slices; no provider or endpoint fallback is accepted.
 
+Azure Entra workload federation accepts only tenant-specific v2.0 `JWT` access tokens from one
+configured Microsoft public, US Government, or China authority. The verifier pins the derived
+tenant issuer, audience, RS256 key policy, JWKS origin, expiry, `tid`, immutable workload `oid`,
+and app-only `idtyp=app`; an optional configured `azp` further pins the actor. Tenant-independent
+`common`/`organizations`, delegated identities, token-controlled authority selection, upstream
+roles/groups/scopes, and cloud fallback are rejected or ignored. The resulting tenant+object
+identity still needs the same server-side RLS binding and one-time replay consumption before Sith
+issues a session.
+
 This AWS contract uses [STS GetCallerIdentity](https://docs.aws.amazon.com/STS/latest/APIReference/API_GetCallerIdentity.html)
 and regional STS endpoint guidance: the global STS endpoint is deliberately rejected because Sith
 requires a configured regional authority and bounded proof lifetime.
