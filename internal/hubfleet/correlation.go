@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ArdurAI/sith/internal/fleet"
+	"github.com/ArdurAI/sith/internal/pep"
 	"github.com/ArdurAI/sith/internal/tenancy"
 )
 
@@ -35,6 +36,7 @@ type CorrelationRequest struct {
 // CorrelatorConfig defines a read-only, tenant-scoped correlation service.
 type CorrelatorConfig struct {
 	Querier   FleetQuerier
+	PEP       *pep.Enforcer
 	Freshness time.Duration
 	Now       func() time.Time
 }
@@ -42,14 +44,15 @@ type CorrelatorConfig struct {
 // Correlator resolves one exact health condition across the normalized multi-spoke fleet.
 type Correlator struct {
 	querier   FleetQuerier
+	pep       *pep.Enforcer
 	freshness time.Duration
 	now       func() time.Time
 }
 
 // NewCorrelator constructs a bounded read-only correlation service.
 func NewCorrelator(config CorrelatorConfig) (*Correlator, error) {
-	if config.Querier == nil {
-		return nil, fmt.Errorf("new fleet correlator: querier is required")
+	if config.Querier == nil || config.PEP == nil {
+		return nil, fmt.Errorf("new fleet correlator: querier and policy enforcer are required")
 	}
 	if config.Freshness == 0 {
 		config.Freshness = defaultSnapshotAge
@@ -60,7 +63,7 @@ func NewCorrelator(config CorrelatorConfig) (*Correlator, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	return &Correlator{querier: config.Querier, freshness: config.Freshness, now: config.Now}, nil
+	return &Correlator{querier: config.Querier, pep: config.PEP, freshness: config.Freshness, now: config.Now}, nil
 }
 
 // Correlate answers one coverage-honest, exact resource health question in the signed workspace.
@@ -69,13 +72,17 @@ func (correlator *Correlator) Correlate(
 	scope tenancy.Scope,
 	request CorrelationRequest,
 ) (fleet.QueryResult, error) {
-	if correlator == nil || correlator.querier == nil || ctx == nil {
-		return fleet.QueryResult{}, fmt.Errorf("correlate fleet: correlator and context are required")
+	if correlator == nil || correlator.querier == nil || correlator.pep == nil || ctx == nil {
+		return fleet.QueryResult{}, fmt.Errorf("correlate fleet: correlator, policy enforcer, and context are required")
 	}
 	if err := scope.Authorize(tenancy.ActionRead); err != nil {
 		return fleet.QueryResult{}, fmt.Errorf("correlate fleet: %w", err)
 	}
 	if err := request.validate(); err != nil {
+		return fleet.QueryResult{}, fmt.Errorf("correlate fleet: %w", err)
+	}
+	canonicalArguments := strings.Join([]string{request.ResourceKind, request.Name, request.Namespace, request.HealthNot, fmt.Sprintf("%d", request.Limit)}, "\x00")
+	if err := correlator.pep.AuthorizeRead(ctx, scope, pep.NewReadInput(pep.VerbFleetCorrelate, []byte(canonicalArguments))); err != nil {
 		return fleet.QueryResult{}, fmt.Errorf("correlate fleet: %w", err)
 	}
 	result, err := correlator.querier.QueryFleet(ctx, scope, fleet.Query{

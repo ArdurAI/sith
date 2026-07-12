@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ArdurAI/sith/internal/fleet"
+	"github.com/ArdurAI/sith/internal/pep"
 	"github.com/ArdurAI/sith/internal/tenancy"
 )
 
@@ -29,6 +30,7 @@ func TestCollectorIsolatesSpokeFailuresAndRetainsStaleSnapshots(t *testing.T) {
 	}
 	collector, err := NewCollector(CollectorConfig{
 		Store: store,
+		PEP:   testReadPEP(t),
 		Transport: transportFunc(func(_ context.Context, workspaceID tenancy.WorkspaceID, spoke Spoke) (Snapshot, error) {
 			if workspaceID != "workspace-a" {
 				return Snapshot{}, errors.New("wrong workspace")
@@ -76,6 +78,7 @@ func TestCollectorBoundsEveryTransportCall(t *testing.T) {
 	}
 	collector, err := NewCollector(CollectorConfig{
 		Store: store,
+		PEP:   testReadPEP(t),
 		Transport: transportFunc(func(ctx context.Context, _ tenancy.WorkspaceID, _ Spoke) (Snapshot, error) {
 			deadline, exists := ctx.Deadline()
 			if !exists || time.Until(deadline) > 1100*time.Millisecond {
@@ -151,6 +154,7 @@ func TestCollectorCopiesTransportOwnedSnapshot(t *testing.T) {
 	}
 	collector, err := NewCollector(CollectorConfig{
 		Store: store,
+		PEP:   testReadPEP(t),
 		Transport: transportFunc(func(context.Context, tenancy.WorkspaceID, Spoke) (Snapshot, error) {
 			return transportSnapshot, nil
 		}),
@@ -176,7 +180,7 @@ func TestCollectorAndSourceRejectUnsafeConfiguration(t *testing.T) {
 	store := &memoryStore{snapshots: make(map[string]Snapshot), failures: make(map[string]FailureKind)}
 	if _, err := NewCollector(CollectorConfig{Store: store, Transport: transportFunc(func(context.Context, tenancy.WorkspaceID, Spoke) (Snapshot, error) {
 		return Snapshot{}, nil
-	}), SpokeTimeout: 999 * time.Millisecond}); err == nil {
+	}), PEP: testReadPEP(t), SpokeTimeout: 999 * time.Millisecond}); err == nil {
 		t.Fatal("sub-second collector timeout unexpectedly accepted")
 	}
 	if _, err := NewSource(SourceConfig{Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
@@ -192,7 +196,7 @@ func TestSourceUsesCommonFleetModel(t *testing.T) {
 	now := time.Date(2026, time.July, 12, 15, 0, 0, 0, time.UTC)
 	reader := &recordingFleetReader{result: fleet.FleetResult{Clusters: []fleet.Cluster{{Name: "spoke-a", SourceKind: SourceKind}}}}
 	source, err := NewSource(SourceConfig{
-		Reader: reader, Scope: readerScope(t, "workspace-a"), Freshness: time.Minute, Now: func() time.Time { return now },
+		Reader: reader, Scope: readerScope(t, "workspace-a"), PEP: testReadPEP(t), Freshness: time.Minute, Now: func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -213,15 +217,17 @@ func (function transportFunc) Snapshot(ctx context.Context, workspaceID tenancy.
 }
 
 type memoryStore struct {
-	mu        sync.Mutex
-	spokes    []Spoke
-	snapshots map[string]Snapshot
-	failures  map[string]FailureKind
+	mu              sync.Mutex
+	spokes          []Spoke
+	snapshots       map[string]Snapshot
+	failures        map[string]FailureKind
+	registeredCalls int
 }
 
 func (store *memoryStore) RegisteredSpokes(_ context.Context, _ tenancy.Scope) ([]Spoke, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	store.registeredCalls++
 	return append([]Spoke(nil), store.spokes...), nil
 }
 
@@ -269,6 +275,7 @@ type recordingFleetReader struct {
 	scope     tenancy.Scope
 	freshness time.Duration
 	now       time.Time
+	calls     int
 }
 
 func (reader *recordingFleetReader) ReadFleet(
@@ -277,6 +284,7 @@ func (reader *recordingFleetReader) ReadFleet(
 	freshness time.Duration,
 	now time.Time,
 ) (fleet.FleetResult, error) {
+	reader.calls++
 	reader.scope = scope
 	reader.freshness = freshness
 	reader.now = now
@@ -294,6 +302,17 @@ func readerScope(t *testing.T, workspaceID tenancy.WorkspaceID) tenancy.Scope {
 		t.Fatal(err)
 	}
 	return scope
+}
+
+func testReadPEP(t *testing.T) *pep.Enforcer {
+	t.Helper()
+	enforcer, err := pep.NewEnforcer(pep.Config{
+		Hook: pep.AllowReadHook{}, Auditor: pep.AuditFunc(func(context.Context, pep.AuditEvent) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return enforcer
 }
 
 func validSnapshot(spokeID string, observedAt time.Time) Snapshot {

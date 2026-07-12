@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "name": "unknown-lens",
+  "sanitized": true,
+  "investigation": {
+    "workspace": "local",
+    "coverage": {"unbounded": {"available": true, "stale": false}},
+    "observations": [
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Pod", "name": "payments-0"}, "lens": "unbounded", "key": "pod.failure", "value": "CrashLoopBackOff", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false}
+    ]
+  },
+  "expect": {
+    "top_rule": "R3",
+    "status": "unconfirmed",
+    "scope": "alpha",
+    "fleet_wide": false,
+    "citation_evidence": [{"lens": "live", "predicate": "pod.failure", "observed": "CrashLoopBackOff"}],
+    "missing_lenses": [],
+    "advisory": {"command": true, "pr_diff": false, "sensitive": false}
+  }
+}

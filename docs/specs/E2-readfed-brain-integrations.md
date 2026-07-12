@@ -710,9 +710,10 @@ the plan-renderer forks.
 3. **Timeline ring size / retention window.** The bounded-ring depth (events and age) that keeps
    "what changed recently" useful without drifting toward a store. Recommendation: a small fixed
    window (e.g. last N events / last 24–72h), tuned against real incidents; explicitly *not* a series.
-4. **Rule weights and thresholds.** The §3.4 weights are indicative. They should be tuned against a
-   corpus of GR's real incidents; consider a fixtures/replay harness so rule changes are regression-
-   tested.
+4. **Rule weights and thresholds.** The §3.4 weights are indicative. A versioned, synthetic replay
+   harness in `internal/brain/testdata/replays` now guards the six canonical rules, coverage
+   abstention, cause chaining, and safe fleet correlation. Future tuning should add sanitized incident
+   shapes to that corpus and preserve its exact expected verdict contract.
 5. **Cross-cluster remediation surface for node/cluster-level causes (R6).** Node/nodegroup/autoscaler
    actions are outside the v1 closed vocabulary — kept advisory now. Whether/when to add a
    cloud-scoped typed verb is a later E4 decision.

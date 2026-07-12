@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "name": "r1-bad-deploy-causes-crashloop",
+  "sanitized": true,
+  "investigation": {
+    "workspace": "local",
+    "coverage": {
+      "live": {"available": true, "stale": false},
+      "desired": {"available": true, "stale": false},
+      "timeline": {"available": true, "stale": false},
+      "telemetry": {"available": true, "stale": false}
+    },
+    "observations": [
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Deployment", "namespace": "synthetic", "name": "payments"}, "lens": "live", "key": "workload.status", "value": "Degraded", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false},
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Deployment", "namespace": "synthetic", "name": "payments"}, "lens": "live", "key": "pod.failure", "value": "CrashLoopBackOff", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false},
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Deployment", "namespace": "synthetic", "name": "payments"}, "lens": "timeline", "key": "change.kind", "value": "deploy", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false},
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Deployment", "namespace": "synthetic", "name": "payments"}, "lens": "desired", "key": "desired.changed", "value": "true", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false},
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Deployment", "namespace": "synthetic", "name": "payments"}, "lens": "telemetry", "key": "logs.cause", "value": "panic", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false}
+    ]
+  },
+  "expect": {
+    "top_rule": "R1",
+    "status": "confirmed",
+    "scope": "alpha",
+    "fleet_wide": false,
+    "cause_of": ["R3"],
+    "citation_evidence": [
+      {"lens": "live", "predicate": "workload.status", "observed": "Degraded"},
+      {"lens": "timeline", "predicate": "change.kind", "observed": "deploy"},
+      {"lens": "desired", "predicate": "desired.changed", "observed": "true"}
+    ],
+    "missing_lenses": [],
+    "advisory": {"command": true, "pr_diff": false, "sensitive": false}
+  }
+}
