@@ -1,24 +1,39 @@
 // SPDX-License-Identifier: Apache-2.0
 
-package hubauth
+package hubserver
 
 import (
 	"crypto/ed25519"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/ArdurAI/sith/internal/hubauth"
 	"github.com/ArdurAI/sith/internal/tenancy"
 )
+
+const (
+	hubTestIssuer   = "https://issuer.sith.test"
+	hubTestAudience = "https://hub.sith.test"
+	hubTestKeyID    = "session-2026-07"
+)
+
+type hubTestClaims struct {
+	Memberships map[string]tenancy.Role `json:"memberships"`
+	jwt.RegisteredClaims
+}
 
 func TestAuthenticateIgnoresInjectedIdentityHeaders(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
-	publicKey, privateKey := testKeyPair()
-	verifier, err := NewJWTVerifier(JWTConfig{
-		Issuer: testIssuer, Audience: testAudience, Keys: map[string]ed25519.PublicKey{testKeyID: publicKey}, Now: func() time.Time { return now },
+	publicKey, privateKey := hubTestKeyPair()
+	verifier, err := hubauth.NewJWTVerifier(hubauth.JWTConfig{
+		Issuer: hubTestIssuer, Audience: hubTestAudience, Keys: map[string]ed25519.PublicKey{hubTestKeyID: publicKey}, Now: func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +58,7 @@ func TestAuthenticateIgnoresInjectedIdentityHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodGet, "https://hub.sith.test/api", nil)
-	request.Header.Set("Authorization", "Bearer "+signToken(t, validClaims(now), privateKey, nil))
+	request.Header.Set("Authorization", "Bearer "+signHubTestToken(t, hubValidClaims(now), privateKey))
 	request.Header.Set("X-Sith-Role", "admin")
 	request.Header.Set("X-User-Tenant", "workspace-b")
 	request.Header.Set("X-Forwarded-User", "mallory")
@@ -62,9 +77,9 @@ func TestAuthenticateRejectsMissingForgedAndAmbiguousBearerTokens(t *testing.T) 
 	t.Parallel()
 
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
-	publicKey, privateKey := testKeyPair()
-	verifier, err := NewJWTVerifier(JWTConfig{
-		Issuer: testIssuer, Audience: testAudience, Keys: map[string]ed25519.PublicKey{testKeyID: publicKey}, Now: func() time.Time { return now },
+	publicKey, privateKey := hubTestKeyPair()
+	verifier, err := hubauth.NewJWTVerifier(hubauth.JWTConfig{
+		Issuer: hubTestIssuer, Audience: hubTestAudience, Keys: map[string]ed25519.PublicKey{hubTestKeyID: publicKey}, Now: func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +90,9 @@ func TestAuthenticateRejectsMissingForgedAndAmbiguousBearerTokens(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	valid := signToken(t, validClaims(now), privateKey, nil)
+	valid := signHubTestToken(t, hubValidClaims(now), privateKey)
+	forgedKey := ed25519.NewKeyFromSeed([]byte(strings.Repeat("d", ed25519.SeedSize)))
+	forged := signHubTestToken(t, hubValidClaims(now), forgedKey)
 	tests := []struct {
 		name   string
 		values []string
@@ -85,7 +102,7 @@ func TestAuthenticateRejectsMissingForgedAndAmbiguousBearerTokens(t *testing.T) 
 		{name: "multiple headers", values: []string{"Bearer " + valid, "Bearer " + valid}},
 		{name: "comma joined", values: []string{"Bearer " + valid + ",Bearer " + valid}},
 		{name: "extra whitespace", values: []string{"Bearer  " + valid}},
-		{name: "forged", values: []string{"Bearer " + valid[:len(valid)-1] + "A"}},
+		{name: "forged", values: []string{"Bearer " + forged}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -112,8 +129,37 @@ func FuzzBearerTokenNeverAcceptsMetadata(f *testing.F) {
 	f.Add("Bearer token,other")
 	f.Fuzz(func(t *testing.T, value string) {
 		token, ok := bearerToken([]string{value})
-		if ok && (token == "" || len(token) > maxTokenBytes) {
+		if ok && (token == "" || len(token) > maxBearerTokenBytes) {
 			t.Fatalf("accepted invalid token length %d", len(token))
 		}
 	})
+}
+
+func hubValidClaims(now time.Time) hubTestClaims {
+	return hubTestClaims{
+		Memberships: map[string]tenancy.Role{"workspace-a": tenancy.RoleReader},
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer: hubTestIssuer, Subject: "user:alice", Audience: jwt.ClaimStrings{hubTestAudience},
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)), NotBefore: jwt.NewNumericDate(now.Add(-time.Minute)),
+			IssuedAt: jwt.NewNumericDate(now.Add(-time.Minute)), ID: "session-1",
+		},
+	}
+}
+
+func hubTestKeyPair() (ed25519.PublicKey, ed25519.PrivateKey) {
+	privateKey := ed25519.NewKeyFromSeed([]byte(strings.Repeat("c", ed25519.SeedSize)))
+	publicKey := append(ed25519.PublicKey(nil), privateKey.Public().(ed25519.PublicKey)...)
+	return publicKey, privateKey
+}
+
+func signHubTestToken(t *testing.T, claims hubTestClaims, privateKey ed25519.PrivateKey) string {
+	t.Helper()
+	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
+	token.Header["typ"] = "sith-session+jwt"
+	token.Header["kid"] = hubTestKeyID
+	rawToken, err := token.SignedString(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rawToken
 }

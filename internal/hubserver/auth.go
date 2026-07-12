@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-package hubauth
+package hubserver
 
 import (
 	"context"
@@ -12,6 +12,8 @@ import (
 )
 
 type principalContextKey struct{}
+
+const maxBearerTokenBytes = 16 * 1024
 
 // Verifier authenticates a bearer token without granting access from request metadata.
 type Verifier interface {
@@ -73,7 +75,7 @@ func bearerToken(values []string) (string, bool) {
 	}
 	value := values[0]
 	scheme, credentials, found := strings.Cut(value, " ")
-	if !found || !strings.EqualFold(scheme, "Bearer") || credentials == "" || len(credentials) > maxTokenBytes {
+	if !found || !strings.EqualFold(scheme, "Bearer") || credentials == "" || len(credentials) > maxBearerTokenBytes {
 		return "", false
 	}
 	if strings.TrimSpace(credentials) != credentials || strings.ContainsAny(credentials, " \t\r\n,") {

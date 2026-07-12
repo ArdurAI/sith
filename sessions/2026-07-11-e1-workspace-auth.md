@@ -19,6 +19,9 @@
 [A] Action: Added the hub-facing `fleetcache.QueryScoped` seam so handlers pass a verified `tenancy.Scope`, not a raw header-derived workspace string. The wrapper queries only the signed workspace and revalidates every returned record. Existing local-mode callers keep their zero-overhead string path.
 [T] Test: Race tests populate two workspaces and prove a workspace-A principal receives only workspace-A records. Guessed foreign and nonexistent scope names both return the same synthetic, unreachable, zero-observation echo, proving the cache does not create a cross-workspace existence oracle while retaining honest requested-scope coverage.
 [C] Checkpoint #3: signed scope wired to the shared fleet cache — next: full repository gates and adversarial review.
+[T] Test: The first full `make ci` pass correctly rejected `net/http` under the cryptographic `hubauth` package because Sith's privacy boundary permits production networking only in explicitly audited owner files. Moved HTTP request adaptation to `internal/hubserver`, kept `hubauth` network-free, and added that single server file to the exact network-import allowlist rather than weakening the global check.
+[T] Test: Repeated focused race tests and lint pass for hubauth, hubserver, privacy, tenancy, and fleetcache. The forged-token middleware case now uses a separately signed Ed25519 token rather than a non-canonical last-character mutation, making the negative test deterministic under strict base64url decoding.
+[C] Checkpoint #4: privacy-owned hub HTTP boundary — next: repeat full repository gates and adversarial review.
 
 ---
 
