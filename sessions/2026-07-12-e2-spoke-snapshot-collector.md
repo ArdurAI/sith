@@ -1,7 +1,7 @@
 # Session — 2026-07-12 — e2-spoke-snapshot-collector
 
 **Builder:** Gnani Rahul · **Branch:** gnanirahulnutakki/feat/e2-read-federation
-**Slice(s):** E2 bounded tenant-scoped spoke snapshot collector ([#100](https://github.com/ArdurAI/sith/issues/100), parent [#9](https://github.com/ArdurAI/sith/issues/9)) · **Status:** validated, publication pending
+**Slice(s):** E2 bounded tenant-scoped spoke snapshot collector ([#100](https://github.com/ArdurAI/sith/issues/100), parent [#9](https://github.com/ArdurAI/sith/issues/9)) · **Status:** delivered
 
 ---
 
@@ -73,3 +73,15 @@ visible without dropping its last-known facts.
 
 - Validated implementation; next: README recheck, signed/DCO/GSTACK commit, PR into `dev`, green
   CI and exact post-merge verification, then issue/roadmap updates.
+
+## [C] Delivery
+
+- Signed/DCO/GSTACK commit: `5e5f426`
+  (`2026-07-12/e2-spoke-snapshot-collector#1`).
+- Delivery PR [#101](https://github.com/ArdurAI/sith/pull/101) merged cleanly into `dev` as
+  `6b4fd0ba959613279bc52b30283c696f935b80d5` on 2026-07-12 after PR CI passed core in 6m46s and
+  reproducible archives/SPDX SBOM/Homebrew formula in 1m00s.
+- Exact post-merge `dev` CI [29187858172](https://github.com/ArdurAI/sith/actions/runs/29187858172)
+  passed core/race/RLS/binary/two-kind fan-out in 6m47s and release verification in 1m03s.
+- #100 is closed; #9, #20, and #39 record delivery evidence and point to #10. GitHub queues remain
+  Dependabot 0, code scanning 0, secret scanning 0.
