@@ -33,6 +33,41 @@ func TestFromCacheProjectsLiveFactsAndHonestCoverage(t *testing.T) {
 	}
 }
 
+func TestFromCacheProjectsOnlyOneProvenRepoDigest(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	valid := "registry.example/payments@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	for _, test := range []struct {
+		name        string
+		repoDigests []string
+		want        bool
+	}{
+		{name: "one proven digest", repoDigests: []string{valid}, want: true},
+		{name: "runtime only", repoDigests: []string{"containerd://sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}},
+		{name: "mutable tag", repoDigests: []string{"registry.example/payments:latest@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}},
+		{name: "ambiguous images", repoDigests: []string{valid, "registry.example/sidecar@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			input := FromCache(fleet.LocalWorkspace, fleetcache.Snapshot{Records: []fleetcache.Record{{
+				Fact:      fleet.Fact{Evidence: fleet.Evidence{Ref: fleet.ResourceRef{SourceKind: "kubeconfig", Scope: "alpha", Kind: "Pod", Namespace: "prod", Name: "payments-0"}, Source: "alpha"}, Workspace: fleet.LocalWorkspace},
+				Workspace: fleet.LocalWorkspace, Kind: "Pod", Cluster: "alpha", Namespace: "prod", Name: "payments-0", ImageRepoDigests: test.repoDigests, ObservedAt: now,
+			}}})
+			found := false
+			for _, observation := range input.Observations {
+				if observation.Key == fleet.OTelContainerImageRepoDigests {
+					found = true
+				}
+			}
+			if found != test.want {
+				t.Fatalf("repo digest observation = %t, want %t: %#v", found, test.want, input.Observations)
+			}
+		})
+	}
+}
+
 func TestFromCacheAttachesEventTimelineToInvolvedObject(t *testing.T) {
 	now := time.Now().UTC()
 	input := FromCache(fleet.LocalWorkspace, fleetcache.Snapshot{

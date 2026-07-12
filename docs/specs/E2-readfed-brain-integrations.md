@@ -169,6 +169,9 @@ brain blame the wrong entity:
    fleet-wide, and it is exactly the
    key behind "the same image on 4 clusters." Any other cross-cluster correlation must be an explicit,
    named query (e.g. "same Argo `Application` name across clusters"), never an implicit key collision.
+   A Kubernetes runtime `imageID` is display-only unless it already contains one exact
+   `repository@sha256:…` reference after a recognized runtime prefix; Sith never pairs a bare runtime
+   digest with a mutable Pod-spec image to manufacture a join.
 
 ### 2.4 Reference shapes (design contracts)
 

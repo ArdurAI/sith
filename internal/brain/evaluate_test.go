@@ -131,13 +131,14 @@ func TestEvaluateDoesNotBorrowLensCoverageFromAnotherEntity(t *testing.T) {
 
 func TestEvaluateRanksFleetDigestCorrelationFirst(t *testing.T) {
 	now := time.Now().UTC()
+	const repoDigest = "registry.example/payments@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	observations := make([]Observation, 0, 4)
 	for _, cluster := range []string{"alpha", "beta"} {
 		ref := testRef()
 		ref.Scope = cluster
 		observations = append(observations,
 			Observation{Ref: ref, Lens: fleet.LensLive, Key: "pod.failure", Value: "CrashLoopBackOff", ObservedAt: now, Source: "kubeconfig"},
-			Observation{Ref: ref, Lens: fleet.LensLive, Key: "container.image.digest", Value: "sha256:abc123", ObservedAt: now, Source: "kubeconfig"},
+			Observation{Ref: ref, Lens: fleet.LensLive, Key: fleet.OTelContainerImageRepoDigests, Value: repoDigest, ObservedAt: now, Source: "kubeconfig"},
 		)
 	}
 	result, err := Evaluate(Investigation{Workspace: fleet.LocalWorkspace, Observations: observations, Coverage: covered(fleet.LensLive)})
@@ -146,6 +147,42 @@ func TestEvaluateRanksFleetDigestCorrelationFirst(t *testing.T) {
 	}
 	if len(result.Verdicts) != 3 || !result.Verdicts[0].FleetWide || !slices.Equal(result.Verdicts[0].Clusters, []string{"alpha", "beta"}) {
 		t.Fatalf("verdicts = %#v, want fleet-wide correlation first", result.Verdicts)
+	}
+}
+
+func TestEvaluateRejectsUnprovenFleetImageCorrelation(t *testing.T) {
+	t.Parallel()
+
+	const fullDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	for _, value := range []string{
+		fullDigest,
+		"containerd://" + fullDigest,
+		"registry.example/payments:latest@" + fullDigest,
+		"registry.example/payments@sha256:abc123",
+	} {
+		value := value
+		t.Run(value, func(t *testing.T) {
+			t.Parallel()
+			now := time.Now().UTC()
+			observations := make([]Observation, 0, 4)
+			for _, cluster := range []string{"alpha", "beta"} {
+				ref := testRef()
+				ref.Scope = cluster
+				observations = append(observations,
+					Observation{Ref: ref, Lens: fleet.LensLive, Key: "pod.failure", Value: "CrashLoopBackOff", ObservedAt: now, Source: "kubeconfig"},
+					Observation{Ref: ref, Lens: fleet.LensLive, Key: fleet.OTelContainerImageRepoDigests, Value: value, ObservedAt: now, Source: "kubeconfig"},
+				)
+			}
+			result, err := Evaluate(Investigation{Workspace: fleet.LocalWorkspace, Observations: observations, Coverage: covered(fleet.LensLive)})
+			if err != nil {
+				t.Fatalf("Evaluate() error = %v", err)
+			}
+			for _, verdict := range result.Verdicts {
+				if verdict.FleetWide {
+					t.Fatalf("unproven image value %q yielded fleet-wide verdict %#v", value, verdict)
+				}
+			}
+		})
 	}
 }
 
