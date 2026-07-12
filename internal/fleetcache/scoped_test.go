@@ -64,3 +64,47 @@ func TestQueryScopedRejectsMissingBoundary(t *testing.T) {
 		t.Fatal("empty workspace scope unexpectedly queried")
 	}
 }
+
+func FuzzQueryScopedNeverLeaksForeignWorkspace(f *testing.F) {
+	for _, seed := range []string{"cluster-a", "cluster-b", "does-not-exist", "*", "cluster-*", "[", "\x00"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, selector string) {
+		if len(selector) > 1024 {
+			return
+		}
+		now := time.Date(2026, time.July, 11, 12, 0, 0, 0, time.UTC)
+		store := newStore(func() time.Time { return now }, time.Minute)
+		store.SetDiscovery("workspace-a", connector.Discovery{Scopes: []connector.Scope{{Name: "cluster-a", Reachable: true, ObservedAt: now}}})
+		store.SetDiscovery("workspace-b", connector.Discovery{Scopes: []connector.Scope{{Name: "cluster-b", Reachable: true, ObservedAt: now}}})
+		factA := podFact(t, "cluster-a", "api-a", "Running", "image:a", now)
+		factA.Workspace = "workspace-a"
+		factB := podFact(t, "cluster-b", "api-b", "Running", "image:b", now)
+		factB.Workspace = "workspace-b"
+		if err := store.Replace("Pod", fleet.QueryResult{Facts: []fleet.Fact{factA, factB}}); err != nil {
+			t.Fatal(err)
+		}
+		principal, err := tenancy.NewPrincipal("user:alice", map[tenancy.WorkspaceID]tenancy.Role{"workspace-a": tenancy.RoleReader})
+		if err != nil {
+			t.Fatal(err)
+		}
+		scope, err := principal.Scope("workspace-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := store.QueryScoped(scope, Query{Scopes: []string{selector}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, record := range snapshot.Records {
+			if record.Workspace != "workspace-a" || record.Cluster != "cluster-a" || record.Name != "api-a" {
+				t.Fatalf("selector %q leaked foreign record: %#v", selector, record)
+			}
+		}
+		for _, selectedScope := range snapshot.Scopes {
+			if selectedScope.Name != "cluster-a" && (selectedScope.Reachable || !selectedScope.ObservedAt.IsZero() || len(selectedScope.Kinds) != 0) {
+				t.Fatalf("selector %q leaked foreign scope metadata: %#v", selector, selectedScope)
+			}
+		}
+	})
+}

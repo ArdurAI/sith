@@ -22,7 +22,17 @@ import (
 	"github.com/ArdurAI/sith/internal/tenancy"
 )
 
-const defaultPostgresImage = "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e"
+const (
+	defaultPostgresImage = "postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e"
+	membershipPolicy     = `CREATE POLICY workspace_isolation ON sith.memberships
+		FOR ALL TO PUBLIC
+		USING (workspace_id = current_setting('sith.workspace_id', true))
+		WITH CHECK (workspace_id = current_setting('sith.workspace_id', true))`
+	restoreMembershipPolicy = `ALTER POLICY workspace_isolation ON sith.memberships
+		TO PUBLIC
+		USING (workspace_id = current_setting('sith.workspace_id', true))
+		WITH CHECK (workspace_id = current_setting('sith.workspace_id', true))`
+)
 
 func TestPostgresRLSBackstop(t *testing.T) {
 	adminURL := startPostgres(t)
@@ -81,29 +91,11 @@ func TestPostgresRLSBackstop(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tables := []string{"workspaces", "memberships", "clusters", "fleet_facts"}
-	if err := database.InWorkspace(ctx, scope, func(tx pgx.Tx) error {
-		for _, table := range tables {
-			var count int
-			if err := tx.QueryRow(ctx, `SELECT count(*) FROM sith.`+pgx.Identifier{table}.Sanitize()).Scan(&count); err != nil {
-				return err
-			}
-			if count != 1 {
-				return fmt.Errorf("scoped %s count = %d, want 1", table, count)
-			}
-		}
-		var foreignCount int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM sith.memberships WHERE workspace_id = 'workspace-b'`).Scan(&foreignCount); err != nil {
-			return err
-		}
-		if foreignCount != 0 {
-			return fmt.Errorf("direct foreign query returned %d rows", foreignCount)
-		}
-		return nil
-	}); err != nil {
+	if err := assertWorkspaceAIsolation(ctx, database, scope); err != nil {
 		t.Fatalf("workspace A query: %v", err)
 	}
 
+	tables := []string{"workspaces", "memberships", "clusters", "fleet_facts"}
 	for _, table := range tables {
 		var count int
 		if err := database.pool.QueryRow(ctx, `SELECT count(*) FROM sith.`+pgx.Identifier{table}.Sanitize()).Scan(&count); err != nil {
@@ -114,14 +106,48 @@ func TestPostgresRLSBackstop(t *testing.T) {
 		}
 	}
 
-	foreignWriteErr := database.InWorkspace(ctx, scope, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `INSERT INTO sith.memberships(workspace_id, subject, role)
-			VALUES ('workspace-b', 'user:mallory', 'admin')`)
-		return err
-	})
-	var postgresErr *pgconn.PgError
-	if !errors.As(foreignWriteErr, &postgresErr) || postgresErr.Code != "42501" {
-		t.Fatalf("foreign write error = %v, want RLS policy violation 42501", foreignWriteErr)
+	foreignWrites := []struct {
+		name      string
+		statement string
+	}{
+		{name: "workspace", statement: `INSERT INTO sith.workspaces(id, name, tenant_key)
+			VALUES ('workspace-c', 'Workspace C', 'shared-display-key')`},
+		{name: "membership", statement: `INSERT INTO sith.memberships(workspace_id, subject, role)
+			VALUES ('workspace-b', 'user:mallory', 'admin')`},
+		{name: "cluster", statement: `INSERT INTO sith.clusters(workspace_id, id, managed_cluster_ref)
+			VALUES ('workspace-b', 'cluster-b2', 'ocm/cluster-b2')`},
+		{name: "fleet fact", statement: `INSERT INTO sith.fleet_facts(workspace_id, cluster_id, kind, payload, observed_at)
+			VALUES ('workspace-b', 'cluster-b', 'health', '{}', now())`},
+	}
+	for _, test := range foreignWrites {
+		t.Run("foreign "+test.name+" write denied", func(t *testing.T) {
+			foreignWriteErr := database.InWorkspace(ctx, scope, func(tx pgx.Tx) error {
+				_, err := tx.Exec(ctx, test.statement)
+				return err
+			})
+			var postgresErr *pgconn.PgError
+			if !errors.As(foreignWriteErr, &postgresErr) || postgresErr.Code != "42501" {
+				t.Fatalf("foreign write error = %v, want RLS policy violation 42501", foreignWriteErr)
+			}
+		})
+	}
+
+	if err := database.InWorkspace(ctx, scope, func(tx pgx.Tx) error {
+		for _, statement := range []string{
+			`UPDATE sith.memberships SET role = 'reader' WHERE workspace_id = 'workspace-b'`,
+			`DELETE FROM sith.clusters WHERE workspace_id = 'workspace-b'`,
+		} {
+			tag, err := tx.Exec(ctx, statement)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() != 0 {
+				return fmt.Errorf("foreign mutation affected %d rows", tag.RowsAffected())
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("foreign update/delete isolation: %v", err)
 	}
 
 	truncateErr := database.InWorkspace(ctx, scope, func(tx pgx.Tx) error {
@@ -156,6 +182,64 @@ func TestPostgresRLSBackstop(t *testing.T) {
 	if err := drift.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
+
+	if _, err := owner.Exec(ctx, `DROP POLICY workspace_isolation ON sith.memberships`); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertWorkspaceAIsolation(ctx, database, scope); err == nil || !strings.Contains(err.Error(), "memberships count = 0") {
+		t.Fatalf("removed-policy negative control did not fail the isolation invariant: %v", err)
+	}
+	if err := AuditIsolation(ctx, owner, appRole); err == nil || !strings.Contains(err.Error(), "complete workspace policy is missing") {
+		t.Fatalf("removed-policy negative control escaped catalog audit: %v", err)
+	}
+	if _, err := owner.Exec(ctx, membershipPolicy); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertWorkspaceAIsolation(ctx, database, scope); err != nil {
+		t.Fatalf("restored policy did not restore isolation invariant: %v", err)
+	}
+
+	if _, err := owner.Exec(ctx, `ALTER POLICY workspace_isolation ON sith.memberships
+		USING (true) WITH CHECK (true)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertWorkspaceAIsolation(ctx, database, scope); err == nil || !strings.Contains(err.Error(), "memberships count = 2") {
+		t.Fatalf("permissive-policy mutation did not expose the isolation invariant: %v", err)
+	}
+	if err := AuditIsolation(ctx, owner, appRole); err == nil || !strings.Contains(err.Error(), "complete workspace policy is missing") {
+		t.Fatalf("permissive-policy mutation escaped catalog audit: %v", err)
+	}
+	if _, err := owner.Exec(ctx, restoreMembershipPolicy); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertWorkspaceAIsolation(ctx, database, scope); err != nil {
+		t.Fatalf("exact policy restoration did not recover invariant: %v", err)
+	}
+	if err := AuditIsolation(ctx, owner, appRole); err != nil {
+		t.Fatalf("restored AuditIsolation() error = %v", err)
+	}
+}
+
+func assertWorkspaceAIsolation(ctx context.Context, database *AppDB, scope tenancy.Scope) error {
+	return database.InWorkspace(ctx, scope, func(tx pgx.Tx) error {
+		for _, table := range []string{"workspaces", "memberships", "clusters", "fleet_facts"} {
+			var count int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM sith.`+pgx.Identifier{table}.Sanitize()).Scan(&count); err != nil {
+				return err
+			}
+			if count != 1 {
+				return fmt.Errorf("scoped %s count = %d, want 1", table, count)
+			}
+		}
+		var foreignCount int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM sith.memberships WHERE workspace_id = 'workspace-b'`).Scan(&foreignCount); err != nil {
+			return err
+		}
+		if foreignCount != 0 {
+			return fmt.Errorf("direct foreign query returned %d rows", foreignCount)
+		}
+		return nil
+	})
 }
 
 func startPostgres(t *testing.T) string {

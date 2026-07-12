@@ -13,6 +13,7 @@ DOCKER      ?= docker
 
 KIND_NODE_IMAGE ?= kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
 POSTGRES_IMAGE  ?= postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e
+ISOLATION_FUZZTIME ?= 5s
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
@@ -23,7 +24,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/buildinfo.Commit=$(COMMIT) \
 	-X $(PKG)/internal/buildinfo.Date=$(DATE)
 
-.PHONY: all build test test-scripts perf e2e e2e-kind e2e-postgres lint vuln fmt fmt-check vet tidy clean run ci release-check help
+.PHONY: all build test test-scripts perf e2e e2e-kind e2e-postgres e2e-isolation lint vuln fmt fmt-check vet tidy clean run ci release-check help
 
 all: build
 
@@ -50,6 +51,13 @@ e2e-kind: ## Exercise adapter and binary against two real kind clusters
 e2e-postgres: ## Prove forced RLS against a temporary digest-pinned PostgreSQL container
 	DOCKER_BIN="$(DOCKER)" POSTGRES_IMAGE="$(POSTGRES_IMAGE)" \
 		go test -race -count=1 -cover -timeout=5m -tags=postgres -run '^TestPostgresRLSBackstop$$' ./internal/hubdb
+
+e2e-isolation: ## Run signed-identity, scoped-query, and real PostgreSQL isolation invariants together
+	DOCKER_BIN="$(DOCKER)" POSTGRES_IMAGE="$(POSTGRES_IMAGE)" \
+		go test -race -count=1 -cover -timeout=5m -tags=postgres \
+			./internal/hubauth ./internal/hubserver ./internal/fleetcache ./internal/hubdb
+	go test -run '^$$' -fuzz '^FuzzQueryScopedNeverLeaksForeignWorkspace$$' \
+		-fuzztime="$(ISOLATION_FUZZTIME)" ./internal/fleetcache
 
 lint: ## Run golangci-lint (v2)
 	$(GOLANGCI) run ./...
