@@ -15,6 +15,7 @@ import (
 	"github.com/ArdurAI/sith/internal/connector/kubeconfig"
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/hubfleet"
+	"github.com/ArdurAI/sith/internal/pep"
 	"github.com/ArdurAI/sith/internal/tenancy"
 )
 
@@ -39,6 +40,7 @@ func exerciseReadFederationSnapshots(
 	collector, err := hubfleet.NewCollector(hubfleet.CollectorConfig{
 		Store:     store,
 		Transport: kindSnapshotTransport{adapter: adapter},
+		PEP:       e2eReadPEP(t),
 	})
 	if err != nil {
 		t.Fatalf("construct read-federation collector: %v", err)
@@ -57,7 +59,7 @@ func exerciseReadFederationSnapshots(
 			t.Fatalf("real kind snapshot for %s = %#v", spokeID, snapshot)
 		}
 	}
-	correlator, err := hubfleet.NewCorrelator(hubfleet.CorrelatorConfig{Querier: store, Freshness: time.Minute})
+	correlator, err := hubfleet.NewCorrelator(hubfleet.CorrelatorConfig{Querier: store, PEP: e2eReadPEP(t), Freshness: time.Minute})
 	if err != nil {
 		store.mu.Unlock()
 		t.Fatalf("construct kind correlator: %v", err)
@@ -86,6 +88,17 @@ func exerciseReadFederationSnapshots(
 		staleCorrelation.Coverage.Stale[0] != "spoke-b" {
 		t.Fatalf("stale real two-spoke correlation = %#v, error = %v", staleCorrelation, err)
 	}
+}
+
+func e2eReadPEP(t *testing.T) *pep.Enforcer {
+	t.Helper()
+	enforcer, err := pep.NewEnforcer(pep.Config{
+		Hook: pep.AllowReadHook{}, Auditor: pep.AuditFunc(func(context.Context, pep.AuditEvent) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return enforcer
 }
 
 type kindSnapshotTransport struct {

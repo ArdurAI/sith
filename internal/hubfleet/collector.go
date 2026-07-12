@@ -16,6 +16,7 @@ import (
 	"unicode"
 
 	"github.com/ArdurAI/sith/internal/fleet"
+	"github.com/ArdurAI/sith/internal/pep"
 	"github.com/ArdurAI/sith/internal/tenancy"
 )
 
@@ -115,6 +116,7 @@ type Store interface {
 type CollectorConfig struct {
 	Store          Store
 	Transport      Transport
+	PEP            *pep.Enforcer
 	SpokeTimeout   time.Duration
 	MaxSnapshotAge time.Duration
 	Now            func() time.Time
@@ -124,6 +126,7 @@ type CollectorConfig struct {
 type Collector struct {
 	store          Store
 	transport      Transport
+	pep            *pep.Enforcer
 	spokeTimeout   time.Duration
 	maxSnapshotAge time.Duration
 	now            func() time.Time
@@ -131,8 +134,8 @@ type Collector struct {
 
 // NewCollector constructs a fail-closed collector with bounded per-spoke work.
 func NewCollector(config CollectorConfig) (*Collector, error) {
-	if config.Store == nil || config.Transport == nil {
-		return nil, fmt.Errorf("new spoke collector: store and transport are required")
+	if config.Store == nil || config.Transport == nil || config.PEP == nil {
+		return nil, fmt.Errorf("new spoke collector: store, transport, and policy enforcer are required")
 	}
 	if config.SpokeTimeout == 0 {
 		config.SpokeTimeout = defaultSpokeTimeout
@@ -152,6 +155,7 @@ func NewCollector(config CollectorConfig) (*Collector, error) {
 	return &Collector{
 		store:          config.Store,
 		transport:      config.Transport,
+		pep:            config.PEP,
 		spokeTimeout:   config.SpokeTimeout,
 		maxSnapshotAge: config.MaxSnapshotAge,
 		now:            config.Now,
@@ -161,14 +165,17 @@ func NewCollector(config CollectorConfig) (*Collector, error) {
 // Collect refreshes every registered spoke independently and returns honest coverage.
 // A transport or validation failure is recorded as a closed status and does not fail the peer loop.
 func (collector *Collector) Collect(ctx context.Context, scope tenancy.Scope) (fleet.Coverage, error) {
-	if collector == nil || collector.store == nil || collector.transport == nil || ctx == nil {
-		return fleet.Coverage{}, fmt.Errorf("collect spoke snapshots: collector and context are required")
+	if collector == nil || collector.store == nil || collector.transport == nil || collector.pep == nil || ctx == nil {
+		return fleet.Coverage{}, fmt.Errorf("collect spoke snapshots: collector, policy enforcer, and context are required")
 	}
 	if err := scope.Authorize(tenancy.ActionRead); err != nil {
 		return fleet.Coverage{}, fmt.Errorf("collect spoke snapshots: %w", err)
 	}
 	if tenancy.ValidateWorkspaceID(scope.WorkspaceID()) != nil {
 		return fleet.Coverage{}, fmt.Errorf("collect spoke snapshots: validated workspace scope is required")
+	}
+	if err := collector.pep.AuthorizeRead(ctx, scope, pep.NewReadInput(pep.VerbSpokeSnapshotRefresh, nil)); err != nil {
+		return fleet.Coverage{}, fmt.Errorf("collect spoke snapshots: %w", err)
 	}
 	spokes, err := collector.store.RegisteredSpokes(ctx, scope)
 	if err != nil {

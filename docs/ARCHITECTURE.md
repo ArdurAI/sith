@@ -415,6 +415,11 @@ Sith is built with a **policy hook at the `executeIntent` boundary from day one*
 Phase 1 it returns "allow" for reads — so Ardur drops into that seam without re-architecture
 when the write path arrives in Phase 2.
 
+The Phase-1 hub read entry points (spoke snapshot refresh, persisted fleet source, and cross-cluster
+correlation) construct only with the audited PEP and call one closed read verb before touching a
+store, transport, or query dependency. Local kubeconfig reads remain outside this path: they are
+the operator's own local-mode operations, not a hub-governed action surface.
+
 ## 9. Credential & key custody
 
 - The hub **does not store cluster-admin kubeconfigs**. Spoke reach uses OCM
