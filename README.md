@@ -63,7 +63,10 @@ make build
 
 `sith clusters` follows standard client-go loading rules: set `KUBECONFIG` to an OS path-list or
 use the default `~/.kube/config`. Exec-credential helpers run locally, exactly as they do for
-`kubectl`; Sith does not copy kubeconfigs or credentials elsewhere.
+`kubectl`; Sith accepts the client-go `v1` and `v1beta1` ExecCredential contracts independently
+for every context. One broken helper only marks its context unreachable. Helper tokens and client
+keys remain in the client-go transport's process memory and never enter Sith's config, fleet cache,
+or filesystem.
 
 Sith-owned persisted secrets use the host credential store under the fixed `io.ardur.sith`
 service: macOS Keychain, Windows Credential Manager, or freedesktop Secret Service. If that store
