@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "name": "r4-config-drift",
+  "sanitized": true,
+  "investigation": {
+    "workspace": "local",
+    "coverage": {
+      "live": {"available": true, "stale": false},
+      "desired": {"available": true, "stale": false},
+      "timeline": {"available": true, "stale": false}
+    },
+    "observations": [
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Deployment", "namespace": "synthetic", "name": "payments"}, "lens": "live", "key": "workload.status", "value": "Healthy", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false},
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Deployment", "namespace": "synthetic", "name": "payments"}, "lens": "desired", "key": "desired.drift", "value": "OutOfSync", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false},
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Deployment", "namespace": "synthetic", "name": "payments"}, "lens": "timeline", "key": "change.kind", "value": "kubectl-edit", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false}
+    ]
+  },
+  "expect": {
+    "top_rule": "R4",
+    "status": "confirmed",
+    "scope": "alpha",
+    "fleet_wide": false,
+    "cause_of": [],
+    "citation_evidence": [
+      {"lens": "desired", "predicate": "desired.drift", "observed": "OutOfSync"},
+      {"lens": "timeline", "predicate": "change.kind", "observed": "kubectl-edit"}
+    ],
+    "missing_lenses": [],
+    "advisory": {"command": false, "pr_diff": true, "sensitive": false}
+  }
+}

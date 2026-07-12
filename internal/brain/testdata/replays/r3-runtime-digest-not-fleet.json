@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "name": "r3-runtime-digest-not-fleet",
+  "sanitized": true,
+  "investigation": {
+    "workspace": "local",
+    "coverage": {
+      "live": {"available": true, "stale": false}
+    },
+    "observations": [
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Pod", "namespace": "synthetic", "name": "payments-0"}, "lens": "live", "key": "pod.failure", "value": "CrashLoopBackOff", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false},
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Pod", "namespace": "synthetic", "name": "payments-0"}, "lens": "live", "key": "container.image.repo_digests", "value": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false},
+      {"ref": {"source_kind": "fixture", "scope": "beta", "kind": "Pod", "namespace": "synthetic", "name": "payments-0"}, "lens": "live", "key": "pod.failure", "value": "CrashLoopBackOff", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false},
+      {"ref": {"source_kind": "fixture", "scope": "beta", "kind": "Pod", "namespace": "synthetic", "name": "payments-0"}, "lens": "live", "key": "container.image.repo_digests", "value": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "observed_at": "2026-07-12T00:00:00Z", "source": "synthetic", "stale": false}
+    ]
+  },
+  "expect": {
+    "top_rule": "R3",
+    "status": "detected",
+    "scope": "alpha",
+    "fleet_wide": false,
+    "cause_of": [],
+    "citation_evidence": [
+      {"lens": "live", "predicate": "pod.failure", "observed": "CrashLoopBackOff"}
+    ],
+    "missing_lenses": ["telemetry"],
+    "advisory": {"command": true, "pr_diff": false, "sensitive": false}
+  }
+}
