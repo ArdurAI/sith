@@ -195,5 +195,14 @@ pull plus a short-lived local container:
 make e2e-postgres
 ```
 
+The complete tenant-isolation suite combines the real PostgreSQL boundary with signed-token,
+injected-header, scoped-query, and deterministic selector-fuzz invariants. It also removes and
+weakens a live RLS policy and requires the suite to detect both mutations before restoring the
+steady state. The query fuzzer runs for a bounded five seconds in CI rather than indefinitely:
+
+```bash
+make e2e-isolation
+```
+
 The architecture, threat model, ADRs, and roadmap live under [`docs/`](docs/). Build-session
 checkpoints are recorded under [`sessions/`](sessions/).
