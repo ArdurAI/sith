@@ -16,6 +16,8 @@
 [C] Checkpoint #2: real RLS behavior proved and migration/catalog guard hardened — next: rerun the real database gate, focused lint/race tests, then checkpoint the schema boundary.
 [T] Test: The hardened real-database test passed again in 2.831s and the tagged suite covers 67.8% of the new package; focused race tests and golangci-lint pass with zero findings. A govulncheck invocation without the mandated toolchain correctly exposed fixed Go 1.26.0 standard-library advisories; rerunning with the repository-pinned Go 1.26.5 toolchain reports no vulnerabilities, with no suppression or exception added.
 [C] Checkpoint #3: production PostgreSQL tenancy boundary committed with SSH signature, DCO, and immutable migration evidence — next: commit the real-container/CI harness, then run all repository and real-environment gates.
+[A] Action: Manual database red-team review removed a global `tenant_key` uniqueness constraint. PostgreSQL documents that unique and foreign-key integrity checks bypass RLS; since `Workspace.ID` is already the unique isolation key, global tenant-key uniqueness would add a needless cross-workspace existence oracle. The real test now seeds the same display key in two workspaces to preserve this property.
+[C] Checkpoint #4: constraint-level existence oracle removed — next: repeat database falsification and all repository gates.
 
 ---
 

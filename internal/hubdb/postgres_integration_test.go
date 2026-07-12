@@ -243,7 +243,8 @@ func seedTenantRows(t *testing.T, ctx context.Context, admin *pgx.Conn) {
 	t.Helper()
 	statements := []string{
 		`INSERT INTO sith.workspaces(id, name, tenant_key) VALUES
-			('workspace-a', 'Workspace A', 'tenant-a'), ('workspace-b', 'Workspace B', 'tenant-b')`,
+			('workspace-a', 'Workspace A', 'shared-display-key'),
+			('workspace-b', 'Workspace B', 'shared-display-key')`,
 		`INSERT INTO sith.memberships(workspace_id, subject, role) VALUES
 			('workspace-a', 'user:alice', 'reader'), ('workspace-b', 'user:bob', 'admin')`,
 		`INSERT INTO sith.clusters(workspace_id, id, managed_cluster_ref) VALUES

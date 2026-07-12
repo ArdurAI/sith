@@ -6,7 +6,7 @@ REVOKE ALL ON SCHEMA sith FROM PUBLIC;
 CREATE TABLE sith.workspaces (
     id text PRIMARY KEY,
     name text NOT NULL,
-    tenant_key text NOT NULL UNIQUE,
+    tenant_key text NOT NULL,
     CONSTRAINT workspaces_id_valid CHECK (
         id = btrim(id) AND id <> '' AND octet_length(id) <= 256 AND id !~ '[[:cntrl:]]'
     ),
