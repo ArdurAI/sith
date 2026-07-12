@@ -20,7 +20,7 @@ func TestCorrelatorUsesExactTenantScopedHealthQuery(t *testing.T) {
 		Evidence:  fleet.Evidence{Ref: fleet.ResourceRef{Scope: "spoke-b", Kind: "Deployment", Name: "payments"}},
 		Workspace: "workspace-a",
 	}}}}
-	correlator, err := NewCorrelator(CorrelatorConfig{Querier: querier, Freshness: time.Minute, Now: func() time.Time { return now }})
+	correlator, err := NewCorrelator(CorrelatorConfig{Querier: querier, PEP: testReadPEP(t), Freshness: time.Minute, Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestCorrelatorRejectsUnsafeRequests(t *testing.T) {
 
 	correlator, err := NewCorrelator(CorrelatorConfig{Querier: fleetQuerierFunc(func(context.Context, tenancy.Scope, fleet.Query, time.Duration, time.Time) (fleet.QueryResult, error) {
 		return fleet.QueryResult{}, errors.New("unexpected query")
-	})})
+	}), PEP: testReadPEP(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +78,7 @@ type recordingFleetQuerier struct {
 	query     fleet.Query
 	freshness time.Duration
 	now       time.Time
+	calls     int
 }
 
 func (querier *recordingFleetQuerier) QueryFleet(
@@ -87,6 +88,7 @@ func (querier *recordingFleetQuerier) QueryFleet(
 	freshness time.Duration,
 	now time.Time,
 ) (fleet.QueryResult, error) {
+	querier.calls++
 	querier.scope = scope
 	querier.query = query
 	querier.freshness = freshness

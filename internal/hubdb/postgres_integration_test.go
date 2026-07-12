@@ -24,6 +24,7 @@ import (
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/hubauth"
 	"github.com/ArdurAI/sith/internal/hubfleet"
+	"github.com/ArdurAI/sith/internal/pep"
 	"github.com/ArdurAI/sith/internal/tenancy"
 )
 
@@ -592,7 +593,7 @@ func assertFleetStoreIntegration(t *testing.T, ctx context.Context, database *Ap
 		t.Fatalf("replace second workspace-a snapshot: %v", err)
 	}
 	correlator, err := hubfleet.NewCorrelator(hubfleet.CorrelatorConfig{
-		Querier: database, Freshness: time.Minute, Now: func() time.Time { return now },
+		Querier: database, PEP: postgresReadPEP(t), Freshness: time.Minute, Now: func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -654,6 +655,17 @@ func assertFleetStoreIntegration(t *testing.T, ctx context.Context, database *Ap
 		staleResult.Coverage.Reachable != 0 || len(staleResult.Coverage.Unreachable) != 1 || len(staleResult.Coverage.Stale) != 1 {
 		t.Fatalf("retained stale query = %#v, error = %v", staleResult, err)
 	}
+}
+
+func postgresReadPEP(t *testing.T) *pep.Enforcer {
+	t.Helper()
+	enforcer, err := pep.NewEnforcer(pep.Config{
+		Hook: pep.AllowReadHook{}, Auditor: pep.AuditFunc(func(context.Context, pep.AuditEvent) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return enforcer
 }
 
 func randomHex(t *testing.T, bytes int) string {
