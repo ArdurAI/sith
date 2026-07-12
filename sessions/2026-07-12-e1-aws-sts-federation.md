@@ -71,5 +71,11 @@ contract and current forced-RLS workspace membership mapping.
 
 ## [C] Checkpoint #1
 
-- Implementation and focused validation are complete; README was reviewed and updated before the
-  first commit. Next: full validation and red-team review.
+- Signed/DCO feature commit: 3530df4 (2026-07-12/e1-aws-sts-federation#1). It contains the pinned
+  AWS STS verifier, TLS-emulator exchange and negative controls, privacy-boundary allowlist,
+  README contract, and both the #92 journal and the missing #91 delivery evidence.
+
+## [C] Checkpoint #2
+
+- The final local validation and review evidence is ready for its signed documentation checkpoint
+  (2026-07-12/e1-aws-sts-federation#2). PR and exact post-merge evidence remain pending.
