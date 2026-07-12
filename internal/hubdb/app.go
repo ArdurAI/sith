@@ -5,6 +5,8 @@ package hubdb
 import (
 	"context"
 	"fmt"
+	"net/netip"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -33,8 +35,8 @@ func OpenAppDB(ctx context.Context, config AppConfig) (*AppDB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open hub database: parse connection configuration: %w", err)
 	}
-	if !config.AllowInsecure && !secureTransport(poolConfig.ConnConfig) {
-		return nil, fmt.Errorf("open hub database: TLS without plaintext fallback is required")
+	if !secureTransport(poolConfig.ConnConfig) && (!config.AllowInsecure || !localTransport(poolConfig.ConnConfig)) {
+		return nil, fmt.Errorf("open hub database: TLS without plaintext fallback is required for non-local connections")
 	}
 	if config.MaxConns < 0 {
 		return nil, fmt.Errorf("open hub database: maximum connections cannot be negative")
@@ -106,6 +108,26 @@ func secureTransport(config *pgx.ConnConfig) bool {
 		}
 	}
 	return true
+}
+
+func localTransport(config *pgx.ConnConfig) bool {
+	if config == nil || !localHost(config.Host) {
+		return false
+	}
+	for _, fallback := range config.Fallbacks {
+		if !localHost(fallback.Host) {
+			return false
+		}
+	}
+	return true
+}
+
+func localHost(host string) bool {
+	if strings.EqualFold(host, "localhost") || strings.HasPrefix(host, "/") {
+		return true
+	}
+	address, err := netip.ParseAddr(host)
+	return err == nil && address.IsLoopback()
 }
 
 func verifyAppConnection(ctx context.Context, connection *pgx.Conn) error {

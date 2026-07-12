@@ -21,6 +21,8 @@
 [T] Test: Final local `make ci` is green: formatting, vet, zero golangci-lint findings, govulncheck with no vulnerabilities on Go 1.26.5, the full race suite, privacy and PostgreSQL import boundaries, 15 shell-safety assertions, warm-view performance, compiled e2e, and production build. The committed PostgreSQL gate passed again in 2.466s at 67.8% tagged coverage; the pinned real kind two-cluster regression passed in 90.473s.
 [T] Test: Cleanup confirmed zero kind clusters and no `sith-rls` containers before and after Docker pruning, which reclaimed 1.31 GB. GitHub Dependabot, code-scanning, and secret-scanning queues were each zero immediately before publication. All three branch commits have valid SSH signatures, exact DCO sign-off, and GSTACK checkpoint trailers.
 [C] Checkpoint #5: all local repository, vulnerability, PostgreSQL, and Kubernetes gates green — next: signed evidence commit, remote CI, review, and merge.
+[A] Action: Transport review narrowed the explicit `AllowInsecure` escape hatch to loopback IPs, `localhost`, or Unix sockets. A remote PostgreSQL host still requires TLS with no plaintext fallback even if the test-only flag is set; the new direct `net/netip` boundary is exact-allowlisted in the privacy guard.
+[C] Checkpoint #6: remote plaintext database footgun closed — next: repeat focused privacy/database gates and publish.
 
 ---
 

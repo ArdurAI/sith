@@ -4,6 +4,7 @@ package hubdb
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/ArdurAI/sith/internal/tenancy"
@@ -26,6 +27,17 @@ func TestSecureTransportRejectsMissingTLS(t *testing.T) {
 
 	if secureTransport(nil) {
 		t.Fatal("nil connection configuration reported secure")
+	}
+}
+
+func TestOpenAppDBRejectsRemotePlaintextEscapeHatch(t *testing.T) {
+	t.Parallel()
+
+	_, err := OpenAppDB(context.Background(), AppConfig{
+		URL: "postgres://sith_app:secret@192.0.2.1/sith?sslmode=disable", AllowInsecure: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "TLS") {
+		t.Fatalf("remote plaintext connection error = %v, want TLS refusal", err)
 	}
 }
 
