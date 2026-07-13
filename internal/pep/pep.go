@@ -123,16 +123,18 @@ func (function AuditFunc) Record(ctx context.Context, event AuditEvent) error {
 
 // Config constructs an enforcement point with mandatory policy and audit dependencies.
 type Config struct {
-	Hook    PolicyHook
-	Auditor Auditor
-	Now     func() time.Time
+	Hook     PolicyHook
+	Auditor  Auditor
+	Observer DecisionObserver
+	Now      func() time.Time
 }
 
 // Enforcer applies the fixed Phase-1 read pipeline and creates one audit record for every decision.
 type Enforcer struct {
-	hook    PolicyHook
-	auditor Auditor
-	now     func() time.Time
+	hook     PolicyHook
+	auditor  Auditor
+	observer DecisionObserver
+	now      func() time.Time
 }
 
 // NewEnforcer constructs a fail-closed policy enforcement point.
@@ -143,7 +145,10 @@ func NewEnforcer(config Config) (*Enforcer, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	return &Enforcer{hook: config.Hook, auditor: config.Auditor, now: config.Now}, nil
+	if config.Observer == nil {
+		config.Observer = noopDecisionObserver{}
+	}
+	return &Enforcer{hook: config.Hook, auditor: config.Auditor, observer: config.Observer, now: config.Now}, nil
 }
 
 // AllowReadHook is the temporary Phase-1 policy implementation. It allows only the closed read
@@ -165,25 +170,40 @@ func (enforcer *Enforcer) AuthorizeRead(ctx context.Context, scope tenancy.Scope
 	if enforcer == nil || enforcer.hook == nil || enforcer.auditor == nil || ctx == nil {
 		return fmt.Errorf("authorize read: enforcer and context are required")
 	}
+	startedAt := time.Now()
+	outcome := DecisionOutcomeError
+	defer func() {
+		enforcer.observeDecision(input.Verb, outcome, time.Since(startedAt))
+	}()
 	request := Request{
 		WorkspaceID: scope.WorkspaceID(), Actor: scope.Subject(), Role: scope.Role(), Action: tenancy.ActionRead,
 		Verb: input.Verb, ArgumentsDigest: input.ArgumentsDigest,
 	}
 	if err := request.Validate(); err != nil {
+		outcome = DecisionOutcomeDeny
 		return enforcer.refuse(ctx, request, VerdictDeny, "invalid-request", "authorize read: invalid policy request")
 	}
 	if err := scope.Authorize(tenancy.ActionRead); err != nil {
+		outcome = DecisionOutcomeDeny
 		return enforcer.refuse(ctx, request, VerdictDeny, "role-denied", "authorize read: role does not permit read")
 	}
 	decision, err := enforcer.hook.Decide(ctx, request)
 	if err != nil {
+		outcome = DecisionOutcomeError
 		return enforcer.refuse(ctx, request, VerdictDeny, "hook-error", "authorize read: policy hook failed")
 	}
 	if err := decision.Validate(); err != nil {
+		outcome = DecisionOutcomeError
 		return enforcer.refuse(ctx, request, VerdictDeny, "invalid-decision", "authorize read: policy hook returned an invalid decision")
 	}
 	if decision.Verdict != VerdictAllow {
+		if decision.Verdict == VerdictRequireApproval {
+			outcome = DecisionOutcomeRequireApproval
+		} else {
+			outcome = DecisionOutcomeDeny
+		}
 		if err := enforcer.record(ctx, request, decision); err != nil {
+			outcome = DecisionOutcomeError
 			return fmt.Errorf("authorize read: audit policy refusal: %w", err)
 		}
 		if decision.Verdict == VerdictRequireApproval {
@@ -192,8 +212,10 @@ func (enforcer *Enforcer) AuthorizeRead(ctx context.Context, scope tenancy.Scope
 		return fmt.Errorf("authorize read: policy denied request")
 	}
 	if err := enforcer.record(ctx, request, decision); err != nil {
+		outcome = DecisionOutcomeError
 		return fmt.Errorf("authorize read: audit policy decision: %w", err)
 	}
+	outcome = DecisionOutcomeAllow
 	return nil
 }
 

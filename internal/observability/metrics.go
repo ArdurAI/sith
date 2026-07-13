@@ -1,0 +1,196 @@
+// SPDX-License-Identifier: Apache-2.0
+
+// Package observability exposes bounded, pull-only metrics about Sith's own process behavior.
+// It deliberately owns no listener, remote exporter, persistence, or external telemetry data.
+package observability
+
+import (
+	"fmt"
+	"net/http"
+	"regexp"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/ArdurAI/sith/internal/hubfleet"
+	"github.com/ArdurAI/sith/internal/pep"
+)
+
+var (
+	versionLabelPattern = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+	commitLabelPattern  = regexp.MustCompile(`^(?:none|unknown|[0-9a-f]{7,64})$`)
+)
+
+// Config supplies non-sensitive build metadata and an optional isolated registry. A nil Registry
+// creates a fresh pedantic registry; the Prometheus global registry is never used.
+type Config struct {
+	Registry *prometheus.Registry
+	Version  string
+	Commit   string
+}
+
+// Metrics records low-cardinality control-plane observations and exposes the matching handler.
+// All label normalization occurs before a metric is created, so caller-controlled values cannot
+// increase cardinality or cross the privacy boundary.
+type Metrics struct {
+	gatherer         prometheus.Gatherer
+	policyDecisions  *prometheus.CounterVec
+	policyDuration   *prometheus.HistogramVec
+	snapshotAttempts *prometheus.CounterVec
+	snapshotDuration *prometheus.HistogramVec
+}
+
+var (
+	_ pep.DecisionObserver      = (*Metrics)(nil)
+	_ hubfleet.SnapshotObserver = (*Metrics)(nil)
+)
+
+// New constructs metrics against a caller-owned or fresh isolated registry. Registration errors
+// are returned rather than panicking, making duplicate or incompatible metrics a startup failure.
+func New(config Config) (*Metrics, error) {
+	registry := config.Registry
+	if registry == nil {
+		registry = prometheus.NewPedanticRegistry()
+	}
+	if registry == prometheus.DefaultRegisterer || registry == prometheus.DefaultGatherer {
+		return nil, fmt.Errorf("construct metrics: Prometheus global registry is not allowed")
+	}
+
+	metrics := &Metrics{
+		gatherer: registry,
+		policyDecisions: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "sith", Subsystem: "policy", Name: "decisions_total",
+			Help: "Total completed Sith policy-read decisions by closed verb and outcome.",
+		}, []string{"verb", "outcome"}),
+		policyDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "sith", Subsystem: "policy", Name: "decision_duration_seconds",
+			Help: "Duration of completed Sith policy-read decisions by closed verb and outcome.",
+		}, []string{"verb", "outcome"}),
+		snapshotAttempts: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "sith", Subsystem: "federation", Name: "spoke_snapshot_attempts_total",
+			Help: "Total completed Sith federated spoke snapshot attempts by closed outcome.",
+		}, []string{"outcome"}),
+		snapshotDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "sith", Subsystem: "federation", Name: "spoke_snapshot_duration_seconds",
+			Help: "Duration of completed Sith federated spoke snapshot attempts by closed outcome.",
+		}, []string{"outcome"}),
+	}
+	buildInfo := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "sith", Name: "build_info", Help: "Sith build metadata with safe release identifiers only.",
+		ConstLabels: prometheus.Labels{
+			"version": normalizedVersion(config.Version),
+			"commit":  normalizedCommit(config.Commit),
+		},
+	})
+	buildInfo.Set(1)
+
+	registered := make([]prometheus.Collector, 0, 7)
+	for _, collector := range []struct {
+		name      string
+		collector prometheus.Collector
+	}{
+		{name: "Go runtime", collector: collectors.NewGoCollector()},
+		{name: "process", collector: collectors.NewProcessCollector(collectors.ProcessCollectorOpts{})},
+		{name: "build info", collector: buildInfo},
+		{name: "policy decisions", collector: metrics.policyDecisions},
+		{name: "policy duration", collector: metrics.policyDuration},
+		{name: "snapshot attempts", collector: metrics.snapshotAttempts},
+		{name: "snapshot duration", collector: metrics.snapshotDuration},
+	} {
+		if err := registry.Register(collector.collector); err != nil {
+			for index := len(registered) - 1; index >= 0; index-- {
+				registry.Unregister(registered[index])
+			}
+			return nil, fmt.Errorf("register %s metrics: %w", collector.name, err)
+		}
+		registered = append(registered, collector.collector)
+	}
+
+	return metrics, nil
+}
+
+// Handler returns an embeddable Prometheus exposition handler. It does not bind a port or make
+// outbound calls; a future hub composition root owns listener, TLS, and scrape authorization.
+func (metrics *Metrics) Handler() http.Handler {
+	if metrics == nil || metrics.gatherer == nil {
+		return http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			http.Error(writer, "metrics unavailable", http.StatusServiceUnavailable)
+		})
+	}
+	return promhttp.HandlerFor(metrics.gatherer, promhttp.HandlerOpts{ErrorHandling: promhttp.HTTPErrorOnError})
+}
+
+// ObserveDecision records one completed policy decision using only fixed label vocabularies.
+func (metrics *Metrics) ObserveDecision(verb pep.Verb, outcome pep.DecisionOutcome, duration time.Duration) {
+	if metrics == nil || metrics.policyDecisions == nil || metrics.policyDuration == nil {
+		return
+	}
+	verbLabel := normalizedVerb(verb)
+	outcomeLabel := normalizedDecisionOutcome(outcome)
+	metrics.policyDecisions.WithLabelValues(verbLabel, outcomeLabel).Inc()
+	metrics.policyDuration.WithLabelValues(verbLabel, outcomeLabel).Observe(normalizedDuration(duration))
+}
+
+// ObserveSpokeSnapshot records one completed federated snapshot attempt using only a fixed outcome
+// vocabulary. It intentionally omits all tenant and spoke identifiers.
+func (metrics *Metrics) ObserveSpokeSnapshot(outcome hubfleet.SnapshotOutcome, duration time.Duration) {
+	if metrics == nil || metrics.snapshotAttempts == nil || metrics.snapshotDuration == nil {
+		return
+	}
+	outcomeLabel := normalizedSnapshotOutcome(outcome)
+	metrics.snapshotAttempts.WithLabelValues(outcomeLabel).Inc()
+	metrics.snapshotDuration.WithLabelValues(outcomeLabel).Observe(normalizedDuration(duration))
+}
+
+func normalizedVersion(value string) string {
+	if value == "dev" || value == "unknown" || versionLabelPattern.MatchString(value) {
+		return value
+	}
+	return "unknown"
+}
+
+func normalizedCommit(value string) string {
+	if commitLabelPattern.MatchString(value) {
+		return value
+	}
+	return "unknown"
+}
+
+func normalizedVerb(verb pep.Verb) string {
+	if verb.Valid() {
+		return string(verb)
+	}
+	return "invalid"
+}
+
+func normalizedDecisionOutcome(outcome pep.DecisionOutcome) string {
+	switch outcome {
+	case pep.DecisionOutcomeAllow, pep.DecisionOutcomeDeny, pep.DecisionOutcomeRequireApproval, pep.DecisionOutcomeError:
+		return string(outcome)
+	default:
+		return string(pep.DecisionOutcomeError)
+	}
+}
+
+func normalizedSnapshotOutcome(outcome hubfleet.SnapshotOutcome) string {
+	switch outcome {
+	case hubfleet.SnapshotOutcomeSuccess,
+		hubfleet.SnapshotOutcomeTransport,
+		hubfleet.SnapshotOutcomeDeadline,
+		hubfleet.SnapshotOutcomeInvalidSnapshot,
+		hubfleet.SnapshotOutcomeStoreError,
+		hubfleet.SnapshotOutcomeCanceled:
+		return string(outcome)
+	default:
+		return string(hubfleet.SnapshotOutcomeStoreError)
+	}
+}
+
+func normalizedDuration(duration time.Duration) float64 {
+	if duration < 0 {
+		return 0
+	}
+	return duration.Seconds()
+}

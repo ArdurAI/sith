@@ -117,6 +117,7 @@ type CollectorConfig struct {
 	Store          Store
 	Transport      Transport
 	PEP            *pep.Enforcer
+	Observer       SnapshotObserver
 	SpokeTimeout   time.Duration
 	MaxSnapshotAge time.Duration
 	Now            func() time.Time
@@ -127,6 +128,7 @@ type Collector struct {
 	store          Store
 	transport      Transport
 	pep            *pep.Enforcer
+	observer       SnapshotObserver
 	spokeTimeout   time.Duration
 	maxSnapshotAge time.Duration
 	now            func() time.Time
@@ -152,10 +154,14 @@ func NewCollector(config CollectorConfig) (*Collector, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
+	if config.Observer == nil {
+		config.Observer = noopSnapshotObserver{}
+	}
 	return &Collector{
 		store:          config.Store,
 		transport:      config.Transport,
 		pep:            config.PEP,
+		observer:       config.Observer,
 		spokeTimeout:   config.SpokeTimeout,
 		maxSnapshotAge: config.MaxSnapshotAge,
 		now:            config.Now,
@@ -192,11 +198,13 @@ func (collector *Collector) Collect(ctx context.Context, scope tenancy.Scope) (f
 			return coverage, fmt.Errorf("collect spoke snapshots: %w", err)
 		}
 		attemptedAt := collector.now().UTC()
+		startedAt := time.Now()
 		spokeContext, cancel := context.WithTimeout(ctx, collector.spokeTimeout)
 		snapshot, collectionErr := collector.transport.Snapshot(spokeContext, scope.WorkspaceID(), cloneSpoke(spoke))
 		deadlineErr := spokeContext.Err()
 		cancel()
 		if err := ctx.Err(); err != nil {
+			collector.observeSnapshot(SnapshotOutcomeCanceled, time.Since(startedAt))
 			return coverage, fmt.Errorf("collect spoke snapshots: %w", err)
 		}
 		if collectionErr == nil && deadlineErr != nil {
@@ -204,20 +212,26 @@ func (collector *Collector) Collect(ctx context.Context, scope tenancy.Scope) (f
 		}
 		if collectionErr != nil {
 			if err := collector.recordFailure(ctx, scope, spoke, failureFor(collectionErr), attemptedAt, &coverage); err != nil {
+				collector.observeSnapshot(SnapshotOutcomeStoreError, time.Since(startedAt))
 				return coverage, err
 			}
+			collector.observeSnapshot(snapshotOutcomeForFailure(failureFor(collectionErr)), time.Since(startedAt))
 			continue
 		}
 		if err := validateSnapshot(spoke, snapshot, attemptedAt, collector.maxSnapshotAge); err != nil {
 			if failureErr := collector.recordFailure(ctx, scope, spoke, FailureInvalidSnapshot, attemptedAt, &coverage); failureErr != nil {
+				collector.observeSnapshot(SnapshotOutcomeStoreError, time.Since(startedAt))
 				return coverage, failureErr
 			}
+			collector.observeSnapshot(SnapshotOutcomeInvalidSnapshot, time.Since(startedAt))
 			continue
 		}
 		if err := collector.store.ReplaceSnapshot(ctx, scope, spoke, cloneSnapshot(snapshot), attemptedAt); err != nil {
+			collector.observeSnapshot(SnapshotOutcomeStoreError, time.Since(startedAt))
 			return coverage, fmt.Errorf("collect spoke snapshots: persist %q: %w", spoke.ID, err)
 		}
 		coverage.Reachable++
+		collector.observeSnapshot(SnapshotOutcomeSuccess, time.Since(startedAt))
 	}
 	sort.Strings(coverage.Unreachable)
 	sort.Strings(coverage.Stale)

@@ -21,12 +21,13 @@ var approvedNetworkImports = map[string]map[string]bool{
 	"internal/hubserver/auth.go":                     {"net/http": true},
 	"internal/hubserver/exchange.go":                 {"net": true, "net/http": true},
 	// AWS STS egress is endpoint-pinned, SigV4-profiled, redirect-disabled, and never used by local mode.
-	"internal/hubauth/aws_sts.go":  {"net/http": true, "net/url": true},
-	"internal/hubauth/oidc.go":     {"net": true, "net/http": true, "net/netip": true, "net/url": true},
-	"internal/hubdb/app.go":        {"net/netip": true},
-	"internal/mcpserver/server.go": {"net": true, "net/http": true, "net/url": true},
-	"internal/webui/api.go":        {"net/http": true},
-	"internal/webui/server.go":     {"net": true, "net/http": true, "net/url": true},
+	"internal/hubauth/aws_sts.go":       {"net/http": true, "net/url": true},
+	"internal/hubauth/oidc.go":          {"net": true, "net/http": true, "net/netip": true, "net/url": true},
+	"internal/hubdb/app.go":             {"net/netip": true},
+	"internal/mcpserver/server.go":      {"net": true, "net/http": true, "net/url": true},
+	"internal/observability/metrics.go": {"net/http": true},
+	"internal/webui/api.go":             {"net/http": true},
+	"internal/webui/server.go":          {"net": true, "net/http": true, "net/url": true},
 }
 
 var approvedFilesystemWrites = map[string]map[string]bool{
