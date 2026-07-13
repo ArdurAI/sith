@@ -92,7 +92,7 @@ ci: fmt-check vet lint vuln test test-scripts perf e2e build ## Run the full CI 
 release-check: ## Build and verify the reproducible multi-platform release snapshot twice
 	@command -v "$(GORELEASER)" >/dev/null || { echo "goreleaser is required" >&2; exit 1; }
 	@command -v syft >/dev/null || { echo "syft is required" >&2; exit 1; }
-	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+	@set -e; tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
 		go mod download; \
 		go mod verify; \
 		"$(GORELEASER)" check .goreleaser.yaml; \
