@@ -77,6 +77,10 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 	if err != nil {
 		return nil, fmt.Errorf("construct hub runtime: trace configuration is invalid")
 	}
+	authObserver, err := observability.NewSlogAuthObserver(logger)
+	if err != nil {
+		return nil, fmt.Errorf("construct hub runtime: authentication observability configuration is invalid")
+	}
 	enforcer, err := pep.NewEnforcer(pep.Config{Hook: pep.AllowReadHook{}, Auditor: auditor, TraceObserver: tracer})
 	if err != nil {
 		return nil, fmt.Errorf("construct hub runtime: policy configuration is invalid")
@@ -119,7 +123,7 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		return nil, fmt.Errorf("construct hub runtime: image search configuration is invalid")
 	}
 	handler, err := hubserver.NewFleetHandler(hubserver.FleetHandlerConfig{
-		Verifier: verifier, Collector: collector, Reader: database, ImageSearcher: imageSearcher, PEP: enforcer,
+		Verifier: verifier, AuthObserver: authObserver, Collector: collector, Reader: database, ImageSearcher: imageSearcher, PEP: enforcer,
 	})
 	if err != nil {
 		cleanup()

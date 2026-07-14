@@ -371,6 +371,37 @@ func TestNewFleetHandlerRejectsMissingDependencies(t *testing.T) {
 	}
 }
 
+func TestFleetHandlerForwardsAuthRefusalsToConfiguredObserver(t *testing.T) {
+	now := time.Date(2026, 7, 14, 13, 0, 0, 0, time.UTC)
+	verifier, _ := fleetTestVerifier(t, now)
+	var events []AuthEvent
+	handler, err := NewFleetHandler(FleetHandlerConfig{
+		Verifier:     verifier,
+		AuthObserver: AuthObserverFunc(func(event AuthEvent) { events = append(events, event) }),
+		Collector: fleetRefresherFunc(func(context.Context, tenancy.Scope) (fleet.Coverage, error) {
+			t.Fatal("unauthenticated request reached collector")
+			return fleet.Coverage{}, nil
+		}),
+		Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
+			t.Fatal("unauthenticated request reached reader")
+			return fleet.FleetResult{}, nil
+		}),
+		ImageSearcher: fleetImageSearcherFunc(func(context.Context, tenancy.Scope, hubfleet.ImageSearchRequest) (fleet.QueryResult, error) {
+			t.Fatal("unauthenticated request reached image searcher")
+			return fleet.QueryResult{}, nil
+		}),
+		PEP: fleetTestPEP(t, pep.AllowReadHook{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "https://hub.sith.test/v1/workspaces/workspace-a/fleet", nil))
+	if response.Code != http.StatusUnauthorized || len(events) != 1 || events[0] != (AuthEvent{Outcome: AuthOutcomeRefused}) {
+		t.Fatalf("status = %d events = %#v", response.Code, events)
+	}
+}
+
 func fleetTestVerifier(t *testing.T, now time.Time) (*hubauth.JWTVerifier, ed25519.PrivateKey) {
 	t.Helper()
 	publicKey, privateKey := hubTestKeyPair()

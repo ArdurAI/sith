@@ -32,6 +32,7 @@ type FleetImageSearcher interface {
 // FleetHandlerConfig supplies the authenticated dependencies for the fixed hub fleet API.
 type FleetHandlerConfig struct {
 	Verifier      Verifier
+	AuthObserver  AuthObserver
 	Collector     FleetRefresher
 	Reader        hubfleet.FleetReader
 	ImageSearcher FleetImageSearcher
@@ -117,7 +118,7 @@ func NewFleetHandler(config FleetHandlerConfig) (http.Handler, error) {
 		}
 	})
 
-	return Authenticate(config.Verifier, handler)
+	return AuthenticateWithObserver(config.Verifier, config.AuthObserver, handler)
 }
 
 type fleetOperation uint8
