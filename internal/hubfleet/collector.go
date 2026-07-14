@@ -18,6 +18,7 @@ import (
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/pep"
 	"github.com/ArdurAI/sith/internal/tenancy"
+	"github.com/ArdurAI/sith/internal/tracing"
 )
 
 const (
@@ -119,6 +120,7 @@ type CollectorConfig struct {
 	Transport      Transport
 	PEP            *pep.Enforcer
 	Observer       SnapshotObserver
+	TraceObserver  tracing.Observer
 	SpokeTimeout   time.Duration
 	MaxSnapshotAge time.Duration
 	Now            func() time.Time
@@ -130,6 +132,7 @@ type Collector struct {
 	transport      Transport
 	pep            *pep.Enforcer
 	observer       SnapshotObserver
+	tracer         tracing.Observer
 	spokeTimeout   time.Duration
 	maxSnapshotAge time.Duration
 	now            func() time.Time
@@ -158,11 +161,15 @@ func NewCollector(config CollectorConfig) (*Collector, error) {
 	if config.Observer == nil {
 		config.Observer = noopSnapshotObserver{}
 	}
+	if config.TraceObserver == nil {
+		config.TraceObserver = tracing.NoopObserver()
+	}
 	return &Collector{
 		store:          config.Store,
 		transport:      config.Transport,
 		pep:            config.PEP,
 		observer:       config.Observer,
+		tracer:         config.TraceObserver,
 		spokeTimeout:   config.SpokeTimeout,
 		maxSnapshotAge: config.MaxSnapshotAge,
 		now:            config.Now,
@@ -181,6 +188,11 @@ func (collector *Collector) Collect(ctx context.Context, scope tenancy.Scope) (f
 	if tenancy.ValidateWorkspaceID(scope.WorkspaceID()) != nil {
 		return fleet.Coverage{}, fmt.Errorf("collect spoke snapshots: validated workspace scope is required")
 	}
+	traceContext, _, err := tracing.Ensure(ctx)
+	if err != nil {
+		return fleet.Coverage{}, fmt.Errorf("collect spoke snapshots: establish trace context: %w", err)
+	}
+	ctx = traceContext
 	if err := collector.pep.AuthorizeRead(ctx, scope, pep.NewReadInput(pep.VerbSpokeSnapshotRefresh, nil)); err != nil {
 		return fleet.Coverage{}, fmt.Errorf("collect spoke snapshots: %w", err)
 	}
@@ -206,6 +218,7 @@ func (collector *Collector) Collect(ctx context.Context, scope tenancy.Scope) (f
 		cancel()
 		if err := ctx.Err(); err != nil {
 			collector.observeSnapshot(SnapshotOutcomeCanceled, time.Since(startedAt))
+			collector.observeTrace(ctx, tracing.OutcomeCanceled, time.Since(startedAt))
 			return coverage, fmt.Errorf("collect spoke snapshots: %w", err)
 		}
 		if collectionErr == nil && deadlineErr != nil {
@@ -214,25 +227,31 @@ func (collector *Collector) Collect(ctx context.Context, scope tenancy.Scope) (f
 		if collectionErr != nil {
 			if err := collector.recordFailure(ctx, scope, spoke, failureFor(collectionErr), attemptedAt, &coverage); err != nil {
 				collector.observeSnapshot(SnapshotOutcomeStoreError, time.Since(startedAt))
+				collector.observeTrace(ctx, tracing.OutcomeFailure, time.Since(startedAt))
 				return coverage, err
 			}
 			collector.observeSnapshot(snapshotOutcomeForFailure(failureFor(collectionErr)), time.Since(startedAt))
+			collector.observeTrace(ctx, tracing.OutcomeFailure, time.Since(startedAt))
 			continue
 		}
 		if err := validateSnapshot(spoke, snapshot, attemptedAt, collector.maxSnapshotAge); err != nil {
 			if failureErr := collector.recordFailure(ctx, scope, spoke, FailureInvalidSnapshot, attemptedAt, &coverage); failureErr != nil {
 				collector.observeSnapshot(SnapshotOutcomeStoreError, time.Since(startedAt))
+				collector.observeTrace(ctx, tracing.OutcomeFailure, time.Since(startedAt))
 				return coverage, failureErr
 			}
 			collector.observeSnapshot(SnapshotOutcomeInvalidSnapshot, time.Since(startedAt))
+			collector.observeTrace(ctx, tracing.OutcomeFailure, time.Since(startedAt))
 			continue
 		}
 		if err := collector.store.ReplaceSnapshot(ctx, scope, spoke, cloneSnapshot(snapshot), attemptedAt); err != nil {
 			collector.observeSnapshot(SnapshotOutcomeStoreError, time.Since(startedAt))
+			collector.observeTrace(ctx, tracing.OutcomeFailure, time.Since(startedAt))
 			return coverage, fmt.Errorf("collect spoke snapshots: persist %q: %w", spoke.ID, err)
 		}
 		coverage.Reachable++
 		collector.observeSnapshot(SnapshotOutcomeSuccess, time.Since(startedAt))
+		collector.observeTrace(ctx, tracing.OutcomeSuccess, time.Since(startedAt))
 	}
 	sort.Strings(coverage.Unreachable)
 	sort.Strings(coverage.Stale)

@@ -10,6 +10,7 @@ import (
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/pep"
 	"github.com/ArdurAI/sith/internal/tenancy"
+	"github.com/ArdurAI/sith/internal/tracing"
 )
 
 // FleetReader provides a tenant-scoped fleet snapshot from persisted spoke observations.
@@ -65,6 +66,11 @@ func (source *Source) Fleet(ctx context.Context) (fleet.FleetResult, error) {
 	if source == nil || source.reader == nil || source.pep == nil || ctx == nil {
 		return fleet.FleetResult{}, fmt.Errorf("read OCM spoke fleet: source, policy enforcer, and context are required")
 	}
+	traceContext, _, err := tracing.Ensure(ctx)
+	if err != nil {
+		return fleet.FleetResult{}, fmt.Errorf("read OCM spoke fleet: establish trace context: %w", err)
+	}
+	ctx = traceContext
 	if err := source.pep.AuthorizeRead(ctx, source.scope, pep.NewReadInput(pep.VerbFleetRead, nil)); err != nil {
 		return fleet.FleetResult{}, fmt.Errorf("read OCM spoke fleet: %w", err)
 	}

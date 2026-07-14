@@ -23,6 +23,7 @@ import (
 	"github.com/ArdurAI/sith/internal/hubfleet"
 	"github.com/ArdurAI/sith/internal/hubocm"
 	"github.com/ArdurAI/sith/internal/hubserver"
+	"github.com/ArdurAI/sith/internal/observability"
 	"github.com/ArdurAI/sith/internal/pep"
 )
 
@@ -72,7 +73,11 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 	if err != nil {
 		return nil, fmt.Errorf("construct hub runtime: policy audit configuration is invalid")
 	}
-	enforcer, err := pep.NewEnforcer(pep.Config{Hook: pep.AllowReadHook{}, Auditor: auditor})
+	tracer, err := observability.NewSlogTraceObserver(logger)
+	if err != nil {
+		return nil, fmt.Errorf("construct hub runtime: trace configuration is invalid")
+	}
+	enforcer, err := pep.NewEnforcer(pep.Config{Hook: pep.AllowReadHook{}, Auditor: auditor, TraceObserver: tracer})
 	if err != nil {
 		return nil, fmt.Errorf("construct hub runtime: policy configuration is invalid")
 	}
@@ -103,7 +108,7 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		return nil, fmt.Errorf("construct hub runtime: database is unavailable")
 	}
 	cleanup := database.Close
-	collector, err := hubfleet.NewCollector(hubfleet.CollectorConfig{Store: database, Transport: transport, PEP: enforcer})
+	collector, err := hubfleet.NewCollector(hubfleet.CollectorConfig{Store: database, Transport: transport, PEP: enforcer, TraceObserver: tracer})
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: collector configuration is invalid")

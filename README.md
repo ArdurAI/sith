@@ -198,6 +198,14 @@ exact signed Sith session, derives the workspace scope from its signed membershi
 scope through the PEP and RLS seams, accepts no query parameters, and returns only normalized
 coverage/fleet data under `Cache-Control: no-store`.
 
+After deriving the signed scope, the hub mints one opaque local trace ID for the governed request.
+It strips common caller-supplied trace and correlation carriers, never echoes or forwards them,
+and carries the local ID through the PEP audit record and each snapshot transport attempt. The hub
+logs only local trace ID, fixed stage, fixed outcome, and bounded duration; it records no workspace,
+actor, spoke, endpoint, resource, selector, argument digest, credential, raw error, or returned
+data in trace events. This is not a telemetry exporter: it adds no OpenTelemetry SDK, listener,
+network egress, queue, trace store, persistence, or action-intent protocol.
+
 The image route answers one exact, immutable runtime digest question across registered spokes. The
 direct reader accepts only canonical digests normalized from ordinary
 `Pod.Status.ContainerStatuses[].ImageID`; PodSpec image strings, init and ephemeral container

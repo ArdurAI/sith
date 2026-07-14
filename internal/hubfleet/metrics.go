@@ -2,7 +2,12 @@
 
 package hubfleet
 
-import "time"
+import (
+	"context"
+	"time"
+
+	"github.com/ArdurAI/sith/internal/tracing"
+)
 
 // SnapshotOutcome is the bounded self-observability result of one spoke snapshot attempt. It does
 // not include spoke, workspace, endpoint, token, raw error, or snapshot data.
@@ -37,6 +42,19 @@ func (collector *Collector) observeSnapshot(outcome SnapshotOutcome, duration ti
 		_ = recover()
 	}()
 	collector.observer.ObserveSpokeSnapshot(outcome, duration)
+}
+
+func (collector *Collector) observeTrace(ctx context.Context, outcome tracing.Outcome, duration time.Duration) {
+	if collector == nil || collector.tracer == nil {
+		return
+	}
+	traceID, ok := tracing.FromContext(ctx)
+	if !ok {
+		return
+	}
+	tracing.Observe(collector.tracer, tracing.Event{
+		TraceID: traceID, Stage: tracing.StageSpokeSnapshot, Outcome: outcome, Duration: duration,
+	})
 }
 
 func snapshotOutcomeForFailure(failure FailureKind) SnapshotOutcome {

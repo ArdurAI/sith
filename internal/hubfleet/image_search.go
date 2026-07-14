@@ -11,6 +11,7 @@ import (
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/pep"
 	"github.com/ArdurAI/sith/internal/tenancy"
+	"github.com/ArdurAI/sith/internal/tracing"
 )
 
 // ImageSearchRequest names one immutable runtime image digest across every registered spoke.
@@ -61,6 +62,11 @@ func (searcher *ImageSearcher) Search(
 	if searcher == nil || searcher.querier == nil || searcher.pep == nil || ctx == nil {
 		return fleet.QueryResult{}, fmt.Errorf("search fleet image: searcher, policy enforcer, and context are required")
 	}
+	traceContext, _, err := tracing.Ensure(ctx)
+	if err != nil {
+		return fleet.QueryResult{}, fmt.Errorf("search fleet image: establish trace context: %w", err)
+	}
+	ctx = traceContext
 	if err := scope.Authorize(tenancy.ActionRead); err != nil {
 		return fleet.QueryResult{}, fmt.Errorf("search fleet image: %w", err)
 	}
