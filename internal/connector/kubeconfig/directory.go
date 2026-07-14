@@ -49,11 +49,11 @@ func loadDirectory(root string) (importedConfig, error) {
 	}
 	absolute, err := filepath.Abs(root)
 	if err != nil {
-		return importedConfig{}, fmt.Errorf("resolve kubeconfig directory: %w", err)
+		return importedConfig{}, errors.New("cannot resolve kubeconfig directory")
 	}
 	info, err := os.Lstat(absolute)
 	if err != nil {
-		return importedConfig{}, fmt.Errorf("inspect kubeconfig directory: %w", err)
+		return importedConfig{}, errors.New("cannot inspect kubeconfig directory")
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return importedConfig{}, fmt.Errorf("kubeconfig directory must be a real directory, not a symlink or file")
@@ -64,23 +64,33 @@ func loadDirectory(root string) (importedConfig, error) {
 		metadata: make(map[string]contextMetadata),
 	}
 	candidates := 0
+	entries := 0
 	err = filepath.WalkDir(absolute, func(path string, entry fs.DirEntry, walkErr error) error {
 		relative, relativeErr := filepath.Rel(absolute, path)
 		if relativeErr != nil {
-			return relativeErr
+			return errors.New("cannot scan kubeconfig directory")
 		}
 		relative = filepath.ToSlash(relative)
 		if relative == "." {
 			if walkErr != nil {
-				return fmt.Errorf("read kubeconfig directory: %w", walkErr)
+				return errors.New("cannot read kubeconfig directory")
 			}
 			return nil
+		}
+		entries++
+		if entries > maxImportFiles {
+			result.diagnostics = append(result.diagnostics, importDiagnostic("", "kubeconfig entry limit reached"))
+			return errImportLimit
 		}
 		if walkErr != nil {
 			result.diagnostics = append(result.diagnostics, importDiagnostic(relative, "unreadable entry"))
 			if entry != nil && entry.IsDir() {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if entry == nil {
+			result.diagnostics = append(result.diagnostics, importDiagnostic(relative, "unreadable entry"))
 			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
@@ -99,7 +109,7 @@ func loadDirectory(root string) (importedConfig, error) {
 		}
 		candidates++
 		if candidates > maxImportFiles {
-			result.diagnostics = append(result.diagnostics, importDiagnostic("", "kubeconfig file limit reached"))
+			result.diagnostics = append(result.diagnostics, importDiagnostic("", "kubeconfig entry limit reached"))
 			return errImportLimit
 		}
 		fileInfo, statErr := entry.Info()
@@ -123,7 +133,7 @@ func loadDirectory(root string) (importedConfig, error) {
 		err = nil
 	}
 	if err != nil {
-		return importedConfig{}, fmt.Errorf("scan kubeconfig directory: %w", err)
+		return importedConfig{}, errors.New("cannot scan kubeconfig directory")
 	}
 	sort.Slice(result.diagnostics, func(left, right int) bool {
 		if result.diagnostics[left].Source == result.diagnostics[right].Source {

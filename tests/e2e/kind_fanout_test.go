@@ -752,24 +752,32 @@ func splitKindKubeconfigDirectory(t *testing.T, mergedPath string, clusters []st
 		t.Fatalf("load merged kind kubeconfig: %v", err)
 	}
 	directory := t.TempDir()
-	for index, cluster := range clusters {
+	first := clientcmdapi.NewConfig()
+	for _, cluster := range clusters {
 		contextName := "kind-" + cluster
 		contextConfig, exists := merged.Contexts[contextName]
 		if !exists {
 			t.Fatalf("merged kubeconfig missing context %q", contextName)
 		}
-		config := clientcmdapi.NewConfig()
-		config.Clusters[contextConfig.Cluster] = merged.Clusters[contextConfig.Cluster].DeepCopy()
-		config.AuthInfos[contextConfig.AuthInfo] = merged.AuthInfos[contextConfig.AuthInfo].DeepCopy()
-		config.Contexts[contextName] = contextConfig.DeepCopy()
-		config.CurrentContext = contextName
-		filename := filepath.Join(directory, "first.yaml")
-		if index == 1 {
-			filename = filepath.Join(directory, "nested", "second.yaml")
-		}
-		if err := clientcmd.WriteToFile(*config, filename); err != nil {
-			t.Fatalf("write imported kind kubeconfig %q: %v", filename, err)
-		}
+		first.Clusters[contextConfig.Cluster] = merged.Clusters[contextConfig.Cluster].DeepCopy()
+		first.AuthInfos[contextConfig.AuthInfo] = merged.AuthInfos[contextConfig.AuthInfo].DeepCopy()
+		first.Contexts[contextName] = contextConfig.DeepCopy()
+		first.CurrentContext = contextName
+	}
+	firstPath := filepath.Join(directory, "first.yaml")
+	if err := clientcmd.WriteToFile(*first, firstPath); err != nil {
+		t.Fatalf("write imported kind kubeconfig %q: %v", firstPath, err)
+	}
+	secondContext := "kind-" + clusters[len(clusters)-1]
+	contextConfig := merged.Contexts[secondContext]
+	second := clientcmdapi.NewConfig()
+	second.Clusters[contextConfig.Cluster] = merged.Clusters[contextConfig.Cluster].DeepCopy()
+	second.AuthInfos[contextConfig.AuthInfo] = merged.AuthInfos[contextConfig.AuthInfo].DeepCopy()
+	second.Contexts[secondContext] = contextConfig.DeepCopy()
+	second.CurrentContext = secondContext
+	secondPath := filepath.Join(directory, "nested", "second.yaml")
+	if err := clientcmd.WriteToFile(*second, secondPath); err != nil {
+		t.Fatalf("write imported kind kubeconfig %q: %v", secondPath, err)
 	}
 	return directory
 }

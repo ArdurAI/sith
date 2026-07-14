@@ -341,7 +341,8 @@ local listener starts. Invalid, oversized, unreadable, or symlinked entries bene
 are skipped with safe warnings that do not expose kubeconfig contents or an absolute local path.
 Each imported source is labeled by its relative filename; contexts with the same name remain
 isolated, and selecting a source in the context rail filters to its contexts. The import is limited
-to 128 files, 4 MiB per file, and eight nested directory levels. The browser renders the same cache, lenses, ordering,
+to 128 traversed filesystem entries (including ignored symlinks and directories), 4 MiB per regular
+kubeconfig file, and eight nested directory levels. The browser renders the same cache, lenses, ordering,
 coverage, search/correlation grammar, and per-resource operations as the CLI/TUI. Its local HTTP
 boundary requires an exact Host/Origin and a per-process capability header, uses a restrictive
 Content Security Policy, and loads no remote assets. YAML apply additionally requires a short-lived,

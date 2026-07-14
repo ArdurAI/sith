@@ -5,6 +5,7 @@ package kubeconfig
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -117,10 +118,39 @@ func TestDirectoryImportRejectsUnsafeRoots(t *testing.T) {
 	if err := os.Symlink(t.TempDir(), linkedRoot); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"", regularFile, linkedRoot} {
+	missing := filepath.Join(t.TempDir(), "missing")
+	for _, path := range []string{"", regularFile, linkedRoot, missing} {
 		if _, err := New(WithDirectory(path)); err == nil {
 			t.Errorf("New(WithDirectory(%q)) error = nil, want unsafe root refusal", path)
+		} else if path != "" && strings.Contains(err.Error(), path) {
+			t.Errorf("New(WithDirectory(%q)) exposed the path in %q", path, err)
 		}
+	}
+}
+
+func TestDirectoryImportBoundsAllTraversalEntries(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	target := filepath.Join(t.TempDir(), "outside.yaml")
+	if err := os.WriteFile(target, []byte("apiVersion: v1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index <= maxImportFiles; index++ {
+		path := filepath.Join(directory, fmt.Sprintf("entry-%03d", index))
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	imported, err := loadDirectory(directory)
+	if err != nil {
+		t.Fatalf("loadDirectory() error = %v", err)
+	}
+	limitReported := false
+	for _, diagnostic := range imported.diagnostics {
+		limitReported = limitReported || (diagnostic.Source == "" && diagnostic.Message == "kubeconfig entry limit reached")
+	}
+	if len(imported.diagnostics) != maxImportFiles+1 || !limitReported {
+		t.Fatalf("diagnostics = %#v, want bounded traversal diagnostic", imported.diagnostics)
 	}
 }
 
