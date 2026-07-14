@@ -340,6 +340,9 @@ func queryFacts(ctx context.Context, tx pgx.Tx, workspaceID tenancy.WorkspaceID,
 			conditions = append(conditions, "fact.payload->>'image' = "+placeholder(query.Selector.Image))
 		}
 	}
+	if query.Selector.CVE != "" {
+		conditions = append(conditions, "(fact.payload -> 'ids') ? "+placeholder(query.Selector.CVE))
+	}
 	limit := query.Limit
 	if limit == 0 {
 		limit = defaultFleetFactLimit
@@ -434,10 +437,20 @@ func normalizeFleetQuery(query fleet.Query) (fleet.Query, []string, error) {
 			return fleet.Query{}, nil, fmt.Errorf("fact kind %q is not available from persisted spoke snapshots", kind)
 		}
 	}
-	if len(query.Selector.Labels) != 0 || query.Selector.CVE != "" {
+	if len(query.Selector.Labels) != 0 {
 		return fleet.Query{}, nil, fmt.Errorf("requested selector is not available from persisted spoke snapshots")
 	}
-	if query.Selector.Image != "" {
+	if query.Selector.CVE != "" {
+		canonical, err := fleet.NormalizeCVEIdentifier(query.Selector.CVE)
+		if err != nil || canonical != query.Selector.CVE {
+			return fleet.Query{}, nil, fmt.Errorf("CVE selector must be one canonical identifier")
+		}
+		if len(query.Kinds) != 1 || query.Kinds[0] != fleet.FactCVE || query.Selector.ResourceKind != "Image" ||
+			query.Selector.Image != "" || query.Selector.Namespace != "" || query.Selector.Name != "" || query.Selector.NamePrefix != "" ||
+			query.Selector.Health != "" || query.Selector.HealthNot != "" {
+			return fleet.Query{}, nil, fmt.Errorf("CVE selector requires one exact Image CVE fact kind")
+		}
+	} else if query.Selector.Image != "" {
 		if err := fleet.ValidateImageDigest(query.Selector.Image); err != nil {
 			return fleet.Query{}, nil, fmt.Errorf("image selector: %w", err)
 		}

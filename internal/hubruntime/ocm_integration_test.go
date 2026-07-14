@@ -78,7 +78,7 @@ func TestHubRuntimeDirectClusterProxyM0(t *testing.T) {
 	now := time.Now().UTC()
 	verifier, privateKey := m0RuntimeVerifier(t, now)
 	handler, err := hubserver.NewFleetHandler(hubserver.FleetHandlerConfig{
-		Verifier: verifier, Collector: collector, Reader: store, ImageSearcher: imageSearcher, CVESearcher: cveSearcher, PEP: enforcer,
+		Verifier: verifier, Collector: collector, Reader: store, ImageSearcher: imageSearcher, CVESearcher: cveSearcher, CVEIdentifierSearcher: cveSearcher, PEP: enforcer,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -160,6 +160,19 @@ func TestHubRuntimeDirectClusterProxyM0(t *testing.T) {
 			!slices.Equal(observation.IDs, []string{"CVE-2026-0001", "CVE-2026-0002"}) || observation.Severity != "high" {
 			t.Fatalf("runtime normalized CVE fact = %#v, error = %v", fact, err)
 		}
+	}
+	identifierResponse := m0RuntimeRequest(t, ctx, client, http.MethodGet, endpoint+"/fleet/cves/CVE-2026-0001", token)
+	defer identifierResponse.Body.Close()
+	if identifierResponse.StatusCode != http.StatusOK {
+		t.Fatalf("runtime CVE identifier search status = %d", identifierResponse.StatusCode)
+	}
+	var identifierResult fleet.QueryResult
+	if err := json.NewDecoder(identifierResponse.Body).Decode(&identifierResult); err != nil {
+		t.Fatal(err)
+	}
+	if len(identifierResult.Facts) != 2 || identifierResult.Coverage.Requested != 2 || identifierResult.Coverage.Reachable != 2 ||
+		!slices.Equal([]string{identifierResult.Facts[0].Ref.Scope, identifierResult.Facts[1].Ref.Scope}, []string{"spoke-a", "spoke-b"}) {
+		t.Fatalf("runtime exact CVE identifier search = %#v", identifierResult)
 	}
 	stopServer()
 	if err := <-serverDone; err != nil {
@@ -258,12 +271,14 @@ func (store *m0RuntimeStore) QueryFleet(
 	if err := scope.RequireWorkspace(m0RuntimeWorkspaceID); err != nil {
 		return fleet.QueryResult{}, err
 	}
-	if len(query.Kinds) != 1 || fleet.ValidateImageDigest(query.Selector.Image) != nil || freshness < time.Second || now.IsZero() {
+	if len(query.Kinds) != 1 || freshness < time.Second || now.IsZero() {
 		return fleet.QueryResult{}, fmt.Errorf("M0 runtime store received an unsupported fleet query")
 	}
-	wantInventory := query.Kinds[0] == fleet.FactInventory && query.Selector.ResourceKind == "Pod"
-	wantCVE := query.Kinds[0] == fleet.FactCVE && query.Selector.ResourceKind == "Image"
-	if !wantInventory && !wantCVE {
+	wantInventory := query.Kinds[0] == fleet.FactInventory && query.Selector.ResourceKind == "Pod" && fleet.ValidateImageDigest(query.Selector.Image) == nil
+	wantCVEImage := query.Kinds[0] == fleet.FactCVE && query.Selector.ResourceKind == "Image" && fleet.ValidateImageDigest(query.Selector.Image) == nil
+	canonicalIdentifier, identifierErr := fleet.NormalizeCVEIdentifier(query.Selector.CVE)
+	wantCVEIdentifier := query.Kinds[0] == fleet.FactCVE && query.Selector.ResourceKind == "Image" && query.Selector.Image == "" && identifierErr == nil && canonicalIdentifier == query.Selector.CVE
+	if !wantInventory && !wantCVEImage && !wantCVEIdentifier {
 		return fleet.QueryResult{}, fmt.Errorf("M0 runtime store received an unsupported fleet query")
 	}
 	store.mu.Lock()
@@ -288,7 +303,10 @@ func (store *m0RuntimeStore) QueryFleet(
 			if wantInventory && (evidence.Kind != fleet.FactInventory || evidence.Ref.Kind != "Pod" || !m0RuntimeFactHasDigest(evidence, query.Selector.Image)) {
 				continue
 			}
-			if wantCVE && (evidence.Kind != fleet.FactCVE || evidence.Ref.Kind != "Image" || !m0RuntimeCVEFactHasDigest(evidence, query.Selector.Image)) {
+			if wantCVEImage && (evidence.Kind != fleet.FactCVE || evidence.Ref.Kind != "Image" || !m0RuntimeCVEFactHasDigest(evidence, query.Selector.Image)) {
+				continue
+			}
+			if wantCVEIdentifier && (evidence.Kind != fleet.FactCVE || evidence.Ref.Kind != "Image" || !m0RuntimeCVEFactHasIdentifier(evidence, query.Selector.CVE)) {
 				continue
 			}
 			result.Facts = append(result.Facts, fleet.Fact{Evidence: evidence, Workspace: string(scope.WorkspaceID()), Stale: stale})
@@ -344,6 +362,11 @@ func m0RuntimeFactHasDigest(evidence fleet.Evidence, digest string) bool {
 func m0RuntimeCVEFactHasDigest(evidence fleet.Evidence, digest string) bool {
 	var observed fleet.CVEObservation
 	return json.Unmarshal(evidence.Observed, &observed) == nil && observed.Image == digest && fleet.ValidateCVEObservation(observed) == nil
+}
+
+func m0RuntimeCVEFactHasIdentifier(evidence fleet.Evidence, identifier string) bool {
+	var observed fleet.CVEObservation
+	return json.Unmarshal(evidence.Observed, &observed) == nil && fleet.ValidateCVEObservation(observed) == nil && slices.Contains(observed.IDs, identifier)
 }
 
 type m0RuntimeClaims struct {

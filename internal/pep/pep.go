@@ -25,17 +25,18 @@ type Verb string
 
 // Phase-1 read verbs. Future write verbs are added only with their typed argument schema and PDP path.
 const (
-	VerbFleetRead            Verb = "fleet.read"
-	VerbFleetCorrelate       Verb = "fleet.correlate"
-	VerbFleetImageSearch     Verb = "fleet.image.search"
-	VerbFleetCVESearch       Verb = "fleet.cve.search"
-	VerbSpokeSnapshotRefresh Verb = "fleet.snapshot.refresh"
+	VerbFleetRead                Verb = "fleet.read"
+	VerbFleetCorrelate           Verb = "fleet.correlate"
+	VerbFleetImageSearch         Verb = "fleet.image.search"
+	VerbFleetCVESearch           Verb = "fleet.cve.search"
+	VerbFleetCVEIdentifierSearch Verb = "fleet.cve.identifier.search"
+	VerbSpokeSnapshotRefresh     Verb = "fleet.snapshot.refresh"
 )
 
 // Valid reports whether a verb belongs to the currently supported closed vocabulary.
 func (verb Verb) Valid() bool {
 	switch verb {
-	case VerbFleetRead, VerbFleetCorrelate, VerbFleetImageSearch, VerbFleetCVESearch, VerbSpokeSnapshotRefresh:
+	case VerbFleetRead, VerbFleetCorrelate, VerbFleetImageSearch, VerbFleetCVESearch, VerbFleetCVEIdentifierSearch, VerbSpokeSnapshotRefresh:
 		return true
 	default:
 		return false

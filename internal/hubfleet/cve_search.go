@@ -22,6 +22,12 @@ type CVESearcherConfig struct {
 	Now       func() time.Time
 }
 
+// CVEIdentifierSearchRequest names one canonical CVE identifier across every registered spoke.
+type CVEIdentifierSearchRequest struct {
+	Identifier string `json:"identifier"`
+	Limit      int    `json:"limit,omitempty"`
+}
+
 // CVESearcher resolves normalized CVE facts for one exact immutable runtime image digest.
 type CVESearcher struct {
 	querier   FleetQuerier
@@ -83,4 +89,53 @@ func (searcher *CVESearcher) Search(
 		return fleet.QueryResult{}, fmt.Errorf("search fleet CVEs: %w", err)
 	}
 	return result, nil
+}
+
+// SearchByIdentifier returns coverage-honest runtime-proven image observations for one exact CVE.
+func (searcher *CVESearcher) SearchByIdentifier(
+	ctx context.Context,
+	scope tenancy.Scope,
+	request CVEIdentifierSearchRequest,
+) (fleet.QueryResult, error) {
+	if searcher == nil || searcher.querier == nil || searcher.pep == nil || ctx == nil {
+		return fleet.QueryResult{}, fmt.Errorf("search fleet CVE identifier: searcher, policy enforcer, and context are required")
+	}
+	traceContext, _, err := tracing.Ensure(ctx)
+	if err != nil {
+		return fleet.QueryResult{}, fmt.Errorf("search fleet CVE identifier: establish trace context: %w", err)
+	}
+	ctx = traceContext
+	if err := scope.Authorize(tenancy.ActionRead); err != nil {
+		return fleet.QueryResult{}, fmt.Errorf("search fleet CVE identifier: %w", err)
+	}
+	if err := request.validate(); err != nil {
+		return fleet.QueryResult{}, fmt.Errorf("search fleet CVE identifier: %w", err)
+	}
+	canonicalArguments := request.Identifier + "\x00" + strconv.Itoa(request.Limit)
+	if err := searcher.pep.AuthorizeRead(ctx, scope, pep.NewReadInput(pep.VerbFleetCVEIdentifierSearch, []byte(canonicalArguments))); err != nil {
+		return fleet.QueryResult{}, fmt.Errorf("search fleet CVE identifier: %w", err)
+	}
+	result, err := searcher.querier.QueryFleet(ctx, scope, fleet.Query{
+		Kinds: []fleet.FactKind{fleet.FactCVE},
+		Selector: fleet.Selector{
+			ResourceKind: "Image",
+			CVE:          request.Identifier,
+		},
+		Limit: request.Limit,
+	}, searcher.freshness, searcher.now().UTC())
+	if err != nil {
+		return fleet.QueryResult{}, fmt.Errorf("search fleet CVE identifier: %w", err)
+	}
+	return result, nil
+}
+
+func (request CVEIdentifierSearchRequest) validate() error {
+	canonical, err := fleet.NormalizeCVEIdentifier(request.Identifier)
+	if err != nil || canonical != request.Identifier {
+		return fmt.Errorf("CVE identifier must be canonical")
+	}
+	if request.Limit < 0 || request.Limit > 1_000 {
+		return fmt.Errorf("limit must be between 0 and 1000")
+	}
+	return nil
 }
