@@ -1,7 +1,7 @@
 # Session — 2026-07-14 — F11 kubeconfig directory import
 
 **Builder:** Gnani Rahul · **Model/effort:** Codex / autonomous implementation · **Branch:** `gnanirahulnutakki/feat/f11-kubeconfig-directory-import`
-**Slice(s):** F11.7 / #162 · **Status:** implementation-committed
+**Slice(s):** F11.7 / #162 · **Status:** ready-for-review
 
 ---
 
@@ -15,6 +15,8 @@
 
 [C] Checkpoint #1: signed/DCO/GSTACK F11.7 implementation checkpoint. CodeRabbit review completed with two resolved major and three resolved minor findings; one generic-cache sanitization suggestion was declined because it would mask a connector-contract violation already prevented and tested at the directory-import boundary. All final gates and cleanup/security queue checks are green; the immutable implementation SHA is recorded by the follow-up journal checkpoint before PR creation.
 
+[C] Checkpoint #2: `43f0118010c4c0f7ded80d05e2490b87eb50e24d` — signed/DCO/GSTACK implementation commit verified locally with GitHub-recognized SSH identity. Next: push PR #162 into `dev`, require hosted CI and CodeRabbit review, merge, then verify exact post-merge CI and queues.
+
 ---
 
-**Session close:** implementation committed; journal checkpoint follows · **Open questions touched:** none; the existing aggregation-first startup model remains the safe default, so selection filters an already independently probed source rather than delaying fleet discovery.
+**Session close:** ready for review · **Open questions touched:** none; the existing aggregation-first startup model remains the safe default, so selection filters an already independently probed source rather than delaying fleet discovery.
