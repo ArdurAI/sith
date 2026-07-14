@@ -12,7 +12,7 @@ HELM     ?= helm
 GORELEASER ?= goreleaser
 DOCKER      ?= docker
 KUBECTL     ?= kubectl
-OCM_SCRATCH_ROOT ?= /Volumes/EXTENDED/tmp/sith-m0
+OCM_SCRATCH_ROOT ?= $(shell python3 -c 'import os; print(os.path.join(os.path.realpath(os.environ.get("TMPDIR", "/tmp")), "sith-m0-{}".format(os.getuid()), "lab"))')
 OCM_PREFIX       ?= sith-m0
 
 KIND_NODE_IMAGE ?= kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5

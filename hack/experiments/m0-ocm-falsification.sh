@@ -32,7 +32,16 @@ readonly SPOKE_B_NAME="${LAB_PREFIX}-spoke-b"
 readonly HUB_CONTEXT="kind-${HUB_NAME}"
 readonly SPOKE_A_CONTEXT="kind-${SPOKE_A_NAME}"
 readonly SPOKE_B_CONTEXT="kind-${SPOKE_B_NAME}"
-readonly SCRATCH_ROOT="${SITH_M0_SCRATCH_ROOT:-/Volumes/EXTENDED/tmp/sith-m0}"
+DEFAULT_TMPDIR="$(${PYTHON_BIN} - "${TMPDIR:-/tmp}" <<'PY'
+import os
+import sys
+
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+readonly DEFAULT_TMPDIR
+readonly DEFAULT_SCRATCH_ROOT="${DEFAULT_TMPDIR}/sith-m0-${EUID}/lab"
+readonly SCRATCH_ROOT="${SITH_M0_SCRATCH_ROOT:-${DEFAULT_SCRATCH_ROOT}}"
 SCRATCH_PARENT="$(dirname "${SCRATCH_ROOT}")"
 readonly SCRATCH_PARENT
 SCRATCH_NAME="$(basename "${SCRATCH_ROOT}")"
@@ -66,7 +75,7 @@ Commands:
 
 Environment:
   SITH_M0_KEEP_CLUSTERS=1        Retain clusters and scratch after `run`.
-  SITH_M0_SCRATCH_ROOT=<path>    Scratch path; defaults to EXTENDED storage.
+  SITH_M0_SCRATCH_ROOT=<path>    Scratch path; defaults to a private TMPDIR path.
   SITH_M0_ALLOW_NON_EXTENDED=1   Permit an explicit non-EXTENDED scratch path.
   SITH_M0_PREFIX=<name>          Override the disposable kind cluster prefix.
 
@@ -125,8 +134,8 @@ PY
   case "${SCRATCH_ROOT}" in
     /Volumes/EXTENDED/*) ;;
     *)
-      [[ "${SITH_M0_ALLOW_NON_EXTENDED:-0}" == "1" ]] ||
-        die "scratch must remain on /Volumes/EXTENDED (or explicitly set SITH_M0_ALLOW_NON_EXTENDED=1)"
+      [[ "${SCRATCH_ROOT}" == "${DEFAULT_SCRATCH_ROOT}" || "${SITH_M0_ALLOW_NON_EXTENDED:-0}" == "1" ]] ||
+        die "scratch must use the private default or explicitly set SITH_M0_ALLOW_NON_EXTENDED=1"
       ;;
   esac
 
@@ -158,6 +167,14 @@ PY
 
 validate_scratch_parent() {
   scratch_directory_identity "${SCRATCH_PARENT}" >/dev/null
+}
+
+prepare_default_scratch_parent() {
+  [[ "${SCRATCH_ROOT}" == "${DEFAULT_SCRATCH_ROOT}" ]] || return 0
+  [[ ! -e "${SCRATCH_PARENT}" && ! -L "${SCRATCH_PARENT}" ]] || return 0
+
+  umask 077
+  mkdir -p -m 0700 -- "${SCRATCH_PARENT}"
 }
 
 enter_scratch_parent() {
@@ -253,6 +270,7 @@ check_tools() {
 }
 
 prepare_scratch() {
+  prepare_default_scratch_parent
   enter_scratch_parent
   [[ ! -e "${SCRATCH_NAME}" && ! -L "${SCRATCH_NAME}" ]] ||
     die "scratch root already exists; use verify or cleanup before a fresh run"
@@ -289,6 +307,9 @@ delete_clusters() {
 }
 
 remove_scratch() {
+  if [[ "${SCRATCH_ROOT}" == "${DEFAULT_SCRATCH_ROOT}" && ! -e "${SCRATCH_PARENT}" && ! -L "${SCRATCH_PARENT}" ]]; then
+    return 0
+  fi
   enter_scratch_parent
   [[ -e "${SCRATCH_NAME}" || -L "${SCRATCH_NAME}" ]] || return 0
   validate_owned_scratch
@@ -859,6 +880,7 @@ run_lab() {
   local started_at
   local finished_at
   started_at="$(date +%s)"
+  prepare_default_scratch_parent
   enter_scratch_parent
   check_tools
   ensure_lab_absent
@@ -878,7 +900,6 @@ run_lab() {
 }
 
 cleanup_lab() {
-  enter_scratch_parent
   check_tools
   delete_clusters || die "cluster deletion failed; retaining scratch for recovery"
   remove_scratch
