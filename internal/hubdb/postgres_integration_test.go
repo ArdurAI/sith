@@ -58,11 +58,11 @@ func TestPostgresRLSBackstop(t *testing.T) {
 	ownerURL := databaseURL(adminURL, ownerRole, ownerPassword)
 	owner := connectPostgres(t, ctx, ownerURL)
 	defer owner.Close(context.Background())
-	if err := ApplyMigrations(ctx, owner, appRole); err != nil {
-		t.Fatalf("ApplyMigrations() error = %v", err)
+	if err := Migrate(ctx, MigrationConfig{OwnerURL: ownerURL, ApplicationRole: appRole, AllowInsecureLocal: true}); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
 	}
-	if err := ApplyMigrations(ctx, owner, appRole); err != nil {
-		t.Fatalf("idempotent ApplyMigrations() error = %v", err)
+	if err := Migrate(ctx, MigrationConfig{OwnerURL: ownerURL, ApplicationRole: appRole, AllowInsecureLocal: true}); err != nil {
+		t.Fatalf("idempotent Migrate() error = %v", err)
 	}
 	seedTenantRows(t, ctx, admin)
 

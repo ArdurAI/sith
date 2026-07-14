@@ -11,7 +11,7 @@ import (
 )
 
 func newHubCommand() *cobra.Command {
-	return &cobra.Command{
+	command := &cobra.Command{
 		Use:   "hub",
 		Short: "Start the governed fleet hub",
 		Args:  cobra.NoArgs,
@@ -25,6 +25,23 @@ func newHubCommand() *cobra.Command {
 				return fmt.Errorf("start hub: %w", err)
 			}
 			return runtime.Run(command.Context())
+		},
+	}
+	command.AddCommand(newHubMigrateCommand())
+	return command
+}
+
+func newHubMigrateCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "migrate",
+		Short: "Apply hub schema migrations with the owner credential",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			if err := hubruntime.MigrateFromEnvironment(command.Context()); err != nil {
+				return fmt.Errorf("migrate hub schema: %w", err)
+			}
+			_, err := fmt.Fprintln(command.OutOrStdout(), "Hub schema migrations completed.")
+			return err
 		},
 	}
 }

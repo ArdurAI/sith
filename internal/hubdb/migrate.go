@@ -10,15 +10,71 @@ import (
 	"fmt"
 	"io/fs"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/jackc/pgx/v5"
 )
 
-const migrationLockID int64 = 0x53495448524c53
+const (
+	migrationLockID      int64 = 0x53495448524c53
+	migrationCloseWindow       = 5 * time.Second
+)
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
+
+// MigrationConfig defines the short-lived owner-credential boundary used only to evolve the hub
+// schema. The application database role is intentionally distinct and is never used here as the
+// migration owner.
+type MigrationConfig struct {
+	OwnerURL           string
+	ApplicationRole    string
+	AllowInsecureLocal bool
+}
+
+// Migrate connects once with the deployment-provided schema-owner URL, applies the embedded
+// migrations, and attempts to close that connection. Production callers leave
+// AllowInsecureLocal false; the exception exists solely for hermetic local PostgreSQL integration
+// tests.
+func Migrate(ctx context.Context, config MigrationConfig) error {
+	if ctx == nil {
+		return fmt.Errorf("migrate hub database: context is required")
+	}
+	if config.OwnerURL == "" || strings.TrimSpace(config.OwnerURL) != config.OwnerURL {
+		return fmt.Errorf("migrate hub database: owner database URL is required")
+	}
+	if err := validateRoleName(config.ApplicationRole); err != nil {
+		return fmt.Errorf("migrate hub database: %w", err)
+	}
+
+	ownerConfig, err := pgx.ParseConfig(config.OwnerURL)
+	if err != nil || ownerConfig.User == "" || strings.TrimSpace(ownerConfig.User) != ownerConfig.User {
+		return fmt.Errorf("migrate hub database: owner database URL is invalid")
+	}
+	if ownerConfig.User == config.ApplicationRole {
+		return fmt.Errorf("migrate hub database: owner and application roles must differ")
+	}
+	if !secureTransport(ownerConfig) && (!config.AllowInsecureLocal || !localTransport(ownerConfig)) {
+		return fmt.Errorf("migrate hub database: TLS without plaintext fallback is required for non-local connections")
+	}
+
+	owner, err := pgx.ConnectConfig(ctx, ownerConfig)
+	if err != nil {
+		return fmt.Errorf("migrate hub database: owner connection is unavailable")
+	}
+	defer func() {
+		// Commit is the migration success boundary. Closing this short-lived connection is best-effort
+		// because a transport error after commit cannot be retried or rolled back.
+		closeCtx, cancel := context.WithTimeout(context.Background(), migrationCloseWindow)
+		defer cancel()
+		_ = owner.Close(closeCtx)
+	}()
+	if err := ApplyMigrations(ctx, owner, config.ApplicationRole); err != nil {
+		return fmt.Errorf("migrate hub database: %w", err)
+	}
+	return nil
+}
 
 // ApplyMigrations applies versioned schema changes as a role distinct from the application role.
 func ApplyMigrations(ctx context.Context, owner *pgx.Conn, appRole string) error {

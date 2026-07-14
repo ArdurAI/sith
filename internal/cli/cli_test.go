@@ -193,6 +193,16 @@ func TestHubRequiresCompleteSecureConfiguration(t *testing.T) {
 	}
 }
 
+func TestHubMigrateRequiresOwnerConfigurationWithoutStartingHub(t *testing.T) {
+	stdout, stderr, exitCode := runCLI(t, []string{"hub", "migrate"}, fleet.StubSource{})
+	if exitCode == 0 || stdout != "" || !strings.Contains(stderr, "SITH_HUB_MIGRATION_OWNER_DATABASE_URL is required") {
+		t.Fatalf("exit/stdout/stderr = %d/%q/%q", exitCode, stdout, stderr)
+	}
+	if strings.Contains(stderr, "SITH_HUB_LISTEN_ADDR") {
+		t.Fatalf("migration stderr = %q, want no hub-server configuration", stderr)
+	}
+}
+
 func TestRootHelpExitsZero(t *testing.T) {
 	stdout, stderr, exitCode := runCLI(t, []string{"--help"}, fleet.StubSource{})
 	if exitCode != 0 {
@@ -244,7 +254,8 @@ func runCLI(t *testing.T, args []string, source fleet.Source) (stdout, stderr st
 		"SITH_HUB_LISTEN_ADDR", "SITH_HUB_DATABASE_URL", "SITH_HUB_SESSION_ISSUER", "SITH_HUB_SESSION_AUDIENCE",
 		"SITH_HUB_SESSION_KEY_ID", "SITH_HUB_SESSION_PUBLIC_KEY_FILE", "SITH_HUB_SERVER_TLS_CERT_FILE", "SITH_HUB_SERVER_TLS_KEY_FILE",
 		"SITH_HUB_PROXY_ADDRESS", "SITH_HUB_PROXY_SERVER_NAME", "SITH_HUB_PROXY_CA_FILE", "SITH_HUB_PROXY_CERT_FILE",
-		"SITH_HUB_PROXY_KEY_FILE", "SITH_HUB_KUBE_API_SERVER_NAME",
+		"SITH_HUB_PROXY_KEY_FILE", "SITH_HUB_KUBE_API_SERVER_NAME", "SITH_HUB_MIGRATION_OWNER_DATABASE_URL",
+		"SITH_HUB_APPLICATION_DATABASE_ROLE",
 	} {
 		t.Setenv(name, "")
 	}
