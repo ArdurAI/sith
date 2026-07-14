@@ -61,8 +61,8 @@ func TestDirectClusterProxyM0(t *testing.T) {
 		if err := hubfleet.ValidateSnapshot(spoke, snapshot, time.Now().UTC()); err != nil {
 			t.Fatal("direct OCM snapshot did not meet the fleet contract")
 		}
-		if !hasInventoryFor(snapshot, "Deployment") || !hasInventoryFor(snapshot, "Pod") {
-			t.Fatal("direct OCM snapshot did not contain the scoped deployment and pod inventory")
+		if !hasInventoryFor(snapshot, "Deployment") || !hasInventoryFor(snapshot, "Pod") || !hasCVEFor(snapshot) {
+			t.Fatal("direct OCM snapshot did not contain the scoped inventory and runtime-proven CVE evidence")
 		}
 	}
 
@@ -149,6 +149,15 @@ func assertMSARotation(
 func hasInventoryFor(snapshot hubfleet.Snapshot, kind string) bool {
 	for _, fact := range snapshot.Facts {
 		if fact.Kind == "inventory" && fact.Ref.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCVEFor(snapshot hubfleet.Snapshot) bool {
+	for _, fact := range snapshot.Facts {
+		if fact.Kind == "cve" && fact.Ref.Kind == "Image" && len(fact.Observed) != 0 {
 			return true
 		}
 	}

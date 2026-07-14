@@ -39,9 +39,17 @@ const (
 	protocolVersion = "1.0.0"
 	maxResources    = 500
 	listPageSize    = 100
+
+	maxVulnerabilityReports     = 100
+	vulnerabilityReportPageSize = 10
+	maxVulnerabilityReportPages = maxVulnerabilityReports / vulnerabilityReportPageSize
+	maxVulnerabilityReportBytes = 64 * 1024
 )
 
-var rolloutGVR = schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: "rollouts"}
+var (
+	rolloutGVR             = schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: "rollouts"}
+	vulnerabilityReportGVR = schema.GroupVersionResource{Group: "aquasecurity.github.io", Version: "v1alpha1", Resource: "vulnerabilityreports"}
+)
 
 // Config configures the direct ClusterProxy transport. ProxyTLSConfig must be constructed
 // from deployment-mounted proxy mTLS material; it is cloned and never persisted by Sith.
@@ -232,6 +240,7 @@ type snapshotClient interface {
 	ListDeployments(context.Context, metav1.ListOptions) (*appsv1.DeploymentList, error)
 	ListPods(context.Context, metav1.ListOptions) (*corev1.PodList, error)
 	ListRollouts(context.Context, metav1.ListOptions) (*unstructured.UnstructuredList, error)
+	ListVulnerabilityReports(context.Context, metav1.ListOptions) (*unstructured.UnstructuredList, error)
 	Close()
 }
 
@@ -274,6 +283,10 @@ func (client *kubeSnapshotClient) ListRollouts(ctx context.Context, options meta
 	return client.dynamic.Resource(rolloutGVR).Namespace("").List(ctx, options)
 }
 
+func (client *kubeSnapshotClient) ListVulnerabilityReports(ctx context.Context, options metav1.ListOptions) (*unstructured.UnstructuredList, error) {
+	return client.dynamic.Resource(vulnerabilityReportGVR).Namespace("").List(ctx, options)
+}
+
 func (client *kubeSnapshotClient) Close() {
 	if client != nil && client.http != nil {
 		client.http.CloseIdleConnections()
@@ -285,7 +298,7 @@ func collectFacts(ctx context.Context, client snapshotClient, spoke hubfleet.Spo
 		return nil, fmt.Errorf("snapshot client is required")
 	}
 	remaining := maxResources
-	facts := make([]fleet.Evidence, 0, maxResources*2)
+	facts := make([]fleet.Evidence, 0, maxResources*2+maxVulnerabilityReports)
 	deployments, err := listDeployments(ctx, client, &remaining)
 	if err != nil {
 		return nil, err
@@ -307,6 +320,11 @@ func collectFacts(ctx context.Context, client snapshotClient, spoke hubfleet.Spo
 	for index := range rollouts {
 		facts = append(facts, rolloutFacts(spoke.ID, rollouts[index], observedAt)...)
 	}
+	cveFacts, err := collectCVEFacts(ctx, client, spoke.ID, podImageDigestSet(pods), observedAt)
+	if err != nil {
+		return nil, err
+	}
+	facts = append(facts, cveFacts...)
 	return facts, nil
 }
 
@@ -381,6 +399,14 @@ func listOptions(continueToken string, remaining int) metav1.ListOptions {
 	return metav1.ListOptions{Limit: int64(limit), Continue: continueToken}
 }
 
+func vulnerabilityReportListOptions(continueToken string, remaining int) metav1.ListOptions {
+	limit := remaining
+	if limit > vulnerabilityReportPageSize {
+		limit = vulnerabilityReportPageSize
+	}
+	return metav1.ListOptions{Limit: int64(limit), Continue: continueToken}
+}
+
 func appendPage[T any](items *[]T, page []T, continueToken string, remaining *int) error {
 	if len(page) > *remaining || (len(page) == *remaining && continueToken != "") {
 		return fmt.Errorf("direct OCM snapshot exceeds the bounded resource limit")
@@ -436,6 +462,172 @@ func podImageDigests(pod corev1.Pod) []string {
 	}
 	sort.Strings(digests)
 	return digests
+}
+
+func podImageDigestSet(pods []corev1.Pod) map[string]struct{} {
+	digests := make(map[string]struct{})
+	for index := range pods {
+		for _, digest := range podImageDigests(pods[index]) {
+			digests[digest] = struct{}{}
+		}
+	}
+	return digests
+}
+
+type cveAggregate struct {
+	identifiers map[string]struct{}
+	severity    string
+}
+
+func collectCVEFacts(
+	ctx context.Context,
+	client snapshotClient,
+	spokeID string,
+	knownDigests map[string]struct{},
+	observedAt time.Time,
+) ([]fleet.Evidence, error) {
+	if len(knownDigests) == 0 {
+		return nil, nil
+	}
+	remaining := maxVulnerabilityReports
+	continueToken := ""
+	aggregates := make(map[string]cveAggregate)
+	for pages := 0; ; pages++ {
+		if pages >= maxVulnerabilityReportPages {
+			return nil, fmt.Errorf("direct OCM snapshot exceeds the bounded vulnerability report page limit")
+		}
+		page, err := client.ListVulnerabilityReports(ctx, vulnerabilityReportListOptions(continueToken, remaining))
+		if apierrors.IsNotFound(err) && continueToken == "" {
+			return []fleet.Evidence{}, nil
+		}
+		if err != nil {
+			return nil, contextOrGeneric(ctx, "list vulnerability reports")
+		}
+		if len(page.Items) > remaining || (len(page.Items) == remaining && page.GetContinue() != "") {
+			return nil, fmt.Errorf("direct OCM snapshot exceeds the bounded vulnerability report limit")
+		}
+		for index := range page.Items {
+			digest, identifiers, severity, found := reportCVEObservation(page.Items[index], knownDigests)
+			if !found {
+				continue
+			}
+			aggregate := aggregates[digest]
+			if aggregate.identifiers == nil {
+				aggregate.identifiers = make(map[string]struct{}, len(identifiers))
+			}
+			for _, identifier := range identifiers {
+				aggregate.identifiers[identifier] = struct{}{}
+			}
+			if cveSeverityRank(severity) > cveSeverityRank(aggregate.severity) {
+				aggregate.severity = severity
+			}
+			aggregates[digest] = aggregate
+		}
+		remaining -= len(page.Items)
+		continueToken = page.GetContinue()
+		if continueToken == "" {
+			break
+		}
+	}
+	digests := make([]string, 0, len(aggregates))
+	for digest := range aggregates {
+		digests = append(digests, digest)
+	}
+	sort.Strings(digests)
+	facts := make([]fleet.Evidence, 0, len(digests))
+	for _, digest := range digests {
+		aggregate := aggregates[digest]
+		identifiers := make([]string, 0, len(aggregate.identifiers))
+		for identifier := range aggregate.identifiers {
+			identifiers = append(identifiers, identifier)
+		}
+		observation, err := fleet.CanonicalCVEObservation(digest, identifiers, aggregate.severity)
+		if err != nil {
+			return nil, fmt.Errorf("normalize vulnerability report observation: %w", err)
+		}
+		payload, err := json.Marshal(observation)
+		if err != nil {
+			return nil, fmt.Errorf("encode normalized vulnerability report observation: %w", err)
+		}
+		facts = append(facts, fleet.Evidence{
+			Ref:        fleet.ResourceRef{SourceKind: hubfleet.SourceKind, Scope: spokeID, Kind: "Image", Name: digest},
+			Kind:       fleet.FactCVE,
+			Observed:   payload,
+			ObservedAt: observedAt,
+			Source:     spokeID,
+			Provenance: fleet.Provenance{Adapter: hubfleet.SourceKind, ProtocolV: protocolVersion},
+		})
+	}
+	return facts, nil
+}
+
+func reportCVEObservation(report unstructured.Unstructured, knownDigests map[string]struct{}) (string, []string, string, bool) {
+	encoded, err := json.Marshal(report.Object)
+	if err != nil || len(encoded) > maxVulnerabilityReportBytes {
+		return "", nil, "", false
+	}
+	digest, found, err := unstructured.NestedString(report.Object, "report", "artifact", "digest")
+	if err != nil || !found || fleet.ValidateImageDigest(digest) != nil {
+		return "", nil, "", false
+	}
+	if _, exists := knownDigests[digest]; !exists {
+		return "", nil, "", false
+	}
+	vulnerabilities, found, err := unstructured.NestedSlice(report.Object, "report", "vulnerabilities")
+	if err != nil || !found || len(vulnerabilities) == 0 || len(vulnerabilities) > 256 {
+		return "", nil, "", false
+	}
+	identifiers := make([]string, 0, len(vulnerabilities))
+	seen := make(map[string]struct{}, len(vulnerabilities))
+	severity := ""
+	for _, raw := range vulnerabilities {
+		vulnerability, ok := raw.(map[string]any)
+		if !ok {
+			return "", nil, "", false
+		}
+		identifier, found, err := unstructured.NestedString(vulnerability, "vulnerabilityID")
+		if err != nil || !found {
+			return "", nil, "", false
+		}
+		identifier, err = fleet.NormalizeCVEIdentifier(identifier)
+		if err != nil {
+			return "", nil, "", false
+		}
+		if _, exists := seen[identifier]; exists {
+			return "", nil, "", false
+		}
+		seen[identifier] = struct{}{}
+		reportedSeverity, found, err := unstructured.NestedString(vulnerability, "severity")
+		if err != nil || !found {
+			return "", nil, "", false
+		}
+		reportedSeverity, err = fleet.NormalizeCVESeverity(reportedSeverity)
+		if err != nil {
+			return "", nil, "", false
+		}
+		if cveSeverityRank(reportedSeverity) > cveSeverityRank(severity) {
+			severity = reportedSeverity
+		}
+		identifiers = append(identifiers, identifier)
+	}
+	return digest, identifiers, severity, true
+}
+
+func cveSeverityRank(severity string) int {
+	switch severity {
+	case "critical":
+		return 5
+	case "high":
+		return 4
+	case "medium":
+		return 3
+	case "low":
+		return 2
+	case "unknown":
+		return 1
+	default:
+		return 0
+	}
 }
 
 func rolloutFacts(spokeID string, rollout unstructured.Unstructured, observedAt time.Time) []fleet.Evidence {

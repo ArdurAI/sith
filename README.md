@@ -157,15 +157,18 @@ not accepted as Sith proofs.
 The Phase-1 read-federation foundation persists a tenant-scoped, bounded snapshot from each
 registered OCM spoke through the same normalized fleet model used locally. A transport receives
 only the workspace boundary and registered managed-cluster reference; it never receives a raw
-kubeconfig, endpoint, or token through the Sith collector contract. Only normalized `inventory`
-and `health` facts are accepted, source-stamped, freshness-bounded, and stored behind forced RLS.
+kubeconfig, endpoint, or token through the Sith collector contract. Only normalized `inventory`,
+`health`, and bounded immutable-image `cve` facts are accepted, source-stamped,
+freshness-bounded, and stored behind forced RLS.
 Failed refreshes retain the last snapshot as explicitly stale evidence and record only a closed
 failure category. The pinned direct OCM ClusterProxy adapter reads the exact rotating
 `sith-reader` managed-serviceaccount Secret for a registered spoke, opens a short-lived
 Konnectivity tunnel only to that spoke, and verifies both proxy mTLS and the spoke Kubernetes
 certificate; it never forwards a caller `Authorization` header, stores a credential, disables
 TLS verification, lists or watches Secrets, or carries raw Kubernetes objects across the
-collector seam. Its executable two-spoke M0 gate is `make e2e-ocm`, which now also drives a
+collector seam. Its fixed read surface is Pods, Deployments, Rollouts, and optional
+`aquasecurity.github.io/v1alpha1` `VulnerabilityReport` resources; it never discovers arbitrary
+CRDs. Its executable two-spoke M0 gate is `make e2e-ocm`, which now also drives a
 signed-session request through the TLS hub runtime across both spokes. The same model now answers
 a read-only, exact cross-cluster correlation such as “every deployment
 named `payments` that is not Healthy” within one workspace. Matching is by exact kind/name/namespace
@@ -193,7 +196,9 @@ mount. The runtime obtains its Kubernetes identity only with in-cluster configur
 kubeconfig fallback and uses that identity through the fixed `sith-reader` Secret reader. It serves
 only `POST /v1/workspaces/{workspace}/fleet:refresh`,
 `GET /v1/workspaces/{workspace}/fleet`, and
-`GET /v1/workspaces/{workspace}/fleet/images/{sha256:<64-lowercase-hex>}`. Every route requires an
+`GET /v1/workspaces/{workspace}/fleet/images/{sha256:<64-lowercase-hex>}`, and
+`GET /v1/workspaces/{workspace}/fleet/images/{sha256:<64-lowercase-hex>}/cves`, and
+`GET /v1/workspaces/{workspace}/fleet/cves/{CVE-YYYY-N...}`. Every route requires an
 exact signed Sith session, derives the workspace scope from its signed memberships, carries that
 scope through the PEP and RLS seams, accepts no query parameters, and returns only normalized
 coverage/fleet data under `Cache-Control: no-store`.
@@ -219,6 +224,24 @@ statuses, mutable tags, malformed values, and ambiguous runtime IDs abstain. Sit
 request, image pull, SBOM retrieval, vulnerability-feed lookup, or credential use for this read.
 The result remains coverage-honest: matching Pod inventory facts retain source and freshness, and
 unreachable or stale spokes are reported rather than assumed clean.
+
+The CVE route answers the narrower question “which already-reported CVE facts match this exact
+runtime-proven digest?” The direct reader uses only the optional, fixed Kubernetes
+`aquasecurity.github.io/v1alpha1` `VulnerabilityReport` resource and accepts a report only when
+its canonical artifact digest matches an ordinary Pod-status digest from the same snapshot. It
+retains only that digest, sorted CVE IDs, and the highest normalized severity; raw report content,
+package data, descriptions, links, scanner metadata, registry values, and workload metadata are
+discarded. Sith does not install or execute a scanner, pull an image, request an SBOM, query a
+registry or vulnerability feed, or use a new credential. A missing report CRD yields no positive
+CVE fact, not a clean-image claim; any other report-list failure makes the existing snapshot stale
+and unreachable under the same coverage contract.
+
+The inverse CVE route accepts one exact, canonical upper-case CVE identifier only—no case
+normalization, lists, globs, severity filters, or arbitrary JSON selectors. It returns the same
+bounded normalized image facts and coverage metadata as the image route, scoped through the
+signed workspace membership, PEP, and forced-RLS query. An empty result is only an absence of
+currently reported runtime-proven evidence; it is never a claim that the workspace or fleet is
+free of that CVE.
 
 ### Hub schema migration
 

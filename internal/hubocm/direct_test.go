@@ -17,9 +17,11 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 	ktesting "k8s.io/client-go/testing"
@@ -125,6 +127,9 @@ func TestSnapshotPinsMSACredentialTLSAndNormalizedFacts(t *testing.T) {
 		deployments: []*appsv1.DeploymentList{{Items: []appsv1.Deployment{deployment}}},
 		pods:        []*corev1.PodList{{Items: []corev1.Pod{pod}}},
 		rollouts:    []*unstructured.UnstructuredList{{}},
+		vulnerabilityReports: []*unstructured.UnstructuredList{{Items: []unstructured.Unstructured{vulnerabilityReport(
+			"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "CVE-2026-0001", "HIGH",
+		)}}},
 	}
 	adapter := testAdapter(t, reader, client, now)
 
@@ -135,8 +140,8 @@ func TestSnapshotPinsMSACredentialTLSAndNormalizedFacts(t *testing.T) {
 	if err := hubfleet.ValidateSnapshot(hubfleet.Spoke{ID: "spoke-a", ManagedClusterRef: "ocm/spoke-a"}, snapshot, now); err != nil {
 		t.Fatalf("ValidateSnapshot() error = %v", err)
 	}
-	if len(snapshot.Facts) != 4 || client.closed != 1 {
-		t.Fatalf("snapshot facts/close = %d/%d, want 4/1", len(snapshot.Facts), client.closed)
+	if len(snapshot.Facts) != 5 || client.closed != 1 {
+		t.Fatalf("snapshot facts/close = %d/%d, want 5/1", len(snapshot.Facts), client.closed)
 	}
 	if len(client.configs) != 1 {
 		t.Fatalf("client configs = %d, want 1", len(client.configs))
@@ -156,6 +161,69 @@ func TestSnapshotPinsMSACredentialTLSAndNormalizedFacts(t *testing.T) {
 		if fact.Kind == fleet.FactInventory && fact.Ref.Kind == "Pod" && !strings.Contains(string(fact.Observed), "\"image_digests\":[\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]") {
 			t.Fatalf("pod inventory did not retain the canonical runtime digest: %s", fact.Observed)
 		}
+		if fact.Kind == fleet.FactCVE && (!strings.Contains(string(fact.Observed), "\"CVE-2026-0001\"") || strings.Contains(string(fact.Observed), "scanner")) {
+			t.Fatalf("CVE fact was not normalized: %s", fact.Observed)
+		}
+	}
+}
+
+func TestReportCVEObservationRequiresSameSnapshotRuntimeProof(t *testing.T) {
+	t.Parallel()
+
+	digest := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	known := map[string]struct{}{digest: {}}
+	tests := []struct {
+		name      string
+		report    unstructured.Unstructured
+		wantFound bool
+	}{
+		{name: "exact runtime digest", report: vulnerabilityReport(digest, "CVE-2026-0001", "HIGH"), wantFound: true},
+		{name: "unknown digest", report: vulnerabilityReport("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "CVE-2026-0001", "HIGH")},
+		{name: "malformed identifier", report: vulnerabilityReport(digest, "CVE-2026-1", "HIGH")},
+		{name: "unsupported severity", report: vulnerabilityReport(digest, "CVE-2026-0001", "urgent")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotDigest, identifiers, severity, found := reportCVEObservation(test.report, known)
+			if found != test.wantFound {
+				t.Fatalf("reportCVEObservation() found = %v, want %v", found, test.wantFound)
+			}
+			if !test.wantFound {
+				return
+			}
+			if gotDigest != digest || !slices.Equal(identifiers, []string{"CVE-2026-0001"}) || severity != "high" {
+				t.Fatalf("reportCVEObservation() = %q/%#v/%q", gotDigest, identifiers, severity)
+			}
+		})
+	}
+}
+
+func TestCollectCVEFactsTreatsMissingCRDAsOptional(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeSnapshotClient{vulnerabilityReportErr: apierrors.NewNotFound(schema.GroupResource{Group: vulnerabilityReportGVR.Group, Resource: vulnerabilityReportGVR.Resource}, "missing")}
+	facts, err := collectCVEFacts(context.Background(), client, "spoke-a", map[string]struct{}{
+		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {},
+	}, time.Now().UTC())
+	if err != nil || len(facts) != 0 {
+		t.Fatalf("collectCVEFacts() = %#v, %v", facts, err)
+	}
+}
+
+func TestCollectCVEFactsBoundsEmptyContinuationPages(t *testing.T) {
+	t.Parallel()
+
+	pages := make([]*unstructured.UnstructuredList, maxVulnerabilityReportPages)
+	for index := range pages {
+		pages[index] = &unstructured.UnstructuredList{}
+		pages[index].SetContinue("unexpected-continuation-" + strconv.Itoa(index))
+	}
+	client := &fakeSnapshotClient{vulnerabilityReports: pages}
+	_, err := collectCVEFacts(context.Background(), client, "spoke-a", map[string]struct{}{
+		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {},
+	}, time.Now().UTC())
+	if err == nil || client.vulnerabilityReportCalls != maxVulnerabilityReportPages {
+		t.Fatalf("collectCVEFacts() error/calls = %v/%d", err, client.vulnerabilityReportCalls)
 	}
 }
 
@@ -309,13 +377,16 @@ func (reader *rotatingCredentialReader) Read(_ context.Context, _ tenancy.Worksp
 }
 
 type fakeSnapshotClient struct {
-	deployments  []*appsv1.DeploymentList
-	pods         []*corev1.PodList
-	rollouts     []*unstructured.UnstructuredList
-	configs      []*rest.Config
-	closed       int
-	podCalls     int
-	rolloutCalls int
+	deployments              []*appsv1.DeploymentList
+	pods                     []*corev1.PodList
+	rollouts                 []*unstructured.UnstructuredList
+	vulnerabilityReports     []*unstructured.UnstructuredList
+	vulnerabilityReportErr   error
+	vulnerabilityReportCalls int
+	configs                  []*rest.Config
+	closed                   int
+	podCalls                 int
+	rolloutCalls             int
 }
 
 func (client *fakeSnapshotClient) ListDeployments(_ context.Context, _ metav1.ListOptions) (*appsv1.DeploymentList, error) {
@@ -344,6 +415,19 @@ func (client *fakeSnapshotClient) ListRollouts(_ context.Context, _ metav1.ListO
 	}
 	page := client.rollouts[0]
 	client.rollouts = client.rollouts[1:]
+	return page, nil
+}
+
+func (client *fakeSnapshotClient) ListVulnerabilityReports(_ context.Context, _ metav1.ListOptions) (*unstructured.UnstructuredList, error) {
+	client.vulnerabilityReportCalls++
+	if client.vulnerabilityReportErr != nil {
+		return nil, client.vulnerabilityReportErr
+	}
+	if len(client.vulnerabilityReports) == 0 {
+		return &unstructured.UnstructuredList{}, nil
+	}
+	page := client.vulnerabilityReports[0]
+	client.vulnerabilityReports = client.vulnerabilityReports[1:]
 	return page, nil
 }
 
@@ -404,3 +488,16 @@ func testAdapter(t *testing.T, reader CredentialReader, client *fakeSnapshotClie
 }
 
 func pointer[T any](value T) *T { return &value }
+
+func vulnerabilityReport(digest, identifier, severity string) unstructured.Unstructured {
+	return unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "aquasecurity.github.io/v1alpha1",
+		"kind":       "VulnerabilityReport",
+		"metadata":   map[string]any{"name": "fixture", "namespace": "apps", "labels": map[string]any{"scanner": "not-retained"}},
+		"report": map[string]any{
+			"artifact":        map[string]any{"digest": digest, "repository": "registry.example/private"},
+			"scanner":         map[string]any{"name": "not-retained"},
+			"vulnerabilities": []any{map[string]any{"vulnerabilityID": identifier, "severity": severity, "description": "not-retained"}},
+		},
+	}}
+}

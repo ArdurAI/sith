@@ -29,6 +29,49 @@ func TestNormalizeFleetQueryAllowsOnlyExactPodImageInventory(t *testing.T) {
 	}
 }
 
+func TestNormalizeFleetQueryAllowsOnlyExactImageCVEFacts(t *testing.T) {
+	t.Parallel()
+
+	digest := "sha256:" + strings.Repeat("a", 64)
+	query, scopes, err := normalizeFleetQuery(fleet.Query{
+		Kinds:  []fleet.FactKind{fleet.FactCVE},
+		Scopes: []string{"spoke-b", "spoke-a", "spoke-a"},
+		Selector: fleet.Selector{
+			ResourceKind: "Image",
+			Image:        digest,
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalize exact CVE image query: %v", err)
+	}
+	if query.Selector.Image != digest || len(scopes) != 2 || scopes[0] != "spoke-a" || scopes[1] != "spoke-b" {
+		t.Fatalf("normalized CVE image query = %#v, scopes = %#v", query, scopes)
+	}
+}
+
+func TestNormalizeFleetQueryAllowsOnlyExactCanonicalCVEIdentifierFacts(t *testing.T) {
+	t.Parallel()
+
+	query, scopes, err := normalizeFleetQuery(fleet.Query{
+		Kinds:    []fleet.FactKind{fleet.FactCVE},
+		Selector: fleet.Selector{ResourceKind: "Image", CVE: "CVE-2026-0001"},
+	})
+	if err != nil || len(scopes) != 0 || query.Selector.CVE != "CVE-2026-0001" {
+		t.Fatalf("normalize exact CVE identifier query = %#v, scopes = %#v, error = %v", query, scopes, err)
+	}
+	for _, invalid := range []fleet.Query{
+		{Kinds: []fleet.FactKind{fleet.FactCVE}, Selector: fleet.Selector{ResourceKind: "Image", CVE: "cve-2026-0001"}},
+		{Kinds: []fleet.FactKind{fleet.FactCVE}, Selector: fleet.Selector{ResourceKind: "Image", CVE: "CVE-2026-0001*"}},
+		{Kinds: []fleet.FactKind{fleet.FactCVE}, Selector: fleet.Selector{ResourceKind: "Image", CVE: "CVE-2026-0001", Image: "sha256:" + strings.Repeat("a", 64)}},
+		{Kinds: []fleet.FactKind{fleet.FactInventory}, Selector: fleet.Selector{ResourceKind: "Image", CVE: "CVE-2026-0001"}},
+		{Kinds: []fleet.FactKind{fleet.FactCVE}, Selector: fleet.Selector{ResourceKind: "Pod", CVE: "CVE-2026-0001"}},
+	} {
+		if _, _, err := normalizeFleetQuery(invalid); err == nil {
+			t.Fatalf("normalizeFleetQuery(%#v) succeeded", invalid)
+		}
+	}
+}
+
 func TestNormalizeFleetQueryRejectsBroadOrUnsafeImageSelectors(t *testing.T) {
 	t.Parallel()
 
@@ -40,6 +83,9 @@ func TestNormalizeFleetQueryRejectsBroadOrUnsafeImageSelectors(t *testing.T) {
 		{Kinds: []fleet.FactKind{fleet.FactInventory}, Selector: fleet.Selector{ResourceKind: "Pod", Image: digest, NamePrefix: "payments"}},
 		{Kinds: []fleet.FactKind{fleet.FactInventory}, Selector: fleet.Selector{ResourceKind: "Pod", Image: digest, Labels: map[string]string{"app": "payments"}}},
 		{Kinds: []fleet.FactKind{fleet.FactInventory}, Selector: fleet.Selector{ResourceKind: "Pod", Image: digest, CVE: "CVE-2026-0001"}},
+		{Kinds: []fleet.FactKind{fleet.FactCVE}, Selector: fleet.Selector{ResourceKind: "Pod", Image: digest}},
+		{Kinds: []fleet.FactKind{fleet.FactCVE}, Selector: fleet.Selector{ResourceKind: "Image", Image: digest, Name: "payments"}},
+		{Kinds: []fleet.FactKind{fleet.FactHealth}, Selector: fleet.Selector{ResourceKind: "Image", Image: digest}},
 	} {
 		if _, _, err := normalizeFleetQuery(query); err == nil {
 			t.Fatalf("normalizeFleetQuery(%#v) unexpectedly succeeded", query)

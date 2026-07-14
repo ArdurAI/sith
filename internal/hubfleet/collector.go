@@ -30,7 +30,7 @@ const (
 	defaultSnapshotAge  = 5 * time.Minute
 	maxSpokeTimeout     = 30 * time.Second
 	maxSnapshotAge      = time.Hour
-	maxSnapshotFacts    = 1_000
+	maxSnapshotFacts    = 1_100
 	maxObservedBytes    = 256 * 1024
 	maxFutureSkew       = 30 * time.Second
 )
@@ -46,6 +46,7 @@ var observedKeys = map[fleet.FactKind]map[string]struct{}{
 		"image_digests":      {},
 	},
 	fleet.FactHealth: {"status": {}},
+	fleet.FactCVE:    {"image": {}, "ids": {}, "severity": {}},
 }
 
 // FailureKind is the closed, non-sensitive status persisted for a failed collection attempt.
@@ -89,8 +90,9 @@ func (spoke Spoke) Validate() error {
 
 // Snapshot is one bounded normalized response from a registered spoke.
 //
-// Facts are restricted to inventory and health. The transport may acquire a projected credential
-// internally, but neither it nor endpoint material crosses this package boundary.
+// Facts are restricted to inventory, health, and normalized CVE observations. The transport may
+// acquire a projected credential internally, but neither it nor endpoint material crosses this
+// package boundary.
 type Snapshot struct {
 	ObservedAt time.Time        `json:"observed_at"`
 	Facts      []fleet.Evidence `json:"facts"`
@@ -330,7 +332,7 @@ func validateSnapshot(spoke Spoke, snapshot Snapshot, now time.Time, maximumAge 
 }
 
 func validateEvidence(spoke Spoke, evidence fleet.Evidence, snapshotObservedAt, now time.Time, maximumAge time.Duration) error {
-	if evidence.Kind != fleet.FactInventory && evidence.Kind != fleet.FactHealth {
+	if evidence.Kind != fleet.FactInventory && evidence.Kind != fleet.FactHealth && evidence.Kind != fleet.FactCVE {
 		return fmt.Errorf("fact kind %q is not allowed for a spoke snapshot", evidence.Kind)
 	}
 	if evidence.Ref.SourceKind != SourceKind || evidence.Ref.Scope != spoke.ID || evidence.Source != spoke.ID {
@@ -367,6 +369,11 @@ func validateEvidence(spoke Spoke, evidence fleet.Evidence, snapshotObservedAt, 
 	}
 	if evidence.Kind == fleet.FactInventory {
 		if err := validateInventoryImageDigests(evidence); err != nil {
+			return err
+		}
+	}
+	if evidence.Kind == fleet.FactCVE {
+		if err := validateCVEObservation(evidence); err != nil {
 			return err
 		}
 	}
@@ -429,6 +436,23 @@ func validateInventoryImageDigests(evidence fleet.Evidence) error {
 			return fmt.Errorf("normalized Pod image digests must be unique and sorted")
 		}
 		previous = digest
+	}
+	return nil
+}
+
+func validateCVEObservation(evidence fleet.Evidence) error {
+	if evidence.Ref.Kind != "Image" || evidence.Ref.Namespace != "" {
+		return fmt.Errorf("CVE observations must address one cluster-scoped Image")
+	}
+	var observation fleet.CVEObservation
+	if err := json.Unmarshal(evidence.Observed, &observation); err != nil {
+		return fmt.Errorf("decode normalized CVE observation: %w", err)
+	}
+	if err := fleet.ValidateCVEObservation(observation); err != nil {
+		return fmt.Errorf("normalized CVE observation: %w", err)
+	}
+	if evidence.Ref.Name != observation.Image {
+		return fmt.Errorf("CVE observation reference must name its immutable image digest")
 	}
 	return nil
 }

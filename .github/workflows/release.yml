@@ -32,16 +32,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Validate stable tag and release ancestry
+      - name: Validate signed release tag and ancestry
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::release tags must be stable semantic versions such as v0.1.0"
-            exit 1
-          fi
+          release_kind="$(hack/release-tag-classify.sh "$GITHUB_REF_NAME")"
           git fetch --no-tags origin main
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
             echo "::error::release tag must point to a commit reachable from main"
@@ -57,6 +54,7 @@ jobs:
             exit 1
           fi
           echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          echo "RELEASE_KIND=${release_kind}" >> "$GITHUB_ENV"
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
@@ -161,4 +159,14 @@ jobs:
       - name: Publish completed release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_KIND" == "beta" ]]; then
+            release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq '.id')"
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              -F draft=false \
+              -F prerelease=true \
+              -f make_latest=false >/dev/null
+          else
+            gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+          fi

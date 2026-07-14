@@ -122,8 +122,13 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: image search configuration is invalid")
 	}
+	cveSearcher, err := hubfleet.NewCVESearcher(hubfleet.CVESearcherConfig{Querier: database, PEP: enforcer})
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("construct hub runtime: CVE search configuration is invalid")
+	}
 	handler, err := hubserver.NewFleetHandler(hubserver.FleetHandlerConfig{
-		Verifier: verifier, AuthObserver: authObserver, Collector: collector, Reader: database, ImageSearcher: imageSearcher, PEP: enforcer,
+		Verifier: verifier, AuthObserver: authObserver, Collector: collector, Reader: database, ImageSearcher: imageSearcher, CVESearcher: cveSearcher, CVEIdentifierSearcher: cveSearcher, PEP: enforcer,
 	})
 	if err != nil {
 		cleanup()
