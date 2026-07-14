@@ -680,6 +680,18 @@ verify_cluster_registration() {
   done
 }
 
+proxy_health_port_available() {
+  "${PYTHON_BIN}" - <<'PY'
+import socket
+
+try:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 8090))
+except OSError:
+    raise SystemExit(1)
+PY
+}
+
 verify_scoped_proxy() {
   local cluster
   local response
@@ -828,12 +840,19 @@ verify_outbound_only() {
 }
 
 verify_lab() {
+  local transport_mode="clusteradm-scoped"
+
   verify_cluster_registration
-  "${CLUSTERADM_BIN}" proxy health --context "${HUB_CONTEXT}"
-  verify_scoped_proxy
+  if proxy_health_port_available; then
+    "${CLUSTERADM_BIN}" proxy health --context "${HUB_CONTEXT}"
+    verify_scoped_proxy
+  else
+    transport_mode="direct-e2e-required"
+    log "local port 8090 is occupied; deferring clusteradm proxy checks to the mandatory direct e2e gate"
+  fi
   verify_spoke_ingress_boundary
   verify_outbound_only
-  log "M0_RESULT=PASS topology=hub+2-spokes identity=scoped-msa transport=outbound-only boundary=active-deny"
+  log "M0_RESULT=PASS topology=hub+2-spokes identity=scoped-msa transport=${transport_mode} boundary=active-deny"
 }
 
 run_lab() {

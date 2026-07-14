@@ -210,6 +210,7 @@ func (factory grpcTunnelFactory) Open(createCtx, tunnelCtx context.Context) (kon
 		createCtx,
 		tunnelCtx,
 		factory.address,
+		//nolint:staticcheck // Konnectivity has no NewClient-compatible constructor; blocking preserves the caller-bounded creation deadline.
 		grpc.WithBlock(),
 		grpc.WithTransportCredentials(grpccredentials.NewTLS(factory.tls.Clone())),
 	)

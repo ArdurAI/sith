@@ -231,6 +231,19 @@ func TestDialRejectsUnpinnedTargetsAndClosesTunnel(t *testing.T) {
 	}
 }
 
+func TestGRPCTunnelFactoryRejectsCanceledCreationContext(t *testing.T) {
+	t.Parallel()
+
+	proxyTLS := testConfig(nil).ProxyTLSConfig
+	creationContext, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := (grpcTunnelFactory{address: "127.0.0.1:1", tls: proxyTLS}).Open(creationContext, context.Background())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Open() error = %v, want context cancellation", err)
+	}
+}
+
 func TestParseManagedClusterRefRejectsEndpointInjection(t *testing.T) {
 	t.Parallel()
 
