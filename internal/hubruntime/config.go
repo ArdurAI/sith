@@ -108,8 +108,13 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: collector configuration is invalid")
 	}
+	imageSearcher, err := hubfleet.NewImageSearcher(hubfleet.ImageSearcherConfig{Querier: database, PEP: enforcer})
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("construct hub runtime: image search configuration is invalid")
+	}
 	handler, err := hubserver.NewFleetHandler(hubserver.FleetHandlerConfig{
-		Verifier: verifier, Collector: collector, Reader: database, PEP: enforcer,
+		Verifier: verifier, Collector: collector, Reader: database, ImageSearcher: imageSearcher, PEP: enforcer,
 	})
 	if err != nil {
 		cleanup()

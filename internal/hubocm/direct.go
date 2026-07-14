@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -412,8 +413,29 @@ func podFacts(spokeID string, pod corev1.Pod, observedAt time.Time) []fleet.Evid
 		}
 	}
 	health := podHealth(pod)
+	inventory := map[string]any{"resource": "Pod", "ready": ready, "generation": pod.Generation}
+	if digests := podImageDigests(pod); len(digests) > 0 {
+		inventory["image_digests"] = digests
+	}
 	return resourceFacts(spokeID, "Pod", pod.Namespace, pod.Name, observedAt,
-		map[string]any{"resource": "Pod", "ready": ready, "generation": pod.Generation}, health)
+		inventory, health)
+}
+
+func podImageDigests(pod corev1.Pod) []string {
+	seen := make(map[string]struct{}, len(pod.Status.ContainerStatuses))
+	for _, status := range pod.Status.ContainerStatuses {
+		digest, err := fleet.ImageDigestFromRuntimeImageID(status.ImageID)
+		if err != nil {
+			continue
+		}
+		seen[digest] = struct{}{}
+	}
+	digests := make([]string, 0, len(seen))
+	for digest := range seen {
+		digests = append(digests, digest)
+	}
+	sort.Strings(digests)
+	return digests
 }
 
 func rolloutFacts(spokeID string, rollout unstructured.Unstructured, observedAt time.Time) []fleet.Evidence {

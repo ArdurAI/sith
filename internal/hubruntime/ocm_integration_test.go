@@ -7,8 +7,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -65,10 +67,14 @@ func TestHubRuntimeDirectClusterProxyM0(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	imageSearcher, err := hubfleet.NewImageSearcher(hubfleet.ImageSearcherConfig{Querier: store, PEP: enforcer})
+	if err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC()
 	verifier, privateKey := m0RuntimeVerifier(t, now)
 	handler, err := hubserver.NewFleetHandler(hubserver.FleetHandlerConfig{
-		Verifier: verifier, Collector: collector, Reader: store, PEP: enforcer,
+		Verifier: verifier, Collector: collector, Reader: store, ImageSearcher: imageSearcher, PEP: enforcer,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -114,6 +120,21 @@ func TestHubRuntimeDirectClusterProxyM0(t *testing.T) {
 	}
 	if len(result.Clusters) != 2 || result.Coverage.Requested != 2 || result.Coverage.Reachable != 2 {
 		t.Fatalf("runtime direct fleet = %#v", result)
+	}
+	digest := m0RuntimeFixtureDigest(t, store)
+	imageResponse := m0RuntimeRequest(t, ctx, client, http.MethodGet, endpoint+"/fleet/images/"+digest, token)
+	defer imageResponse.Body.Close()
+	if imageResponse.StatusCode != http.StatusOK {
+		t.Fatalf("runtime image search status = %d", imageResponse.StatusCode)
+	}
+	var imageResult fleet.QueryResult
+	if err := json.NewDecoder(imageResponse.Body).Decode(&imageResult); err != nil {
+		t.Fatal(err)
+	}
+	if len(imageResult.Facts) != 2 || imageResult.Coverage.Requested != 2 || imageResult.Coverage.Reachable != 2 ||
+		imageResult.Facts[0].Ref.Kind != "Pod" || imageResult.Facts[1].Ref.Kind != "Pod" ||
+		!slices.Equal([]string{imageResult.Facts[0].Ref.Scope, imageResult.Facts[1].Ref.Scope}, []string{"spoke-a", "spoke-b"}) {
+		t.Fatalf("runtime exact image search = %#v", imageResult)
 	}
 	stopServer()
 	if err := <-serverDone; err != nil {
@@ -200,6 +221,92 @@ func (store *m0RuntimeStore) ReadFleet(
 		})
 	}
 	return result, nil
+}
+
+func (store *m0RuntimeStore) QueryFleet(
+	_ context.Context,
+	scope tenancy.Scope,
+	query fleet.Query,
+	freshness time.Duration,
+	now time.Time,
+) (fleet.QueryResult, error) {
+	if err := scope.RequireWorkspace(m0RuntimeWorkspaceID); err != nil {
+		return fleet.QueryResult{}, err
+	}
+	if len(query.Kinds) != 1 || query.Kinds[0] != fleet.FactInventory || query.Selector.ResourceKind != "Pod" ||
+		fleet.ValidateImageDigest(query.Selector.Image) != nil || freshness < time.Second || now.IsZero() {
+		return fleet.QueryResult{}, fmt.Errorf("M0 runtime store received an unsupported fleet query")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	result := fleet.QueryResult{Facts: []fleet.Fact{}, Coverage: fleet.Coverage{Requested: len(store.spokes)}}
+	for _, spoke := range store.spokes {
+		snapshot, exists := store.snapshots[spoke.ID]
+		failure := store.failures[spoke.ID]
+		if !exists || failure != "" {
+			result.Coverage.Unreachable = append(result.Coverage.Unreachable, spoke.ID)
+			if exists {
+				result.Coverage.Stale = append(result.Coverage.Stale, spoke.ID)
+			}
+			continue
+		}
+		result.Coverage.Reachable++
+		stale := now.Sub(snapshot.ObservedAt) > freshness
+		if stale {
+			result.Coverage.Stale = append(result.Coverage.Stale, spoke.ID)
+		}
+		for _, evidence := range snapshot.Facts {
+			if evidence.Kind != fleet.FactInventory || evidence.Ref.Kind != "Pod" || !m0RuntimeFactHasDigest(evidence, query.Selector.Image) {
+				continue
+			}
+			result.Facts = append(result.Facts, fleet.Fact{Evidence: evidence, Workspace: string(scope.WorkspaceID()), Stale: stale})
+		}
+	}
+	slices.Sort(result.Coverage.Unreachable)
+	slices.Sort(result.Coverage.Stale)
+	return result, nil
+}
+
+func m0RuntimeFixtureDigest(t *testing.T, store *m0RuntimeStore) string {
+	t.Helper()
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	var digest string
+	for _, spokeID := range []string{"spoke-a", "spoke-b"} {
+		snapshot, exists := store.snapshots[spokeID]
+		if !exists {
+			t.Fatalf("M0 spoke %s snapshot was not recorded", spokeID)
+		}
+		found := ""
+		for _, evidence := range snapshot.Facts {
+			if evidence.Kind == fleet.FactInventory && evidence.Ref.Kind == "Pod" && evidence.Ref.Namespace == "sith-demo" && evidence.Ref.Name != "" {
+				var observed struct {
+					ImageDigests []string `json:"image_digests"`
+				}
+				if err := json.Unmarshal(evidence.Observed, &observed); err != nil {
+					t.Fatal(err)
+				}
+				if len(observed.ImageDigests) == 1 {
+					found = observed.ImageDigests[0]
+				}
+			}
+		}
+		if found == "" {
+			t.Fatalf("M0 spoke %s did not retain one immutable fixture image digest", spokeID)
+		}
+		if digest != "" && digest != found {
+			t.Fatalf("M0 fixture digests differ: %q and %q", digest, found)
+		}
+		digest = found
+	}
+	return digest
+}
+
+func m0RuntimeFactHasDigest(evidence fleet.Evidence, digest string) bool {
+	var observed struct {
+		ImageDigests []string `json:"image_digests"`
+	}
+	return json.Unmarshal(evidence.Observed, &observed) == nil && slices.Contains(observed.ImageDigests, digest)
 }
 
 type m0RuntimeClaims struct {

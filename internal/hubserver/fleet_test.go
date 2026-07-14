@@ -37,8 +37,19 @@ func (function fleetReaderFunc) ReadFleet(
 	return function(ctx, scope, freshness, now)
 }
 
+type fleetImageSearcherFunc func(context.Context, tenancy.Scope, hubfleet.ImageSearchRequest) (fleet.QueryResult, error)
+
+func (function fleetImageSearcherFunc) Search(
+	ctx context.Context,
+	scope tenancy.Scope,
+	request hubfleet.ImageSearchRequest,
+) (fleet.QueryResult, error) {
+	return function(ctx, scope, request)
+}
+
 var _ FleetRefresher = fleetRefresherFunc(nil)
 var _ hubfleet.FleetReader = fleetReaderFunc(nil)
+var _ FleetImageSearcher = fleetImageSearcherFunc(nil)
 
 func TestFleetHandlerRefreshUsesOnlySignedWorkspaceScope(t *testing.T) {
 	now := time.Date(2026, 7, 14, 7, 0, 0, 0, time.UTC)
@@ -59,6 +70,10 @@ func TestFleetHandlerRefreshUsesOnlySignedWorkspaceScope(t *testing.T) {
 		Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
 			t.Fatal("refresh reached fleet reader")
 			return fleet.FleetResult{}, nil
+		}),
+		ImageSearcher: fleetImageSearcherFunc(func(context.Context, tenancy.Scope, hubfleet.ImageSearchRequest) (fleet.QueryResult, error) {
+			t.Fatal("refresh reached image searcher")
+			return fleet.QueryResult{}, nil
 		}),
 		PEP: fleetTestPEP(t, pep.AllowReadHook{}),
 	})
@@ -110,6 +125,10 @@ func TestFleetHandlerReadConstructsRequestScopedSource(t *testing.T) {
 			}
 			return fleet.FleetResult{Clusters: []fleet.Cluster{{Name: "spoke-a", SourceKind: hubfleet.SourceKind, Reachable: true}}, Coverage: fleet.Coverage{Requested: 1, Reachable: 1}}, nil
 		}),
+		ImageSearcher: fleetImageSearcherFunc(func(context.Context, tenancy.Scope, hubfleet.ImageSearchRequest) (fleet.QueryResult, error) {
+			t.Fatal("fleet read reached image searcher")
+			return fleet.QueryResult{}, nil
+		}),
 		PEP: fleetTestPEP(t, pep.AllowReadHook{}),
 	})
 	if err != nil {
@@ -145,6 +164,10 @@ func TestFleetHandlerRejectsForeignWorkspaceBeforeDependencies(t *testing.T) {
 			t.Fatal("foreign workspace reached reader")
 			return fleet.FleetResult{}, nil
 		}),
+		ImageSearcher: fleetImageSearcherFunc(func(context.Context, tenancy.Scope, hubfleet.ImageSearchRequest) (fleet.QueryResult, error) {
+			t.Fatal("foreign workspace reached image searcher")
+			return fleet.QueryResult{}, nil
+		}),
 		PEP: fleetTestPEP(t, pep.AllowReadHook{}),
 	})
 	if err != nil {
@@ -170,6 +193,10 @@ func TestFleetHandlerRejectsUnsupportedRoutesMethodsAndQueries(t *testing.T) {
 			t.Fatal("invalid request reached reader")
 			return fleet.FleetResult{}, nil
 		}),
+		ImageSearcher: fleetImageSearcherFunc(func(context.Context, tenancy.Scope, hubfleet.ImageSearchRequest) (fleet.QueryResult, error) {
+			t.Fatal("invalid request reached image searcher")
+			return fleet.QueryResult{}, nil
+		}),
 		PEP: fleetTestPEP(t, pep.AllowReadHook{}),
 	})
 	if err != nil {
@@ -185,8 +212,10 @@ func TestFleetHandlerRejectsUnsupportedRoutesMethodsAndQueries(t *testing.T) {
 	}{
 		{name: "unknown route", method: http.MethodGet, target: "/v1/workspaces/workspace-a/fleet/extra", wantCode: http.StatusNotFound, wantBody: "{\"error\":\"not_found\"}\n"},
 		{name: "query rejected", method: http.MethodGet, target: "/v1/workspaces/workspace-a/fleet?freshness=1s", wantCode: http.StatusNotFound, wantBody: "{\"error\":\"not_found\"}\n"},
+		{name: "noncanonical image", method: http.MethodGet, target: "/v1/workspaces/workspace-a/fleet/images/registry.example%2Fpayments%3Alatest", wantCode: http.StatusNotFound, wantBody: "{\"error\":\"not_found\"}\n"},
 		{name: "read method", method: http.MethodPost, target: "/v1/workspaces/workspace-a/fleet", wantCode: http.StatusMethodNotAllowed, wantBody: "{\"error\":\"method_not_allowed\"}\n", wantAllow: http.MethodGet},
 		{name: "refresh method", method: http.MethodGet, target: "/v1/workspaces/workspace-a/fleet:refresh", wantCode: http.StatusMethodNotAllowed, wantBody: "{\"error\":\"method_not_allowed\"}\n", wantAllow: http.MethodPost},
+		{name: "image method", method: http.MethodPost, target: "/v1/workspaces/workspace-a/fleet/images/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", wantCode: http.StatusMethodNotAllowed, wantBody: "{\"error\":\"method_not_allowed\"}\n", wantAllow: http.MethodGet},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := httptest.NewRecorder()
@@ -209,6 +238,9 @@ func TestFleetHandlerHidesDependencyErrors(t *testing.T) {
 		Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
 			return fleet.FleetResult{}, errors.New("database topology leaked")
 		}),
+		ImageSearcher: fleetImageSearcherFunc(func(context.Context, tenancy.Scope, hubfleet.ImageSearchRequest) (fleet.QueryResult, error) {
+			return fleet.QueryResult{}, errors.New("registry credential leaked")
+		}),
 		PEP: fleetTestPEP(t, pep.AllowReadHook{}),
 	})
 	if err != nil {
@@ -221,12 +253,51 @@ func TestFleetHandlerHidesDependencyErrors(t *testing.T) {
 	}{
 		{method: http.MethodPost, target: "/v1/workspaces/workspace-a/fleet:refresh", body: "{\"error\":\"refresh_unavailable\"}\n"},
 		{method: http.MethodGet, target: "/v1/workspaces/workspace-a/fleet", body: "{\"error\":\"fleet_unavailable\"}\n"},
+		{method: http.MethodGet, target: "/v1/workspaces/workspace-a/fleet/images/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", body: "{\"error\":\"image_search_unavailable\"}\n"},
 	} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, authenticatedFleetRequest(t, test.method, test.target, privateKey, now))
 		if response.Code != http.StatusServiceUnavailable || response.Body.String() != test.body || strings.Contains(response.Body.String(), "leaked") {
 			t.Fatalf("status = %d, body = %q", response.Code, response.Body.String())
 		}
+	}
+}
+
+func TestFleetHandlerSearchesOneExactImageDigestInSignedWorkspace(t *testing.T) {
+	now := time.Date(2026, 7, 14, 7, 0, 0, 0, time.UTC)
+	verifier, privateKey := fleetTestVerifier(t, now)
+	digest := "sha256:" + strings.Repeat("a", 64)
+	called := false
+	handler, err := NewFleetHandler(FleetHandlerConfig{
+		Verifier: verifier,
+		Collector: fleetRefresherFunc(func(context.Context, tenancy.Scope) (fleet.Coverage, error) {
+			t.Fatal("image search reached collector")
+			return fleet.Coverage{}, nil
+		}),
+		Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
+			t.Fatal("image search reached fleet reader")
+			return fleet.FleetResult{}, nil
+		}),
+		ImageSearcher: fleetImageSearcherFunc(func(_ context.Context, scope tenancy.Scope, request hubfleet.ImageSearchRequest) (fleet.QueryResult, error) {
+			called = true
+			if scope.WorkspaceID() != "workspace-a" || request.Digest != digest || request.Limit != 0 {
+				t.Fatalf("image search scope/request = %#v/%#v", scope, request)
+			}
+			return fleet.QueryResult{Facts: []fleet.Fact{{Workspace: "workspace-a", Evidence: fleet.Evidence{Ref: fleet.ResourceRef{Scope: "spoke-a", Kind: "Pod", Name: "payments"}}}}, Coverage: fleet.Coverage{Requested: 2, Reachable: 2}}, nil
+		}),
+		PEP: fleetTestPEP(t, pep.AllowReadHook{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, authenticatedFleetRequest(t, http.MethodGet, "/v1/workspaces/workspace-a/fleet/images/"+digest, privateKey, now))
+	if response.Code != http.StatusOK || !called {
+		t.Fatalf("status = %d, called = %t, body = %q", response.Code, called, response.Body.String())
+	}
+	var result fleet.QueryResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil || len(result.Facts) != 1 || result.Facts[0].Ref.Scope != "spoke-a" || !result.Coverage.Complete() {
+		t.Fatalf("image result = %#v, error = %v", result, err)
 	}
 }
 

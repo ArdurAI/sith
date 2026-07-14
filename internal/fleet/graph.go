@@ -135,6 +135,29 @@ func ImageDigestFromRepoDigest(repoDigest string) (string, error) {
 	return digest, nil
 }
 
+// ImageDigestFromRuntimeImageID extracts one immutable digest from a Kubernetes runtime-resolved
+// ContainerStatus.ImageID. It accepts an exact digest, an optional runtime scheme, or a
+// repository@digest form, and deliberately rejects mutable image references.
+func ImageDigestFromRuntimeImageID(imageID string) (string, error) {
+	if imageID == "" || strings.TrimSpace(imageID) != imageID {
+		return "", fmt.Errorf("runtime image ID is required")
+	}
+	value := imageID
+	if runtimeName, remainder, found := strings.Cut(value, "://"); found {
+		if !validRuntimeScheme(runtimeName) || remainder == "" {
+			return "", fmt.Errorf("runtime image ID has an invalid runtime scheme")
+		}
+		value = remainder
+	}
+	if strings.Contains(value, "@") {
+		return ImageDigestFromRepoDigest(value)
+	}
+	if err := ValidateImageDigest(value); err != nil {
+		return "", fmt.Errorf("runtime image ID: %w", err)
+	}
+	return value, nil
+}
+
 func validRepository(repo string) bool {
 	if repo == "" || strings.TrimSpace(repo) != repo || len(repo) > 255 || strings.ContainsAny(repo, "\x00\r\n@") {
 		return false
@@ -143,7 +166,8 @@ func validRepository(repo string) bool {
 	return !strings.Contains(repo[lastPathSeparator+1:], ":")
 }
 
-func validateImageDigest(digest string) error {
+// ValidateImageDigest rejects every image reference other than one lowercase immutable sha256 digest.
+func ValidateImageDigest(digest string) error {
 	if len(digest) != len("sha256:")+64 || !strings.HasPrefix(digest, "sha256:") {
 		return fmt.Errorf("image digest must be one immutable sha256 digest")
 	}
@@ -153,6 +177,17 @@ func validateImageDigest(digest string) error {
 		}
 	}
 	return nil
+}
+
+func validateImageDigest(digest string) error { return ValidateImageDigest(digest) }
+
+func validRuntimeScheme(value string) bool {
+	switch value {
+	case "containerd", "docker-pullable", "cri-o", "docker":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateEntityText(label, value string) error {
