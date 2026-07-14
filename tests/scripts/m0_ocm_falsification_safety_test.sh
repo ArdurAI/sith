@@ -147,6 +147,31 @@ expect_failure "malformed token output still requires invalidation" \
 [[ "$(cat "${token_flag_marker}")" == "1" ]]
 pass "token acquisition boundary is conservative"
 
+addon_wait_marker="${TEST_ROOT}/addon-wait"
+env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/addon-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
+  KUBECTL_BIN=fake_kubectl ADDON_WAIT_MARKER="${addon_wait_marker}" bash -c '
+    attempts=0
+    fake_kubectl() {
+      for argument in "$@"; do
+        if [[ "${argument}" == "get" ]]; then
+          attempts=$((attempts + 1))
+          [[ "${attempts}" -ge 3 ]]
+          return
+        fi
+        if [[ "${argument}" == "wait" ]]; then
+          printf "%s\n" "${attempts}" >"${ADDON_WAIT_MARKER}"
+          return 0
+        fi
+      done
+      return 1
+    }
+    sleep() { :; }
+    source "$1"
+    wait_for_addon_creation spoke-a cluster-proxy
+  ' _ "${SCRIPT}"
+[[ "$(cat "${addon_wait_marker}")" == "3" ]]
+pass "addon wait tolerates asynchronous creation before availability"
+
 expect_failure "unrelated hub exec failure cannot satisfy the active deny" \
   env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/probe-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
   DOCKER_BIN=fake_docker bash -c '

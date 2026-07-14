@@ -159,9 +159,14 @@ only the workspace boundary and registered managed-cluster reference; it never r
 kubeconfig, endpoint, or token through the Sith collector contract. Only normalized `inventory`
 and `health` facts are accepted, source-stamped, freshness-bounded, and stored behind forced RLS.
 Failed refreshes retain the last snapshot as explicitly stale evidence and record only a closed
-failure category. The concrete OCM ClusterGateway transport is deliberately not exposed by the
-`sith hub` stub until its projected-token lifecycle is wired and exercised as a product adapter.
-The same model now answers a read-only, exact cross-cluster correlation such as “every deployment
+failure category. The pinned direct OCM ClusterProxy adapter reads the exact rotating
+`sith-reader` managed-serviceaccount Secret for a registered spoke, opens a short-lived
+Konnectivity tunnel only to that spoke, and verifies both proxy mTLS and the spoke Kubernetes
+certificate; it never forwards a caller `Authorization` header, stores a credential, disables
+TLS verification, lists or watches Secrets, or carries raw Kubernetes objects across the
+collector seam. Its executable two-spoke M0 gate is `make e2e-ocm`; the `sith hub` runtime remains
+staged until a later epic wires an operator deployment around this library boundary. The same
+model now answers a read-only, exact cross-cluster correlation such as “every deployment
 named `payments` that is not Healthy” within one workspace. Matching is by exact kind/name/namespace
 rather than a prefix, and every answer retains full stale/unreachable coverage rather than claiming
 that a partial fleet is complete.
@@ -260,7 +265,8 @@ make release-check
 The gate also compiles the binary under a functional HTTP/HTTPS egress sentinel and exercises
 local commands, deterministic investigation, plus the running web UI and MCP server with an official SDK client. A source
 boundary exact-allowlists production network, filesystem-write, and subprocess imports, confines
-client-go transport to the kubeconfig adapter, and rejects known telemetry SDKs and low-level
+local-mode client-go transport to the kubeconfig adapter, permits only the separately reviewed
+tenant-scoped direct OCM adapter in governed mode, and rejects known telemetry SDKs and low-level
 network bypasses. Together these checks prove the reviewed paths; they are regression controls
 rather than an operating-system network sandbox.
 

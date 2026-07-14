@@ -21,9 +21,18 @@ var approvedNetworkImports = map[string]map[string]bool{
 	"internal/hubserver/auth.go":                     {"net/http": true},
 	"internal/hubserver/exchange.go":                 {"net": true, "net/http": true},
 	// AWS STS egress is endpoint-pinned, SigV4-profiled, redirect-disabled, and never used by local mode.
-	"internal/hubauth/aws_sts.go":       {"net/http": true, "net/url": true},
-	"internal/hubauth/oidc.go":          {"net": true, "net/http": true, "net/netip": true, "net/url": true},
-	"internal/hubdb/app.go":             {"net/netip": true},
+	"internal/hubauth/aws_sts.go": {"net/http": true, "net/url": true},
+	"internal/hubauth/oidc.go":    {"net": true, "net/http": true, "net/netip": true, "net/url": true},
+	"internal/hubdb/app.go":       {"net/netip": true},
+	// The governed-only direct OCM adapter is the reviewed Phase-1 exception to local-mode
+	// client-go confinement. It pins one registered cluster, uses scoped MSA credentials,
+	// and is exercised by the real two-spoke M0 gate.
+	"internal/hubocm/credentials.go": {"k8s.io/client-go/kubernetes/typed/core/v1": true},
+	"internal/hubocm/direct.go": {
+		"net": true, "net/http": true,
+		"k8s.io/client-go/dynamic": true, "k8s.io/client-go/kubernetes": true, "k8s.io/client-go/rest": true,
+		"google.golang.org/grpc": true, "google.golang.org/grpc/credentials": true,
+	},
 	"internal/mcpserver/server.go":      {"net": true, "net/http": true, "net/url": true},
 	"internal/observability/metrics.go": {"net/http": true},
 	"internal/webui/api.go":             {"net/http": true},
@@ -116,12 +125,18 @@ func reviewProductionFile(
 			}
 			markBoundary(seenProcesses, relative, importPath)
 		}
-		if lowLevelNetworkPackage(importPath) {
+		if lowLevelNetworkPackage(importPath) && !approvedNetworkImports[relative][importPath] {
 			t.Errorf("%s imports unapproved low-level network package %q", relative, importPath)
 		}
+		if lowLevelNetworkPackage(importPath) {
+			markBoundary(seenNetwork, relative, importPath)
+		}
 		if strings.HasPrefix(importPath, "k8s.io/client-go/") &&
-			!strings.HasPrefix(relative, "internal/connector/kubeconfig/") {
+			!strings.HasPrefix(relative, "internal/connector/kubeconfig/") && !approvedNetworkImports[relative][importPath] {
 			t.Errorf("%s imports Kubernetes transport outside the local source adapter: %q", relative, importPath)
+		}
+		if strings.HasPrefix(importPath, "k8s.io/client-go/") {
+			markBoundary(seenNetwork, relative, importPath)
 		}
 		if strings.HasPrefix(relative, "internal/keychain/") && filesystemPackage(importPath) {
 			t.Errorf("%s imports filesystem package %q; keychain custody must not have a file fallback", relative, importPath)

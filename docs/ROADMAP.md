@@ -38,6 +38,17 @@ transport/agent scope is deleted; the hub track proceeds to Phase 1.
 > includes the fix; then rerun the Sith two-spoke negative route and require `403` for the scoped
 > Secrets denial without logging credentials or response bodies.
 
+> **Phase-1 direct ClusterProxy alternative (2026-07-13).** [#123](https://github.com/ArdurAI/sith/issues/123)
+> delivers the same bounded read contract without consuming ClusterGateway: it uses the released
+> ClusterProxy Konnectivity client directly, the exact rotating `sith-reader` MSA projection, and
+> a fixed registered managed-cluster target. The adapter does not forward caller authorization,
+> disables neither proxy nor Kubernetes TLS verification, and returns only normalized
+> Pods/Deployments/Rollouts inventory plus health. `make e2e-ocm` proves the direct route across
+> both M0 spokes, its `403` Secrets negative control, and an MSA projection replacement. This does
+> not unblock [#103](https://github.com/ArdurAI/sith/issues/103); that ClusterGateway-specific
+> transport remains blocked by [#104](https://github.com/ArdurAI/sith/issues/104) pending an
+> official upstream release.
+
 **Assumption under test:** OCM `cluster-proxy` + `managed-serviceaccount` really do
 deliver outbound-only, cross-network, reach-cluster-local-services connectivity — so we do
 **not** need to build a bespoke tunnel/agent.

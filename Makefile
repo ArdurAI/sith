@@ -10,6 +10,9 @@ GOVULNCHECK ?= govulncheck
 KIND     ?= kind
 GORELEASER ?= goreleaser
 DOCKER      ?= docker
+KUBECTL     ?= kubectl
+OCM_SCRATCH_ROOT ?= /Volumes/EXTENDED/tmp/sith-m0
+OCM_PREFIX       ?= sith-m0
 
 KIND_NODE_IMAGE ?= kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
 POSTGRES_IMAGE  ?= postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e
@@ -25,7 +28,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/buildinfo.Commit=$(COMMIT) \
 	-X $(PKG)/internal/buildinfo.Date=$(DATE)
 
-.PHONY: all build test test-scripts perf e2e e2e-kind e2e-postgres e2e-isolation lint vuln fmt fmt-check vet tidy clean run ci release-check help
+.PHONY: all build test test-scripts perf e2e e2e-kind e2e-ocm e2e-postgres e2e-isolation lint vuln fmt fmt-check vet tidy clean run ci release-check help
 
 all: build
 
@@ -48,6 +51,13 @@ e2e: ## Build and exercise the real binary as a subprocess
 e2e-kind: ## Exercise adapter and binary against two real kind clusters
 	KIND_BIN="$(KIND)" KIND_NODE_IMAGE="$(KIND_NODE_IMAGE)" \
 		go test -race -count=1 -timeout=15m -tags='e2e kind' -run '^TestKindFleetFanout$$' ./tests/e2e
+
+e2e-ocm: ## Prove direct ClusterProxy transport in the pinned two-spoke M0 lab
+	@set -e; trap 'KIND_BIN="$(KIND)" SITH_M0_SCRATCH_ROOT="$(OCM_SCRATCH_ROOT)" SITH_M0_PREFIX="$(OCM_PREFIX)" hack/experiments/m0-ocm-falsification.sh cleanup' EXIT; \
+		KIND_BIN="$(KIND)" SITH_M0_SCRATCH_ROOT="$(OCM_SCRATCH_ROOT)" SITH_M0_PREFIX="$(OCM_PREFIX)" SITH_M0_KEEP_CLUSTERS=1 \
+			hack/experiments/m0-ocm-falsification.sh run; \
+		KUBECTL_BIN="$(KUBECTL)" SITH_OCM_HUB_KUBECONFIG="$(OCM_SCRATCH_ROOT)/kubeconfig" SITH_OCM_HUB_CONTEXT="kind-$(OCM_PREFIX)-hub" \
+			go test -race -count=1 -timeout=8m -tags='e2e ocm' -run '^TestDirectClusterProxyM0$$' ./internal/hubocm
 
 e2e-postgres: ## Prove forced RLS against a temporary digest-pinned PostgreSQL container
 	DOCKER_BIN="$(DOCKER)" POSTGRES_IMAGE="$(POSTGRES_IMAGE)" \
