@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"testing"
@@ -87,6 +88,11 @@ func exerciseReadFederationSnapshots(
 		!staleCorrelation.Facts[0].Stale || len(staleCorrelation.Coverage.Stale) != 1 ||
 		staleCorrelation.Coverage.Stale[0] != "spoke-b" {
 		t.Fatalf("stale real two-spoke correlation = %#v, error = %v", staleCorrelation, err)
+	}
+	assessment := staleCorrelation.Coverage.Assessment()
+	if assessment.Complete || !slices.Equal(assessment.Gaps, []fleet.CoverageGap{fleet.CoverageGapUnreachable, fleet.CoverageGapStale}) ||
+		!slices.Equal(assessment.Unreachable, []string{"spoke-b"}) || !slices.Equal(assessment.Stale, []string{"spoke-b"}) {
+		t.Fatalf("stale real two-spoke assessment = %#v", assessment)
 	}
 }
 
