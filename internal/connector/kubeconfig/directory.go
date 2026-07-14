@@ -63,7 +63,6 @@ func loadDirectory(root string) (importedConfig, error) {
 		raw:      clientcmdapi.NewConfig(),
 		metadata: make(map[string]contextMetadata),
 	}
-	candidates := 0
 	entries := 0
 	err = filepath.WalkDir(absolute, func(path string, entry fs.DirEntry, walkErr error) error {
 		relative, relativeErr := filepath.Rel(absolute, path)
@@ -106,11 +105,6 @@ func loadDirectory(root string) (importedConfig, error) {
 		}
 		if !entry.Type().IsRegular() {
 			return nil
-		}
-		candidates++
-		if candidates > maxImportFiles {
-			result.diagnostics = append(result.diagnostics, importDiagnostic("", "kubeconfig entry limit reached"))
-			return errImportLimit
 		}
 		fileInfo, statErr := entry.Info()
 		if statErr != nil || fileInfo.Size() > maxImportBytes {
