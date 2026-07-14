@@ -3,8 +3,12 @@
   "title": "Sith hub chart values",
   "type": "object",
   "additionalProperties": false,
-  "required": ["image", "runtime", "migration"],
+  "required": ["profile", "image", "runtime", "migration"],
   "properties": {
+    "profile": {
+      "type": "string",
+      "enum": ["light", "heavy"]
+    },
     "image": {
       "type": "object",
       "additionalProperties": false,
@@ -38,7 +42,6 @@
         "existingSecret": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
         "applicationRole": {"type": "string", "pattern": "^[a-z_][a-z0-9_]{0,62}$"}
       }
-    },
-    "resources": {"type": "object"}
+    }
   }
 }

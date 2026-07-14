@@ -2,5 +2,5 @@ apiVersion: v2
 name: sith-hub
 description: Fail-closed deployment contract for the Sith governed fleet hub
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "unpublished"

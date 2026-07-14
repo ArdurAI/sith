@@ -39,7 +39,7 @@ spec:
             - name: SITH_HUB_APPLICATION_DATABASE_ROLE
               value: {{ required "migration.applicationRole is required" .Values.migration.applicationRole | quote }}
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+            {{- include "sith-hub.resources" . | nindent 12 }}
           securityContext:
             privileged: false
             allowPrivilegeEscalation: false

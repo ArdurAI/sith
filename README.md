@@ -235,7 +235,10 @@ This is not a published image reference. The fail-closed [`charts/sith-hub`](cha
 chart requires an explicit immutable `repository@sha256:...` image reference and refuses tags,
 especially `latest`; it invokes `sith hub migrate` in a separate short-lived Job before the
 non-owner hub Deployment starts. Its defaults intentionally cannot install until a release-bound
-hub image and operator-provided Secret references exist; it never renders secret material.
+hub image and operator-provided Secret references exist; it never renders secret material. The
+chart permits only fixed `light` and `heavy` resource profiles, which retain identical security,
+credential, and RBAC controls. This first F9.3a profile slice does not claim a public image,
+in-chart database, or HA; those parent-F9.3 topology and custody capabilities need later evidence.
 
 `sith serve --mcp` exposes `fleet.inventory`, `fleet.health`, `fleet.correlate`, and
 `fleet.cve-search` over MCP Streamable HTTP. All four tools are cache-only and carry
