@@ -90,7 +90,7 @@ function renderSnapshot() {
   dom["board-heading"].textContent = state.correlate || state.query ? "Fleet results" : `${state.lens}s`;
   dom["board-kicker"].textContent = state.correlate ? "Correlation answer" : state.query ? "Filtered cache" : "Aggregated lens";
   dom["result-count"].textContent = `${snapshot.records.length} cached row${snapshot.records.length === 1 ? "" : "s"}`;
-  renderContexts(snapshot.scopes || [], coverage);
+  renderContexts(snapshot.scopes || [], coverage, snapshot.diagnostics || []);
   renderRows(snapshot.records || []);
   if (state.selected) {
     const identity = recordIdentity(state.selected);
@@ -99,7 +99,7 @@ function renderSnapshot() {
   renderInspector();
 }
 
-function renderContexts(scopes, coverage) {
+function renderContexts(scopes, coverage, diagnostics) {
   const entries = [];
   const all = node("button", "context-node");
   all.type = "button";
@@ -108,16 +108,37 @@ function renderContexts(scopes, coverage) {
   all.append(contextLabel("All contexts", compactCoverage(coverage)));
   all.addEventListener("click", () => { state.scope = ""; loadSnapshot(); });
   entries.push(all);
+  const grouped = new Map();
   for (const scope of scopes) {
+    const origin = scope.origin || "";
+    if (!grouped.has(origin)) grouped.set(origin, []);
+    grouped.get(origin).push(scope);
+  }
+  for (const [origin, members] of grouped) {
+    if (origin) {
+      const sourceScopes = members.map((scope) => scope.name).join(",");
+      const source = node("button", "context-node context-source");
+      source.type = "button";
+      source.setAttribute("aria-current", String(state.scope === sourceScopes));
+      source.append(contextLabel(origin, `${members.length} imported context${members.length === 1 ? "" : "s"}`));
+      source.addEventListener("click", () => { state.scope = state.scope === sourceScopes ? "" : sourceScopes; state.selected = null; loadSnapshot(); });
+      entries.push(source);
+    }
+    for (const scope of members) {
     const button = node("button", "context-node");
     button.type = "button";
     const isDown = !scope.reachable;
     const isStale = (coverage.stale || []).includes(scope.name);
     button.dataset.state = isDown ? "down" : isStale ? "stale" : "fresh";
     button.setAttribute("aria-current", String(state.scope === scope.name));
-    button.append(contextLabel(scope.name, `${isDown ? "unreachable" : isStale ? "stale" : "reachable"} · ${ageLabel(scope.observed_at)}`));
+    button.append(contextLabel(scope.display_name || scope.name, `${isDown ? "unreachable" : isStale ? "stale" : "reachable"} · ${ageLabel(scope.observed_at)}`));
     button.addEventListener("click", () => { state.scope = state.scope === scope.name ? "" : scope.name; loadSnapshot(); });
     entries.push(button);
+  }
+  }
+  for (const diagnostic of diagnostics) {
+    const source = diagnostic.source ? `${diagnostic.source}: ` : "";
+    entries.push(node("div", "context-diagnostic", `Import warning — ${source}${diagnostic.message}`));
   }
   replaceChildren(dom["context-list"], entries);
 }

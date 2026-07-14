@@ -57,6 +57,7 @@ make build
 ./bin/sith port-forward service/api --context kind-dev -n apps :http
 ./bin/sith edit configmap/api-settings --context kind-dev -n apps
 ./bin/sith ui                    # loopback-only embedded fleet IDE
+./bin/sith ui --kubeconfig-dir "$HOME/kubeconfigs" # import a folder of kubeconfig files for this UI session
 ./bin/sith serve --mcp           # loopback-only MCP read server
 ./bin/sith serve --mcp --require-token
 ```
@@ -332,7 +333,15 @@ component dependency enters the binary.
 
 `sith ui` serves a build-free frontend embedded in the same Go binary. It binds to
 `127.0.0.1` on an available port by default; `--address` accepts loopback addresses only and
-`--no-open` suppresses browser launch. The browser renders the same cache, lenses, ordering,
+`--no-open` suppresses browser launch. `--kubeconfig-dir <directory>` imports a bounded recursive
+set of regular kubeconfig files for that UI session. It does not replace the standard
+`KUBECONFIG`/`~/.kube/config` mode, write or persist a config, or follow directory symlinks. The
+supplied root must be an existing real directory; a file, symlink, or missing root fails before the
+local listener starts. Invalid, oversized, unreadable, or symlinked entries beneath a valid root
+are skipped with safe warnings that do not expose kubeconfig contents or an absolute local path.
+Each imported source is labeled by its relative filename; contexts with the same name remain
+isolated, and selecting a source in the context rail filters to its contexts. The import is limited
+to 128 files, 4 MiB per file, and eight nested directory levels. The browser renders the same cache, lenses, ordering,
 coverage, search/correlation grammar, and per-resource operations as the CLI/TUI. Its local HTTP
 boundary requires an exact Host/Origin and a per-process capability header, uses a restrictive
 Content Security Policy, and loads no remote assets. YAML apply additionally requires a short-lived,

@@ -132,6 +132,8 @@ func TestKindFleetFanout(t *testing.T) {
 	runCommand(ctx, t, root, "go", "build", "-trimpath", "-o", binary, "./cmd/sith")
 	exerciseLocalOperations(ctx, t, binary, kubeconfigPath, clusterNames)
 	exerciseWebUI(ctx, t, binary, kubeconfigPath, clusterNames)
+	kubeconfigDirectory := splitKindKubeconfigDirectory(t, kubeconfigPath, clusterNames)
+	exerciseWebUIDirectoryImport(ctx, t, binary, kubeconfigDirectory, clusterNames)
 	exerciseMCP(ctx, t, binary, kubeconfigPath, clusterNames)
 	command := exec.CommandContext(ctx, binary, "clusters", "--output", "json")
 	command.Env = append(os.Environ(), "KUBECONFIG="+kubeconfigPath, "XDG_CONFIG_HOME="+t.TempDir())
@@ -741,6 +743,35 @@ func mergedKindKubeconfig(ctx context.Context, t *testing.T, kindBinary string, 
 		t.Fatalf("write merged kind kubeconfig: %v", err)
 	}
 	return path
+}
+
+func splitKindKubeconfigDirectory(t *testing.T, mergedPath string, clusters []string) string {
+	t.Helper()
+	merged, err := clientcmd.LoadFromFile(mergedPath)
+	if err != nil {
+		t.Fatalf("load merged kind kubeconfig: %v", err)
+	}
+	directory := t.TempDir()
+	for index, cluster := range clusters {
+		contextName := "kind-" + cluster
+		contextConfig, exists := merged.Contexts[contextName]
+		if !exists {
+			t.Fatalf("merged kubeconfig missing context %q", contextName)
+		}
+		config := clientcmdapi.NewConfig()
+		config.Clusters[contextConfig.Cluster] = merged.Clusters[contextConfig.Cluster].DeepCopy()
+		config.AuthInfos[contextConfig.AuthInfo] = merged.AuthInfos[contextConfig.AuthInfo].DeepCopy()
+		config.Contexts[contextName] = contextConfig.DeepCopy()
+		config.CurrentContext = contextName
+		filename := filepath.Join(directory, "first.yaml")
+		if index == 1 {
+			filename = filepath.Join(directory, "nested", "second.yaml")
+		}
+		if err := clientcmd.WriteToFile(*config, filename); err != nil {
+			t.Fatalf("write imported kind kubeconfig %q: %v", filename, err)
+		}
+	}
+	return directory
 }
 
 func mergeConfigMaps(destination, source *clientcmdapi.Config) {

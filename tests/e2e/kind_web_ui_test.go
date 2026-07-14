@@ -175,6 +175,81 @@ func exerciseWebUI(
 	process.stop(t)
 }
 
+func exerciseWebUIDirectoryImport(
+	ctx context.Context,
+	t *testing.T,
+	binary, kubeconfigDirectory string,
+	clusters []string,
+) {
+	t.Helper()
+	process, origin := startWebUIFromDirectory(ctx, t, binary, kubeconfigDirectory)
+	t.Cleanup(func() { process.stop(t) })
+	client := &http.Client{Timeout: 20 * time.Second}
+	index := webUIRequest(ctx, t, client, http.MethodGet, origin, "", "", nil)
+	match := webUITokenPattern.FindSubmatch(index.Body)
+	if index.StatusCode != http.StatusOK || len(match) != 2 {
+		process.stop(t)
+		t.Fatalf("directory-import web UI index status/body = %d/%q", index.StatusCode, index.Body)
+	}
+	token := string(match[1])
+	deadline := time.NewTimer(45 * time.Second)
+	defer deadline.Stop()
+	var snapshot fleetcache.Snapshot
+	for {
+		response := webUIRequest(ctx, t, client, http.MethodGet, origin, "/api/v1/snapshot?kind=Pod", token, nil)
+		decodeWebUIJSON(t, response, http.StatusOK, &snapshot)
+		if snapshot.Coverage.Requested == 2 && snapshot.Coverage.Reachable == 2 && len(snapshot.Scopes) == 2 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("wait for directory-import UI: %v", ctx.Err())
+		case <-deadline.C:
+			t.Fatalf("directory-import UI did not hydrate both contexts: %#v", snapshot)
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	if strings.Contains(mustMarshalWebUISnapshot(t, snapshot), kubeconfigDirectory) {
+		t.Fatalf("directory-import snapshot exposed absolute directory: %#v", snapshot)
+	}
+	byOrigin := make(map[string]string, len(snapshot.Scopes))
+	for _, scope := range snapshot.Scopes {
+		if scope.DisplayName == "" || scope.Origin == "" || scope.Name == scope.DisplayName {
+			t.Fatalf("directory-import scope metadata = %#v", scope)
+		}
+		byOrigin[scope.Origin] = scope.Name
+	}
+	if len(byOrigin) != 2 || byOrigin["first.yaml"] == "" || byOrigin["nested/second.yaml"] == "" {
+		t.Fatalf("directory-import source groups = %#v", byOrigin)
+	}
+	selected := byOrigin["first.yaml"]
+	filtered := webUIRequest(
+		ctx, t, client, http.MethodGet, origin,
+		"/api/v1/snapshot?kind=Pod&scopes="+url.QueryEscape(selected), token, nil,
+	)
+	var oneSource fleetcache.Snapshot
+	decodeWebUIJSON(t, filtered, http.StatusOK, &oneSource)
+	if len(oneSource.Scopes) != 1 || oneSource.Scopes[0].Name != selected || oneSource.Coverage.Requested != 1 {
+		t.Fatalf("directory-import source selection = %#v", oneSource)
+	}
+	for _, record := range oneSource.Records {
+		if record.Cluster != selected {
+			t.Fatalf("directory-import selection returned another source: %#v", oneSource.Records)
+		}
+	}
+	objectPath := webUITargetPath("/api/v1/object", localops.Target{
+		Context: selected, Namespace: "default", Kind: "Pod", Name: "sith-local-ops",
+	})
+	object := webUIRequest(ctx, t, client, http.MethodGet, origin, objectPath, token, nil)
+	var viewed webUIObject
+	decodeWebUIJSON(t, object, http.StatusOK, &viewed)
+	if viewed.Target.Context != selected || !strings.Contains(viewed.YAML, "sith-local-ops") ||
+		!strings.Contains(viewed.YAML, "kind-"+clusters[0]) {
+		t.Fatalf("directory-import object read = %#v/%q", viewed.Target, viewed.YAML)
+	}
+	process.stop(t)
+}
+
 func exerciseWebUIEdit(
 	ctx context.Context,
 	t *testing.T,
@@ -308,6 +383,60 @@ func startWebUI(ctx context.Context, t *testing.T, binary, kubeconfigPath string
 		t.Fatalf("web UI context ended before startup: %v", ctx.Err())
 	}
 	return nil, ""
+}
+
+func startWebUIFromDirectory(ctx context.Context, t *testing.T, binary, kubeconfigDirectory string) (*webUIProcess, string) {
+	t.Helper()
+	command := exec.Command(binary, "ui", "--no-open", "--address", "127.0.0.1", "--port", "0", "--kubeconfig-dir", kubeconfigDirectory)
+	command.Env = append(os.Environ(), "XDG_CONFIG_HOME="+filepath.Join(kubeconfigDirectory, "config-home-web"))
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatalf("directory-import web UI stdout: %v", err)
+	}
+	process := &webUIProcess{command: command, stderr: &bytes.Buffer{}}
+	command.Stderr = process.stderr
+	if err := command.Start(); err != nil {
+		t.Fatalf("start directory-import web UI: %v", err)
+	}
+	lines := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		if scanner.Scan() {
+			lines <- scanner.Text()
+		}
+		close(lines)
+	}()
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	select {
+	case line, open := <-lines:
+		if !open {
+			process.stop(t)
+			t.Fatalf("directory-import web UI exited before reporting its address: %s", process.stderr.String())
+		}
+		match := webUIAddressPattern.FindStringSubmatch(line)
+		if len(match) != 2 {
+			process.stop(t)
+			t.Fatalf("directory-import web UI address line = %q", line)
+		}
+		return process, match[1]
+	case <-timer.C:
+		process.stop(t)
+		t.Fatalf("directory-import web UI did not report its address: %s", process.stderr.String())
+	case <-ctx.Done():
+		process.stop(t)
+		t.Fatalf("directory-import web UI context ended before startup: %v", ctx.Err())
+	}
+	return nil, ""
+}
+
+func mustMarshalWebUISnapshot(t *testing.T, snapshot fleetcache.Snapshot) string {
+	t.Helper()
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(payload)
 }
 
 func (process *webUIProcess) stop(t *testing.T) {

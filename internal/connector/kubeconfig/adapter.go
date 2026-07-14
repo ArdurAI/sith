@@ -57,6 +57,8 @@ type tableFactory func(config *rest.Config) (tablePrinter, error)
 
 type options struct {
 	loadingRules   *clientcmd.ClientConfigLoadingRules
+	importedConfig *importedConfig
+	customRules    bool
 	probeTimeout   time.Duration
 	requestTimeout time.Duration
 	staleAfter     time.Duration
@@ -81,8 +83,12 @@ func WithLoadingRules(rules *clientcmd.ClientConfigLoadingRules) Option {
 		if rules == nil {
 			return fmt.Errorf("kubeconfig loading rules must not be nil")
 		}
+		if settings.importedConfig != nil {
+			return fmt.Errorf("kubeconfig loading rules and directory import are mutually exclusive")
+		}
 		copyRules := *rules
 		settings.loadingRules = &copyRules
+		settings.customRules = true
 		return nil
 	}
 }
@@ -90,9 +96,29 @@ func WithLoadingRules(rules *clientcmd.ClientConfigLoadingRules) Option {
 // WithExplicitPath reads one explicitly selected kubeconfig path.
 func WithExplicitPath(path string) Option {
 	return func(settings *options) error {
+		if settings.importedConfig != nil && path != "" {
+			return fmt.Errorf("explicit kubeconfig path and directory import are mutually exclusive")
+		}
 		if path != "" {
 			settings.loadingRules.ExplicitPath = path
 		}
+		return nil
+	}
+}
+
+// WithDirectory imports all bounded, regular kubeconfig files beneath one user-selected directory.
+// The import is in-memory only: source files and credentials are never copied or persisted.
+func WithDirectory(path string) Option {
+	return func(settings *options) error {
+		if settings.importedConfig != nil || settings.customRules || settings.loadingRules.ExplicitPath != "" {
+			return fmt.Errorf("kubeconfig directory import cannot be combined with another explicit kubeconfig source")
+		}
+		imported, err := loadDirectory(path)
+		if err != nil {
+			return err
+		}
+		settings.importedConfig = &imported
+		settings.loadingRules = &clientcmd.ClientConfigLoadingRules{}
 		return nil
 	}
 }
@@ -277,9 +303,9 @@ func (adapter *Adapter) Descriptor() connector.Descriptor {
 
 // Discover enumerates every context and probes each independently.
 func (adapter *Adapter) Discover(ctx context.Context) (connector.Discovery, error) {
-	rawConfig, err := adapter.settings.loadingRules.Load()
+	rawConfig, metadata, diagnostics, err := adapter.loadConfig()
 	if err != nil {
-		return connector.Discovery{}, fmt.Errorf("load kubeconfig: %w", err)
+		return connector.Discovery{}, err
 	}
 
 	names := make([]string, 0, len(rawConfig.Contexts))
@@ -291,7 +317,7 @@ func (adapter *Adapter) Discover(ctx context.Context) (connector.Discovery, erro
 
 	results := make([]contextResult, len(names))
 	adapter.runBounded(len(names), func(index int) {
-		results[index] = adapter.probeContext(ctx, *rawConfig, names[index], priorLastSeen[names[index]])
+		results[index] = adapter.probeContext(ctx, *rawConfig, names[index], metadata[names[index]], priorLastSeen[names[index]])
 	})
 	if err := ctx.Err(); err != nil {
 		return connector.Discovery{}, fmt.Errorf("discover kubeconfig contexts: %w", err)
@@ -333,7 +359,22 @@ func (adapter *Adapter) Discover(ctx context.Context) (connector.Discovery, erro
 	adapter.lastSeen = lastSeen
 	adapter.mu.Unlock()
 
-	return connector.Discovery{Scopes: cloneScopes(scopes), Unreachable: append([]string(nil), unreachable...)}, nil
+	return connector.Discovery{
+		Scopes: cloneScopes(scopes), Unreachable: append([]string(nil), unreachable...), Diagnostics: cloneDiagnostics(diagnostics),
+	}, nil
+}
+
+func (adapter *Adapter) loadConfig() (*clientcmdapi.Config, map[string]contextMetadata, []connector.Diagnostic, error) {
+	if adapter.settings.importedConfig != nil {
+		return adapter.settings.importedConfig.raw.DeepCopy(),
+			cloneContextMetadata(adapter.settings.importedConfig.metadata),
+			cloneDiagnostics(adapter.settings.importedConfig.diagnostics), nil
+	}
+	rawConfig, err := adapter.settings.loadingRules.Load()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("load kubeconfig: %w", err)
+	}
+	return rawConfig, map[string]contextMetadata{}, nil, nil
 }
 
 type contextResult struct {
@@ -348,12 +389,15 @@ func (adapter *Adapter) probeContext(
 	ctx context.Context,
 	rawConfig clientcmdapi.Config,
 	name string,
+	metadata contextMetadata,
 	lastSeen time.Time,
 ) contextResult {
 	scope := connector.Scope{
-		Name:       name,
-		Kinds:      append([]string(nil), supportedKinds...),
-		ObservedAt: lastSeen,
+		Name: name, DisplayName: name, Origin: metadata.origin,
+		Kinds: append([]string(nil), supportedKinds...), ObservedAt: lastSeen,
+	}
+	if metadata.displayName != "" {
+		scope.DisplayName = metadata.displayName
 	}
 	clientConfig := clientcmd.NewNonInteractiveClientConfig(
 		rawConfig,
@@ -492,4 +536,16 @@ func cloneScopes(scopes []connector.Scope) []connector.Scope {
 		result = append(result, cloneScope(scope))
 	}
 	return result
+}
+
+func cloneContextMetadata(values map[string]contextMetadata) map[string]contextMetadata {
+	result := make(map[string]contextMetadata, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
+}
+
+func cloneDiagnostics(values []connector.Diagnostic) []connector.Diagnostic {
+	return append([]connector.Diagnostic(nil), values...)
 }

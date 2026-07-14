@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ArdurAI/sith/internal/connector"
+	"github.com/ArdurAI/sith/internal/connector/kubeconfig"
 	"github.com/ArdurAI/sith/internal/fleetcache"
 	"github.com/ArdurAI/sith/internal/hydrate"
 	"github.com/ArdurAI/sith/internal/localops"
@@ -23,9 +24,10 @@ import (
 )
 
 type uiOptions struct {
-	address string
-	port    int
-	noOpen  bool
+	address       string
+	port          int
+	noOpen        bool
+	kubeconfigDir string
 }
 
 func newUICommand(reader connector.Reader, local localops.Client) *cobra.Command {
@@ -38,12 +40,20 @@ func newUICommand(reader connector.Reader, local localops.Client) *cobra.Command
 			if reader == nil || local == nil {
 				return fmt.Errorf("local fleet UI requires a Kubernetes reader and local operations client")
 			}
+			if options.kubeconfigDir != "" {
+				adapter, err := kubeconfig.New(kubeconfig.WithDirectory(options.kubeconfigDir))
+				if err != nil {
+					return fmt.Errorf("import kubeconfig directory: %w", err)
+				}
+				reader, local = adapter, adapter
+			}
 			return runWebUI(command.Context(), command, reader, local, options)
 		},
 	}
 	command.Flags().StringVar(&options.address, "address", options.address, "loopback listen address")
 	command.Flags().IntVar(&options.port, "port", 0, "loopback listen port; 0 selects an available port")
 	command.Flags().BoolVar(&options.noOpen, "no-open", false, "do not open the system browser")
+	command.Flags().StringVar(&options.kubeconfigDir, "kubeconfig-dir", "", "import kubeconfig files from this directory for this local UI session")
 	return command
 }
 
