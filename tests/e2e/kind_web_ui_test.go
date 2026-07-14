@@ -198,7 +198,7 @@ func exerciseWebUIDirectoryImport(
 	for {
 		response := webUIRequest(ctx, t, client, http.MethodGet, origin, "/api/v1/snapshot?kind=Pod", token, nil)
 		decodeWebUIJSON(t, response, http.StatusOK, &snapshot)
-		if snapshot.Coverage.Requested == 2 && snapshot.Coverage.Reachable == 2 && len(snapshot.Scopes) == 2 {
+		if snapshot.Coverage.Requested == 3 && snapshot.Coverage.Reachable == 3 && len(snapshot.Scopes) == 3 {
 			break
 		}
 		select {
@@ -212,38 +212,48 @@ func exerciseWebUIDirectoryImport(
 	if strings.Contains(mustMarshalWebUISnapshot(t, snapshot), kubeconfigDirectory) {
 		t.Fatalf("directory-import snapshot exposed absolute directory: %#v", snapshot)
 	}
-	byOrigin := make(map[string]string, len(snapshot.Scopes))
+	byOrigin := make(map[string][]string, len(snapshot.Scopes))
 	for _, scope := range snapshot.Scopes {
 		if scope.DisplayName == "" || scope.Origin == "" || scope.Name == scope.DisplayName {
 			t.Fatalf("directory-import scope metadata = %#v", scope)
 		}
-		byOrigin[scope.Origin] = scope.Name
+		byOrigin[scope.Origin] = append(byOrigin[scope.Origin], scope.Name)
 	}
-	if len(byOrigin) != 2 || byOrigin["first.yaml"] == "" || byOrigin["nested/second.yaml"] == "" {
+	if len(byOrigin) != 2 || len(byOrigin["first.yaml"]) != 2 || len(byOrigin["nested/second.yaml"]) != 1 {
 		t.Fatalf("directory-import source groups = %#v", byOrigin)
 	}
 	selected := byOrigin["first.yaml"]
+	selectedScopes := strings.Join(selected, ",")
 	filtered := webUIRequest(
 		ctx, t, client, http.MethodGet, origin,
-		"/api/v1/snapshot?kind=Pod&scopes="+url.QueryEscape(selected), token, nil,
+		"/api/v1/snapshot?kind=Pod&scopes="+url.QueryEscape(selectedScopes), token, nil,
 	)
 	var oneSource fleetcache.Snapshot
 	decodeWebUIJSON(t, filtered, http.StatusOK, &oneSource)
-	if len(oneSource.Scopes) != 1 || oneSource.Scopes[0].Name != selected || oneSource.Coverage.Requested != 1 {
+	if len(oneSource.Scopes) != 2 || oneSource.Coverage.Requested != 2 || oneSource.Coverage.Reachable != 2 {
 		t.Fatalf("directory-import source selection = %#v", oneSource)
 	}
+	allowed := make(map[string]struct{}, len(selected))
+	for _, scope := range selected {
+		allowed[scope] = struct{}{}
+	}
+	observed := make(map[string]struct{}, len(selected))
 	for _, record := range oneSource.Records {
-		if record.Cluster != selected {
+		if _, ok := allowed[record.Cluster]; !ok {
 			t.Fatalf("directory-import selection returned another source: %#v", oneSource.Records)
 		}
+		observed[record.Cluster] = struct{}{}
+	}
+	if len(observed) != len(allowed) {
+		t.Fatalf("directory-import selection omitted selected contexts: %#v", oneSource.Records)
 	}
 	objectPath := webUITargetPath("/api/v1/object", localops.Target{
-		Context: selected, Namespace: "default", Kind: "Pod", Name: "sith-local-ops",
+		Context: selected[0], Namespace: "default", Kind: "Pod", Name: "sith-local-ops",
 	})
 	object := webUIRequest(ctx, t, client, http.MethodGet, origin, objectPath, token, nil)
 	var viewed webUIObject
 	decodeWebUIJSON(t, object, http.StatusOK, &viewed)
-	if viewed.Target.Context != selected || !strings.Contains(viewed.YAML, "sith-local-ops") ||
+	if viewed.Target.Context != selected[0] || !strings.Contains(viewed.YAML, "sith-local-ops") ||
 		!strings.Contains(viewed.YAML, "kind-"+clusters[0]) {
 		t.Fatalf("directory-import object read = %#v/%q", viewed.Target, viewed.YAML)
 	}
@@ -344,6 +354,18 @@ func startWebUI(ctx context.Context, t *testing.T, binary, kubeconfigPath string
 		"KUBECONFIG="+kubeconfigPath,
 		"XDG_CONFIG_HOME="+filepath.Join(filepath.Dir(kubeconfigPath), "config-home-web"),
 	)
+	return startWebUIProcess(ctx, t, command)
+}
+
+func startWebUIFromDirectory(ctx context.Context, t *testing.T, binary, kubeconfigDirectory string) (*webUIProcess, string) {
+	t.Helper()
+	command := exec.Command(binary, "ui", "--no-open", "--address", "127.0.0.1", "--port", "0", "--kubeconfig-dir", kubeconfigDirectory)
+	command.Env = append(os.Environ(), "XDG_CONFIG_HOME="+filepath.Join(kubeconfigDirectory, "config-home-web"))
+	return startWebUIProcess(ctx, t, command)
+}
+
+func startWebUIProcess(ctx context.Context, t *testing.T, command *exec.Cmd) (*webUIProcess, string) {
+	t.Helper()
 	stdout, err := command.StdoutPipe()
 	if err != nil {
 		t.Fatalf("web UI stdout: %v", err)
@@ -381,51 +403,6 @@ func startWebUI(ctx context.Context, t *testing.T, binary, kubeconfigPath string
 	case <-ctx.Done():
 		process.stop(t)
 		t.Fatalf("web UI context ended before startup: %v", ctx.Err())
-	}
-	return nil, ""
-}
-
-func startWebUIFromDirectory(ctx context.Context, t *testing.T, binary, kubeconfigDirectory string) (*webUIProcess, string) {
-	t.Helper()
-	command := exec.Command(binary, "ui", "--no-open", "--address", "127.0.0.1", "--port", "0", "--kubeconfig-dir", kubeconfigDirectory)
-	command.Env = append(os.Environ(), "XDG_CONFIG_HOME="+filepath.Join(kubeconfigDirectory, "config-home-web"))
-	stdout, err := command.StdoutPipe()
-	if err != nil {
-		t.Fatalf("directory-import web UI stdout: %v", err)
-	}
-	process := &webUIProcess{command: command, stderr: &bytes.Buffer{}}
-	command.Stderr = process.stderr
-	if err := command.Start(); err != nil {
-		t.Fatalf("start directory-import web UI: %v", err)
-	}
-	lines := make(chan string, 1)
-	go func() {
-		scanner := bufio.NewScanner(stdout)
-		if scanner.Scan() {
-			lines <- scanner.Text()
-		}
-		close(lines)
-	}()
-	timer := time.NewTimer(30 * time.Second)
-	defer timer.Stop()
-	select {
-	case line, open := <-lines:
-		if !open {
-			process.stop(t)
-			t.Fatalf("directory-import web UI exited before reporting its address: %s", process.stderr.String())
-		}
-		match := webUIAddressPattern.FindStringSubmatch(line)
-		if len(match) != 2 {
-			process.stop(t)
-			t.Fatalf("directory-import web UI address line = %q", line)
-		}
-		return process, match[1]
-	case <-timer.C:
-		process.stop(t)
-		t.Fatalf("directory-import web UI did not report its address: %s", process.stderr.String())
-	case <-ctx.Done():
-		process.stop(t)
-		t.Fatalf("directory-import web UI context ended before startup: %v", ctx.Err())
 	}
 	return nil, ""
 }
