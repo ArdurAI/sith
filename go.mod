@@ -2,6 +2,8 @@ module github.com/ArdurAI/sith
 
 go 1.26.0
 
+toolchain go1.26.5
+
 require (
 	charm.land/bubbletea/v2 v2.0.8
 	github.com/golang-jwt/jwt/v5 v5.3.1
