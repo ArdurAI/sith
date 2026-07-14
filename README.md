@@ -191,10 +191,20 @@ present and valid:
 Every referenced key, certificate, or CA file must be a read-only regular file from a deployment
 mount. The runtime obtains its Kubernetes identity only with in-cluster configuration; it has no
 kubeconfig fallback and uses that identity through the fixed `sith-reader` Secret reader. It serves
-only `POST /v1/workspaces/{workspace}/fleet:refresh` and
-`GET /v1/workspaces/{workspace}/fleet`. Both require an exact signed Sith session, derive the
-workspace scope from its signed memberships, carry that scope through the PEP and RLS seams, accept
-no query parameters, and return only normalized coverage/fleet data under `Cache-Control: no-store`.
+only `POST /v1/workspaces/{workspace}/fleet:refresh`,
+`GET /v1/workspaces/{workspace}/fleet`, and
+`GET /v1/workspaces/{workspace}/fleet/images/{sha256:<64-lowercase-hex>}`. Every route requires an
+exact signed Sith session, derives the workspace scope from its signed memberships, carries that
+scope through the PEP and RLS seams, accepts no query parameters, and returns only normalized
+coverage/fleet data under `Cache-Control: no-store`.
+
+The image route answers one exact, immutable runtime digest question across registered spokes. The
+direct reader accepts only canonical digests normalized from ordinary
+`Pod.Status.ContainerStatuses[].ImageID`; PodSpec image strings, init and ephemeral container
+statuses, mutable tags, malformed values, and ambiguous runtime IDs abstain. Sith makes no registry
+request, image pull, SBOM retrieval, vulnerability-feed lookup, or credential use for this read.
+The result remains coverage-honest: matching Pod inventory facts retain source and freshness, and
+unreachable or stale spokes are reported rather than assumed clean.
 
 `sith serve --mcp` exposes `fleet.inventory`, `fleet.health`, `fleet.correlate`, and
 `fleet.cve-search` over MCP Streamable HTTP. All four tools are cache-only and carry

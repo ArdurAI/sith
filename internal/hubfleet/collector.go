@@ -42,6 +42,7 @@ var observedKeys = map[fleet.FactKind]map[string]struct{}{
 		"available_replicas": {},
 		"ready":              {},
 		"generation":         {},
+		"image_digests":      {},
 	},
 	fleet.FactHealth: {"status": {}},
 }
@@ -345,6 +346,11 @@ func validateEvidence(spoke Spoke, evidence fleet.Evidence, snapshotObservedAt, 
 	if err := validateObserved(evidence.Kind, evidence.Observed); err != nil {
 		return err
 	}
+	if evidence.Kind == fleet.FactInventory {
+		if err := validateInventoryImageDigests(evidence); err != nil {
+			return err
+		}
+	}
 	return validateDisplay(evidence.Display)
 }
 
@@ -375,6 +381,35 @@ func validateObserved(kind fleet.FactKind, observed json.RawMessage) error {
 			return fmt.Errorf("observed payload has trailing JSON tokens")
 		}
 		return fmt.Errorf("observed payload is not valid JSON: %w", err)
+	}
+	return nil
+}
+
+func validateInventoryImageDigests(evidence fleet.Evidence) error {
+	var observed map[string]json.RawMessage
+	if err := json.Unmarshal(evidence.Observed, &observed); err != nil {
+		return fmt.Errorf("decode normalized inventory: %w", err)
+	}
+	rawDigests, present := observed["image_digests"]
+	if !present {
+		return nil
+	}
+	if evidence.Ref.Kind != "Pod" {
+		return fmt.Errorf("image digests are allowed only on normalized Pod inventory")
+	}
+	var digests []string
+	if err := json.Unmarshal(rawDigests, &digests); err != nil || len(digests) == 0 || len(digests) > 64 {
+		return fmt.Errorf("image digests must be a non-empty bounded string array")
+	}
+	previous := ""
+	for _, digest := range digests {
+		if err := fleet.ValidateImageDigest(digest); err != nil {
+			return fmt.Errorf("normalized Pod image digest: %w", err)
+		}
+		if previous != "" && previous >= digest {
+			return fmt.Errorf("normalized Pod image digests must be unique and sorted")
+		}
+		previous = digest
 	}
 	return nil
 }

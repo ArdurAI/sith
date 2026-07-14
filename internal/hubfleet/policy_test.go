@@ -5,6 +5,7 @@ package hubfleet
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,7 +60,18 @@ func TestHubReadEntrypointsStopBeforeDependenciesWhenPolicyRefuses(t *testing.T)
 	if querier.calls != 0 {
 		t.Fatalf("correlator reached fleet query %d times after refusal", querier.calls)
 	}
-	if got, want := refusal.verbs, []pep.Verb{pep.VerbSpokeSnapshotRefresh, pep.VerbFleetRead, pep.VerbFleetCorrelate}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+
+	imageSearcher, err := NewImageSearcher(ImageSearcherConfig{Querier: querier, PEP: refusal.enforcer(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := imageSearcher.Search(context.Background(), scope, ImageSearchRequest{Digest: "sha256:" + strings.Repeat("a", 64)}); err == nil {
+		t.Fatal("Search() unexpectedly bypassed policy refusal")
+	}
+	if querier.calls != 0 {
+		t.Fatalf("image search reached fleet query %d times after refusal", querier.calls)
+	}
+	if got, want := refusal.verbs, []pep.Verb{pep.VerbSpokeSnapshotRefresh, pep.VerbFleetRead, pep.VerbFleetCorrelate, pep.VerbFleetImageSearch}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] || got[3] != want[3] {
 		t.Fatalf("policy verbs = %q, want %q", got, want)
 	}
 }

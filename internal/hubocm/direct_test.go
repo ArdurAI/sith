@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -25,6 +26,7 @@ import (
 
 	konnectivity "sigs.k8s.io/apiserver-network-proxy/konnectivity-client/pkg/client"
 
+	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/hubfleet"
 	"github.com/ArdurAI/sith/internal/tenancy"
 )
@@ -112,7 +114,8 @@ func TestSnapshotPinsMSACredentialTLSAndNormalizedFacts(t *testing.T) {
 	pod := corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "apps", Generation: 5},
 		Status: corev1.PodStatus{
-			Phase: corev1.PodRunning,
+			Phase:             corev1.PodRunning,
+			ContainerStatuses: []corev1.ContainerStatus{{ImageID: "containerd://sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
 			Conditions: []corev1.PodCondition{
 				{Type: corev1.PodReady, Status: corev1.ConditionTrue},
 			},
@@ -148,6 +151,27 @@ func TestSnapshotPinsMSACredentialTLSAndNormalizedFacts(t *testing.T) {
 			fact.Provenance.NativeID != "" || strings.Contains(string(fact.Observed), "token") || strings.Contains(string(fact.Observed), "endpoint") {
 			t.Fatalf("unsafe normalized fact: %#v", fact)
 		}
+	}
+	for _, fact := range snapshot.Facts {
+		if fact.Kind == fleet.FactInventory && fact.Ref.Kind == "Pod" && !strings.Contains(string(fact.Observed), "\"image_digests\":[\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]") {
+			t.Fatalf("pod inventory did not retain the canonical runtime digest: %s", fact.Observed)
+		}
+	}
+}
+
+func TestPodImageDigestsAbstainsFromMutableOrNonWorkloadStatus(t *testing.T) {
+	t.Parallel()
+
+	digest := "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	pod := corev1.Pod{Status: corev1.PodStatus{
+		ContainerStatuses:     []corev1.ContainerStatus{{ImageID: "docker-pullable://registry.example/api@" + digest}, {ImageID: "registry.example/api:latest"}, {ImageID: "docker-pullable://registry.example/api@" + digest}},
+		InitContainerStatuses: []corev1.ContainerStatus{{ImageID: "containerd://sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},
+		EphemeralContainerStatuses: []corev1.ContainerStatus{{
+			ImageID: "containerd://sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		}},
+	}}
+	if got := podImageDigests(pod); !slices.Equal(got, []string{digest}) {
+		t.Fatalf("podImageDigests() = %#v, want one ordinary-container digest", got)
 	}
 }
 

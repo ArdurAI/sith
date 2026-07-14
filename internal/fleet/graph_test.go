@@ -130,6 +130,37 @@ func TestImageDigestFromRepoDigest(t *testing.T) {
 	}
 }
 
+func TestImageDigestFromRuntimeImageID(t *testing.T) {
+	t.Parallel()
+
+	digest := testGraphDigest
+	for _, imageID := range []string{
+		digest,
+		"containerd://" + digest,
+		"cri-o://" + digest,
+		"docker-pullable://registry.example/payments@" + digest,
+	} {
+		got, err := ImageDigestFromRuntimeImageID(imageID)
+		if err != nil || got != digest {
+			t.Fatalf("ImageDigestFromRuntimeImageID(%q) = %q, %v", imageID, got, err)
+		}
+	}
+	for _, imageID := range []string{
+		"registry.example/payments:latest",
+		"containerd://registry.example/payments:latest",
+		"containerd://" + "sha256:ABC",
+		"Containerd://" + digest,
+		"http://" + digest,
+		"custom-runtime://" + digest,
+		"docker-pullable://registry.example/payments:latest@" + digest,
+		"containerd://" + digest + "@" + digest,
+	} {
+		if _, err := ImageDigestFromRuntimeImageID(imageID); err == nil {
+			t.Fatalf("ImageDigestFromRuntimeImageID(%q) unexpectedly succeeded", imageID)
+		}
+	}
+}
+
 func TestEntityRefKeyIncludesEveryLocalDimension(t *testing.T) {
 	t.Parallel()
 
