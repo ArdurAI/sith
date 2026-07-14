@@ -1,6 +1,7 @@
 # Sith release and verification guide
 
-Sith releases are immutable, tag-driven builds from `main`. The release job creates a draft,
+Sith releases are immutable, tag-driven builds from `main`. Stable releases use `vMAJOR.MINOR.PATCH`;
+the beta channel uses `vMAJOR.MINOR.PATCH-beta.N` and never replaces the latest stable release. The release job creates a draft,
 builds four archives with GoReleaser, emits an SPDX 2.3 SBOM for each archive with Syft, signs the
 archives, SBOMs, and checksum manifest with keyless Cosign, and creates GitHub SLSA provenance plus
 one SBOM attestation per platform. The draft becomes public only after every step succeeds.
@@ -146,11 +147,14 @@ slice is not a claim of the parent feature's future in-chart database, HA, or cl
    match, resolve the account identity before creating a tag. See
    GitHub's [signature-verification overview](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification)
    and [tag-signing guide](https://docs.github.com/en/authentication/managing-commit-signature-verification/signing-tags).
-4. Create an annotated, SSH-signed stable-semver tag on the release commit and verify it locally,
-   then push only that tag:
+4. Create an annotated, SSH-signed canonical release tag on the release commit and verify it
+   locally, then push only that tag. Stable tags use `vMAJOR.MINOR.PATCH`; beta tags use exactly
+   `vMAJOR.MINOR.PATCH-beta.N` with a numeric `N`. The beta workflow publishes a prerelease with
+   the same archives, SBOMs, signatures, and attestations, but never replaces the latest stable
+   release:
 
    ```bash
-   tag=vX.Y.Z
+   tag=vX.Y.Z              # or vX.Y.Z-beta.N
    git tag -s -a "$tag" -m "release: $tag"
    git tag -v "$tag"
    git push origin "refs/tags/$tag"
