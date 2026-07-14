@@ -206,6 +206,19 @@ request, image pull, SBOM retrieval, vulnerability-feed lookup, or credential us
 The result remains coverage-honest: matching Pod inventory facts retain source and freshness, and
 unreachable or stale spokes are reported rather than assumed clean.
 
+### Hub schema migration
+
+Run `sith hub migrate` as a short-lived deployment Job before starting `sith hub`. It accepts only
+`SITH_HUB_MIGRATION_OWNER_DATABASE_URL` and `SITH_HUB_APPLICATION_DATABASE_ROLE`; mount the owner
+database URL from the deployment secret provider and set the application role explicitly. The
+command requires TLS for any non-local database target, applies the checksum-locked serializable
+migration ledger, audits forced RLS, attempts to close its one owner connection, and exits. It never opens the
+hub listener, creates a Kubernetes client, or starts collection.
+
+The normal hub process continues to use only `SITH_HUB_DATABASE_URL` for the non-owner application
+role. Do not reuse the migration-owner credential in the hub Deployment or place either database
+URL, certificates, tokens, or private keys in chart values or logs.
+
 `sith serve --mcp` exposes `fleet.inventory`, `fleet.health`, `fleet.correlate`, and
 `fleet.cve-search` over MCP Streamable HTTP. All four tools are cache-only and carry
 `readOnlyHint:true`; they use the exact workspace-required query path used by the CLI, TUI, and web
