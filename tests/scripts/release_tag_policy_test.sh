@@ -50,6 +50,12 @@ done
 
 grep -Fq 'hack/release-tag-classify.sh "$GITHUB_REF_NAME"' "${workflow}"
 printf '[release-tag-policy] PASS: workflow invokes the tested classifier\n'
+grep -Fq 'gh release view "$GITHUB_REF_NAME" --json databaseId' "${workflow}"
+if grep -Fq 'releases/tags/${GITHUB_REF_NAME}' "${workflow}"; then
+  printf '[release-tag-policy] FAIL: beta publication uses draft-invisible tag lookup\n' >&2
+  exit 1
+fi
+printf '[release-tag-policy] PASS: beta publication resolves the draft release by database ID\n'
 grep -Fq -- '-f make_latest=false' "${workflow}"
 printf '[release-tag-policy] PASS: beta publication cannot replace latest stable\n'
 grep -Fq 'vMAJOR.MINOR.PATCH-beta.N' "${guide}"
