@@ -82,6 +82,9 @@ jobs:
       - name: Binary integration smoke test
         run: go test -race -count=1 -tags=e2e ./tests/e2e
 
+      - name: Immutable OCI image contract
+        run: make e2e-oci
+
       - name: Install pinned kind
         run: go install sigs.k8s.io/kind@v0.32.0
 
