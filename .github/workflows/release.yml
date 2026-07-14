@@ -162,7 +162,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$RELEASE_KIND" == "beta" ]]; then
-            release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq '.id')"
+            release_id="$(gh release view "$GITHUB_REF_NAME" --json databaseId --jq '.databaseId')"
             gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
               -F draft=false \
               -F prerelease=true \
