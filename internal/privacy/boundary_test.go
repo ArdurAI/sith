@@ -20,6 +20,7 @@ var approvedNetworkImports = map[string]map[string]bool{
 	"internal/connector/kubeconfig/local_streams.go": {"net/http": true, "net/url": true},
 	"internal/hubserver/auth.go":                     {"net/http": true},
 	"internal/hubserver/exchange.go":                 {"net": true, "net/http": true},
+	"internal/hubserver/fleet.go":                    {"net/http": true, "net/url": true},
 	// AWS STS egress is endpoint-pinned, SigV4-profiled, redirect-disabled, and never used by local mode.
 	"internal/hubauth/aws_sts.go": {"net/http": true, "net/url": true},
 	"internal/hubauth/oidc.go":    {"net": true, "net/http": true, "net/netip": true, "net/url": true},
@@ -33,6 +34,12 @@ var approvedNetworkImports = map[string]map[string]bool{
 		"k8s.io/client-go/dynamic": true, "k8s.io/client-go/kubernetes": true, "k8s.io/client-go/rest": true,
 		"google.golang.org/grpc": true, "google.golang.org/grpc/credentials": true,
 	},
+	// The in-cluster hub composition root is the reviewed boundary for its fixed TLS listener and
+	// scoped Kubernetes client. It delegates every spoke credential read to the direct OCM adapter.
+	"internal/hubruntime/config.go": {
+		"net": true, "k8s.io/client-go/kubernetes": true, "k8s.io/client-go/rest": true,
+	},
+	"internal/hubruntime/runtime.go":    {"net": true, "net/http": true},
 	"internal/mcpserver/server.go":      {"net": true, "net/http": true, "net/url": true},
 	"internal/observability/metrics.go": {"net/http": true},
 	"internal/webui/api.go":             {"net/http": true},

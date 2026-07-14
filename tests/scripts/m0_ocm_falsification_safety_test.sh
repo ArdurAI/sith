@@ -107,6 +107,28 @@ expect_failure "Docker validation rejects a remote endpoint override" \
   env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/docker-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
   DOCKER_HOST="tcp://127.0.0.1:2375" bash -c 'source "$1"; validate_local_docker_endpoint' _ "${SCRIPT}"
 
+health_fallback_marker="${TEST_ROOT}/health-fallback"
+health_fallback_output="$(env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/health-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
+  HEALTH_FALLBACK_MARKER="${health_fallback_marker}" bash -c '
+    source "$1"
+    proxy_health_port_available() { return 1; }
+    verify_cluster_registration() { :; }
+    verify_scoped_proxy() { : >"${HEALTH_FALLBACK_MARKER}"; }
+    verify_spoke_ingress_boundary() { :; }
+    verify_outbound_only() { :; }
+    verify_lab
+  ' _ "${SCRIPT}")"
+[[ ! -e "${health_fallback_marker}" ]]
+[[ "${health_fallback_output}" == *"deferring clusteradm proxy checks to the mandatory direct e2e gate"* ]] || {
+  printf '[m0-safety] FAIL: occupied port did not log the direct-e2e fallback\n' >&2
+  exit 1
+}
+[[ "${health_fallback_output}" == *"transport=direct-e2e-required"* ]] || {
+  printf '[m0-safety] FAIL: occupied port did not select direct-e2e-required transport\n' >&2
+  exit 1
+}
+pass "occupied ClusterProxy port defers clusteradm checks to direct e2e"
+
 cleanup_marker="${TEST_ROOT}/forced-cleanup"
 expect_failure "retained run fails closed when bootstrap rotation is unproven" \
   env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/rotation-root" SITH_M0_ALLOW_NON_EXTENDED=1 \

@@ -90,9 +90,10 @@ revoked immediately. Exchange responses, including generic failures, are non-cac
 handler includes a bounded per-process attempt limiter; a replicated hub must additionally enforce
 a shared limit at its ingress or gateway. Deployments must provide the HMAC pepper and Ed25519
 private key through a secret manager, keep both out of logs and configuration repositories, and
-rotate them under an explicit operational procedure. These are E1 library and HTTP boundaries;
-the `sith hub` runtime remains staged behind later hub epics rather than exposing an incomplete
-service.
+rotate them under an explicit operational procedure. These are E1 library and HTTP boundaries.
+The P1 `sith hub` runtime now mounts only the session-authenticated fleet read/refresh surface
+below; API-key, OIDC, and cloud-proof exchange handlers remain intentionally unmounted until their
+ingress and operator lifecycle are composed.
 
 Pinned OIDC federation uses the same exchange model. Each endpoint is fixed to one requested
 workspace, and each provider configuration allowlists an exact HTTPS issuer, audience, token type,
@@ -164,12 +165,36 @@ failure category. The pinned direct OCM ClusterProxy adapter reads the exact rot
 Konnectivity tunnel only to that spoke, and verifies both proxy mTLS and the spoke Kubernetes
 certificate; it never forwards a caller `Authorization` header, stores a credential, disables
 TLS verification, lists or watches Secrets, or carries raw Kubernetes objects across the
-collector seam. Its executable two-spoke M0 gate is `make e2e-ocm`; the `sith hub` runtime remains
-staged until a later epic wires an operator deployment around this library boundary. The same
-model now answers a read-only, exact cross-cluster correlation such as “every deployment
+collector seam. Its executable two-spoke M0 gate is `make e2e-ocm`, which now also drives a
+signed-session request through the TLS hub runtime across both spokes. The same model now answers
+a read-only, exact cross-cluster correlation such as “every deployment
 named `payments` that is not Healthy” within one workspace. Matching is by exact kind/name/namespace
-rather than a prefix, and every answer retains full stale/unreachable coverage rather than claiming
+rather than a prefix. Every returned cluster and matching fact retains its source identity and
+observation time, and every answer retains full stale/unreachable coverage rather than claiming
 that a partial fleet is complete.
+
+### Governed hub runtime (P1)
+
+`sith hub` is an in-cluster, TLS-only process. It has no listener default and exits non-zero before
+opening a listener, database pool, or Kubernetes client unless all of these deployment inputs are
+present and valid:
+
+- `SITH_HUB_LISTEN_ADDR` and `SITH_HUB_DATABASE_URL` (the database must use the existing
+  non-owner, forced-RLS application role and TLS);
+- `SITH_HUB_SESSION_ISSUER`, `SITH_HUB_SESSION_AUDIENCE`, `SITH_HUB_SESSION_KEY_ID`, and
+  `SITH_HUB_SESSION_PUBLIC_KEY_FILE` (a static Ed25519 PKIX public key; no remote discovery);
+- `SITH_HUB_SERVER_TLS_CERT_FILE` and `SITH_HUB_SERVER_TLS_KEY_FILE` for the hub HTTPS listener;
+- `SITH_HUB_PROXY_ADDRESS`, `SITH_HUB_PROXY_SERVER_NAME`, `SITH_HUB_PROXY_CA_FILE`,
+  `SITH_HUB_PROXY_CERT_FILE`, `SITH_HUB_PROXY_KEY_FILE`, and `SITH_HUB_KUBE_API_SERVER_NAME` for
+  the direct ClusterProxy mTLS path.
+
+Every referenced key, certificate, or CA file must be a read-only regular file from a deployment
+mount. The runtime obtains its Kubernetes identity only with in-cluster configuration; it has no
+kubeconfig fallback and uses that identity through the fixed `sith-reader` Secret reader. It serves
+only `POST /v1/workspaces/{workspace}/fleet:refresh` and
+`GET /v1/workspaces/{workspace}/fleet`. Both require an exact signed Sith session, derive the
+workspace scope from its signed memberships, carry that scope through the PEP and RLS seams, accept
+no query parameters, and return only normalized coverage/fleet data under `Cache-Control: no-store`.
 
 `sith serve --mcp` exposes `fleet.inventory`, `fleet.health`, `fleet.correlate`, and
 `fleet.cve-search` over MCP Streamable HTTP. All four tools are cache-only and carry

@@ -6,13 +6,7 @@ package hubocm
 import (
 	"context"
 	"crypto/subtle"
-	"crypto/tls"
-	"crypto/x509"
-	"net"
 	"net/http"
-	"os"
-	"os/exec"
-	"strconv"
 	"testing"
 	"time"
 
@@ -20,16 +14,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/ArdurAI/sith/internal/hubfleet"
+	"github.com/ArdurAI/sith/tests/testutil/ocmlab"
 )
 
 const (
-	m0WorkspaceID     = "workspace-m0"
-	m0ProxyNamespace  = "open-cluster-management-addon"
-	m0ProxyService    = "proxy-entrypoint"
-	m0ProxyRemotePort = 8090
+	m0WorkspaceID = "workspace-m0"
 )
 
 // TestDirectClusterProxyM0 proves the direct Konnectivity path against the retained
@@ -38,13 +29,13 @@ func TestDirectClusterProxyM0(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 
-	hubConfig := m0HubConfig(t)
+	hubConfig := ocmlab.HubConfig(t)
 	hubClient, err := kubernetes.NewForConfig(hubConfig)
 	if err != nil {
 		t.Fatal("construct M0 hub client failed")
 	}
-	proxyAddress := startM0ProxyPortForward(ctx, t)
-	proxyTLS := m0ProxyTLS(t, ctx, hubClient)
+	proxyAddress := ocmlab.StartProxyPortForward(ctx, t)
+	proxyTLS := ocmlab.ProxyTLS(ctx, t, hubClient)
 	reader, err := NewManagedServiceAccountReader(hubClient.CoreV1())
 	if err != nil {
 		t.Fatal("construct scoped MSA reader failed")
@@ -77,47 +68,6 @@ func TestDirectClusterProxyM0(t *testing.T) {
 
 	assertDirectSecretsForbidden(ctx, t, adapter, reader)
 	assertMSARotation(ctx, t, hubClient, reader, adapter)
-}
-
-func m0HubConfig(t *testing.T) *rest.Config {
-	t.Helper()
-	kubeconfig := requiredM0Env(t, "SITH_OCM_HUB_KUBECONFIG")
-	contextName := requiredM0Env(t, "SITH_OCM_HUB_CONTEXT")
-	loader := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		&clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig},
-		&clientcmd.ConfigOverrides{CurrentContext: contextName},
-	)
-	config, err := loader.ClientConfig()
-	if err != nil {
-		t.Fatal("load isolated M0 hub kubeconfig failed")
-	}
-	return config
-}
-
-func m0ProxyTLS(t *testing.T, ctx context.Context, client kubernetes.Interface) *tls.Config {
-	t.Helper()
-	caSecret, err := client.CoreV1().Secrets(m0ProxyNamespace).Get(ctx, "proxy-server-ca", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal("read mounted proxy CA fixture failed")
-	}
-	clientSecret, err := client.CoreV1().Secrets(m0ProxyNamespace).Get(ctx, "proxy-client", metav1.GetOptions{})
-	if err != nil {
-		t.Fatal("read mounted proxy client fixture failed")
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caSecret.Data["ca.crt"]) {
-		t.Fatal("proxy CA fixture was invalid")
-	}
-	certificate, err := tls.X509KeyPair(clientSecret.Data["tls.crt"], clientSecret.Data["tls.key"])
-	if err != nil {
-		t.Fatal("proxy client mTLS fixture was invalid")
-	}
-	return &tls.Config{
-		RootCAs:      pool,
-		MinVersion:   tls.VersionTLS12,
-		ServerName:   "localhost",
-		Certificates: []tls.Certificate{certificate},
-	}
 }
 
 func assertDirectSecretsForbidden(
@@ -196,57 +146,6 @@ func assertMSARotation(
 	}
 }
 
-func startM0ProxyPortForward(ctx context.Context, t *testing.T) string {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal("reserve loopback port for direct M0 test failed")
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	if err := listener.Close(); err != nil {
-		t.Fatal("release reserved loopback port failed")
-	}
-	kubectl, err := exec.LookPath(requiredM0Env(t, "KUBECTL_BIN"))
-	if err != nil {
-		t.Fatal("M0 kubectl binary was unavailable")
-	}
-	command := exec.CommandContext(ctx, kubectl,
-		"--kubeconfig", requiredM0Env(t, "SITH_OCM_HUB_KUBECONFIG"),
-		"--context", requiredM0Env(t, "SITH_OCM_HUB_CONTEXT"),
-		"-n", m0ProxyNamespace,
-		"port-forward", "--address", "127.0.0.1", "service/"+m0ProxyService,
-		strconv.Itoa(port)+":"+strconv.Itoa(m0ProxyRemotePort),
-	)
-	command.Stdout = nil
-	command.Stderr = nil
-	if err := command.Start(); err != nil {
-		t.Fatal("start direct M0 proxy port-forward failed")
-	}
-	t.Cleanup(func() {
-		if command.Process != nil {
-			_ = command.Process.Kill()
-		}
-		_ = command.Wait()
-	})
-	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-	deadline := time.NewTimer(30 * time.Second)
-	defer deadline.Stop()
-	for {
-		connection, err := net.DialTimeout("tcp", address, 500*time.Millisecond)
-		if err == nil {
-			_ = connection.Close()
-			return address
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal("direct M0 proxy port-forward did not become reachable")
-		case <-deadline.C:
-			t.Fatal("direct M0 proxy port-forward did not become reachable")
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-}
-
 func hasInventoryFor(snapshot hubfleet.Snapshot, kind string) bool {
 	for _, fact := range snapshot.Facts {
 		if fact.Kind == "inventory" && fact.Ref.Kind == kind {
@@ -254,13 +153,4 @@ func hasInventoryFor(snapshot hubfleet.Snapshot, kind string) bool {
 		}
 	}
 	return false
-}
-
-func requiredM0Env(t *testing.T, name string) string {
-	t.Helper()
-	value := os.Getenv(name)
-	if value == "" {
-		t.Fatalf("required M0 test environment %s is unset", name)
-	}
-	return value
 }

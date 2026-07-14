@@ -58,7 +58,7 @@ func TestBinarySmoke(t *testing.T) {
 		{name: "search no egress", args: []string{"search", "status:Running", "-o", "json"}, contains: "no kubeconfig contexts discovered", wantError: true},
 		{name: "correlate no egress", args: []string{"correlate", "deploy/payments", "status!=Healthy", "-o", "json"}, contains: "no kubeconfig contexts discovered", wantError: true},
 		{name: "investigate no egress", args: []string{"investigate", "-o", "json"}, contains: "no kubeconfig contexts discovered", wantError: true},
-		{name: "hub stub", args: []string{"hub"}, contains: "phase-1+"},
+		{name: "hub requires secure configuration", args: []string{"hub"}, contains: "SITH_HUB_LISTEN_ADDR is required", wantError: true},
 		{name: "no arguments", contains: "Usage:"},
 		{name: "help", args: []string{"--help"}, contains: "Usage:"},
 	}
@@ -270,6 +270,11 @@ func (guard *egressGuard) environment(configRoot, kubeconfig string) []string {
 		"ALL_PROXY": guard.server.URL, "HTTP_PROXY": guard.server.URL, "HTTPS_PROXY": guard.server.URL,
 		"NO_PROXY": "", "all_proxy": guard.server.URL, "http_proxy": guard.server.URL,
 		"https_proxy": guard.server.URL, "no_proxy": "", "XDG_CONFIG_HOME": configRoot, "KUBECONFIG": kubeconfig,
+		"SITH_HUB_LISTEN_ADDR": "", "SITH_HUB_DATABASE_URL": "", "SITH_HUB_SESSION_ISSUER": "",
+		"SITH_HUB_SESSION_AUDIENCE": "", "SITH_HUB_SESSION_KEY_ID": "", "SITH_HUB_SESSION_PUBLIC_KEY_FILE": "",
+		"SITH_HUB_SERVER_TLS_CERT_FILE": "", "SITH_HUB_SERVER_TLS_KEY_FILE": "", "SITH_HUB_PROXY_ADDRESS": "",
+		"SITH_HUB_PROXY_SERVER_NAME": "", "SITH_HUB_PROXY_CA_FILE": "", "SITH_HUB_PROXY_CERT_FILE": "",
+		"SITH_HUB_PROXY_KEY_FILE": "", "SITH_HUB_KUBE_API_SERVER_NAME": "",
 	}
 	environment := make([]string, 0, len(os.Environ())+len(overrides))
 	for _, entry := range os.Environ() {

@@ -186,10 +186,10 @@ func TestUIRequiresLocalBackend(t *testing.T) {
 	}
 }
 
-func TestHubStub(t *testing.T) {
-	stdout, _, exitCode := runCLI(t, []string{"hub"}, fleet.StubSource{})
-	if exitCode != 0 || stdout != "sith hub: not yet implemented — hub mode is phase-1+ (E1–E10).\n" {
-		t.Fatalf("exit/stdout = %d/%q", exitCode, stdout)
+func TestHubRequiresCompleteSecureConfiguration(t *testing.T) {
+	stdout, stderr, exitCode := runCLI(t, []string{"hub"}, fleet.StubSource{})
+	if exitCode == 0 || stdout != "" || !strings.Contains(stderr, "SITH_HUB_LISTEN_ADDR is required") {
+		t.Fatalf("exit/stdout/stderr = %d/%q/%q", exitCode, stdout, stderr)
 	}
 }
 
@@ -240,6 +240,14 @@ func runCLI(t *testing.T, args []string, source fleet.Source) (stdout, stderr st
 	t.Setenv("SITH_LOG_LEVEL", "")
 	t.Setenv("SITH_LOG_FORMAT", "")
 	t.Setenv("SITH_KUBECONFIG", "")
+	for _, name := range []string{
+		"SITH_HUB_LISTEN_ADDR", "SITH_HUB_DATABASE_URL", "SITH_HUB_SESSION_ISSUER", "SITH_HUB_SESSION_AUDIENCE",
+		"SITH_HUB_SESSION_KEY_ID", "SITH_HUB_SESSION_PUBLIC_KEY_FILE", "SITH_HUB_SERVER_TLS_CERT_FILE", "SITH_HUB_SERVER_TLS_KEY_FILE",
+		"SITH_HUB_PROXY_ADDRESS", "SITH_HUB_PROXY_SERVER_NAME", "SITH_HUB_PROXY_CA_FILE", "SITH_HUB_PROXY_CERT_FILE",
+		"SITH_HUB_PROXY_KEY_FILE", "SITH_HUB_KUBE_API_SERVER_NAME",
+	} {
+		t.Setenv(name, "")
+	}
 
 	var stdoutBuffer bytes.Buffer
 	var stderrBuffer bytes.Buffer

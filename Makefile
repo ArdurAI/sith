@@ -53,11 +53,26 @@ e2e-kind: ## Exercise adapter and binary against two real kind clusters
 		go test -race -count=1 -timeout=15m -tags='e2e kind' -run '^TestKindFleetFanout$$' ./tests/e2e
 
 e2e-ocm: ## Prove direct ClusterProxy transport in the pinned two-spoke M0 lab
-	@set -e; trap 'KIND_BIN="$(KIND)" SITH_M0_SCRATCH_ROOT="$(OCM_SCRATCH_ROOT)" SITH_M0_PREFIX="$(OCM_PREFIX)" hack/experiments/m0-ocm-falsification.sh cleanup' EXIT; \
+	@set -euo pipefail; \
+		run_required_e2e_test() { \
+			local test_name="$$1"; shift; \
+			local output; \
+			if ! output="$$("$$@" 2>&1)"; then \
+				printf '%s\n' "$$output" >&2; return 1; \
+			fi; \
+			printf '%s\n' "$$output"; \
+			grep -Fq -- "--- PASS: $${test_name}" <<<"$$output" || { \
+				echo "required M0 test $${test_name} did not run" >&2; return 1; \
+			}; \
+		}; \
+		trap 'KIND_BIN="$(KIND)" SITH_M0_SCRATCH_ROOT="$(OCM_SCRATCH_ROOT)" SITH_M0_PREFIX="$(OCM_PREFIX)" hack/experiments/m0-ocm-falsification.sh cleanup' EXIT; \
 		KIND_BIN="$(KIND)" SITH_M0_SCRATCH_ROOT="$(OCM_SCRATCH_ROOT)" SITH_M0_PREFIX="$(OCM_PREFIX)" SITH_M0_KEEP_CLUSTERS=1 \
 			hack/experiments/m0-ocm-falsification.sh run; \
-		KUBECTL_BIN="$(KUBECTL)" SITH_OCM_HUB_KUBECONFIG="$(OCM_SCRATCH_ROOT)/kubeconfig" SITH_OCM_HUB_CONTEXT="kind-$(OCM_PREFIX)-hub" \
-			go test -race -count=1 -timeout=8m -tags='e2e ocm' -run '^TestDirectClusterProxyM0$$' ./internal/hubocm
+		export KUBECTL_BIN="$(KUBECTL)" SITH_OCM_HUB_KUBECONFIG="$(OCM_SCRATCH_ROOT)/kubeconfig" SITH_OCM_HUB_CONTEXT="kind-$(OCM_PREFIX)-hub"; \
+		run_required_e2e_test TestDirectClusterProxyM0 \
+			go test -v -race -count=1 -timeout=8m -tags='e2e ocm' -run '^TestDirectClusterProxyM0$$' ./internal/hubocm; \
+		run_required_e2e_test TestHubRuntimeDirectClusterProxyM0 \
+			go test -v -race -count=1 -timeout=8m -tags='e2e ocm' -run '^TestHubRuntimeDirectClusterProxyM0$$' ./internal/hubruntime
 
 e2e-postgres: ## Prove forced RLS against a temporary digest-pinned PostgreSQL container
 	DOCKER_BIN="$(DOCKER)" POSTGRES_IMAGE="$(POSTGRES_IMAGE)" \
