@@ -219,6 +219,23 @@ The normal hub process continues to use only `SITH_HUB_DATABASE_URL` for the non
 role. Do not reuse the migration-owner credential in the hub Deployment or place either database
 URL, certificates, tokens, or private keys in chart values or logs.
 
+### OCI image deployment contract
+
+The hub OCI recipe uses the digest-pinned distroless static Debian 12 runtime and contains only a
+static Linux Sith binary running as UID/GID `65532`. It has no shell, package manager, default
+configuration, Kubernetes credential, certificate, database URL, or secret. The source test builds
+and inspects both `linux/amd64` and `linux/arm64` variants without publishing; the native image must
+also run with a read-only filesystem, no network, no Linux capabilities, and no privilege
+escalation, then complete the same contract as a hardened Job on each of two Kind clusters.
+The no-network setting applies only to those isolated image checks. A deployed hub needs narrowly
+allowlisted egress to its configured runtime dependencies, including its database and, when
+enabled, the pinned OIDC discovery and JWKS endpoints.
+
+This is the chart-ready artifact contract, not a published image reference. A future Helm chart
+must require an explicit immutable `repository@sha256:...` image reference and must refuse tags,
+especially `latest`; it will invoke `sith hub migrate` in a separate short-lived Job before the
+non-owner hub Deployment starts.
+
 `sith serve --mcp` exposes `fleet.inventory`, `fleet.health`, `fleet.correlate`, and
 `fleet.cve-search` over MCP Streamable HTTP. All four tools are cache-only and carry
 `readOnlyHint:true`; they use the exact workspace-required query path used by the CLI, TUI, and web

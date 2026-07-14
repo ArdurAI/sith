@@ -84,6 +84,24 @@ These checks establish producer identity, artifact integrity, build provenance, 
 binding. They do not prove that every dependency is vulnerability-free; consumers must still
 evaluate the attached SBOM against their own policy and current advisory data.
 
+## OCI image contract
+
+Sith's deployment image recipe is validated locally before any registry publication. It assembles
+the existing static Linux binary into a digest-pinned distroless runtime, uses non-root UID/GID
+`65532`, and exposes only the `sith` entrypoint. The test builds and inspects both `linux/amd64`
+and `linux/arm64` variants without pushing, then runs the native image with a read-only filesystem,
+no network, no capabilities, and `no-new-privileges`; the same image must complete a hardened Job
+on two real Kind clusters.
+
+No network is an isolated image-check constraint, not the operational hub policy. A deployment
+must allow only narrowly scoped egress to configured runtime dependencies, including the database
+and, where enabled, the pinned OIDC discovery and JWKS endpoints.
+
+No OCI image is published by this repository yet. Consumers must not infer a mutable image tag
+from a release archive. The forthcoming Helm chart will accept only an explicit immutable
+`repository@sha256:...` reference, and image publishing/signing/attestation will be added as a
+separate release-boundary change before any public deployment guidance.
+
 ## Maintainer release procedure
 
 1. Merge the feature PR into `dev`, ensure the full CI and release-snapshot jobs are green, then

@@ -28,7 +28,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/buildinfo.Commit=$(COMMIT) \
 	-X $(PKG)/internal/buildinfo.Date=$(DATE)
 
-.PHONY: all build test test-scripts perf e2e e2e-kind e2e-ocm e2e-postgres e2e-isolation lint vuln fmt fmt-check vet tidy clean run ci release-check help
+.PHONY: all build test test-scripts perf e2e e2e-oci e2e-kind e2e-ocm e2e-postgres e2e-isolation lint vuln fmt fmt-check vet tidy clean run ci release-check help
 
 all: build
 
@@ -48,9 +48,12 @@ perf: ## Enforce the warm-cache TUI p95 latency budget without race overhead
 e2e: ## Build and exercise the real binary as a subprocess
 	go test -race -count=1 -tags=e2e ./tests/e2e
 
+e2e-oci: ## Build and inspect the local immutable OCI image contract for linux/amd64 and linux/arm64
+	go test -race -count=1 -timeout=10m -tags='e2e oci' -run '^Test(OCIImageCrossPlatformContract|ContainerfileInstructionGuard)$$' ./tests/e2e
+
 e2e-kind: ## Exercise adapter and binary against two real kind clusters
 	KIND_BIN="$(KIND)" KIND_NODE_IMAGE="$(KIND_NODE_IMAGE)" \
-		go test -race -count=1 -timeout=15m -tags='e2e kind' -run '^TestKindFleetFanout$$' ./tests/e2e
+		go test -race -count=1 -timeout=15m -tags='e2e kind' -run '^Test(KindFleetFanout|KindOCIImageContract)$$' ./tests/e2e
 
 e2e-ocm: ## Prove direct ClusterProxy transport in the pinned two-spoke M0 lab
 	@set -euo pipefail; \
