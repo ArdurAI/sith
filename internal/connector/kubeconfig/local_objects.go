@@ -232,15 +232,15 @@ func (adapter *Adapter) ensureLocalContext(ctx context.Context, name string) err
 	if known {
 		return nil
 	}
-	rawConfig, err := adapter.settings.loadingRules.Load()
+	rawConfig, metadata, _, err := adapter.loadConfig()
 	if err != nil {
-		return fmt.Errorf("load kubeconfig: %w", err)
+		return err
 	}
 	if _, exists := rawConfig.Contexts[name]; !exists {
 		return fmt.Errorf("%w: %s", ErrUnknownScope, name)
 	}
 	lastSeen := adapter.lastSeenSnapshot()[name]
-	result := adapter.probeContext(ctx, *rawConfig, name, lastSeen)
+	result := adapter.probeContext(ctx, *rawConfig, name, metadata[name], lastSeen)
 	adapter.mu.Lock()
 	adapter.scopes[name] = cloneScope(result.scope)
 	if result.scope.Reachable {

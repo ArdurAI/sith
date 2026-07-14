@@ -182,6 +182,20 @@ func TestUIRefusesExternalBindAndStartsOnLoopback(t *testing.T) {
 	}
 }
 
+func TestUIKubeconfigDirectoryRefusesFileBeforeStartingListener(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(filename, []byte("apiVersion: v1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, exitCode := runUICLI(context.Background(), t, []string{
+		"ui", "--no-open", "--kubeconfig-dir", filename,
+	}, &cacheReader{}, &fakeLocalClient{})
+	if exitCode == 0 || stdout != "" || !strings.Contains(stderr, "must be a real directory") ||
+		strings.Contains(stderr, filename) || strings.Contains(stderr, "apiVersion: v1") {
+		t.Fatalf("directory refusal exit/stdout/stderr = %d/%q/%q", exitCode, stdout, stderr)
+	}
+}
+
 func runLocalCLI(
 	t *testing.T,
 	args []string,

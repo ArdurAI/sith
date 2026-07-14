@@ -122,6 +122,27 @@ func TestSnapshotReadsCacheOnlyAndRefreshIsExplicit(t *testing.T) {
 	}
 }
 
+func TestSnapshotExposesOnlySafeImportMetadata(t *testing.T) {
+	t.Parallel()
+	store := populatedWebStore(t)
+	store.SetDiscovery(fleet.LocalWorkspace, connector.Discovery{
+		Scopes: []connector.Scope{{
+			Name: "import-123/context/prod", DisplayName: "prod", Origin: "team-a.yaml", Reachable: true, ObservedAt: time.Now().UTC(),
+		}},
+		Diagnostics: []connector.Diagnostic{{Source: "broken.yaml", Message: "invalid kubeconfig"}},
+	})
+	application, err := New(t.Context(), store, &webSyncer{}, &webLocalClient{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+	response := serve(testHandler(t, application), http.MethodGet, "/api/v1/snapshot", application.token, nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "team-a.yaml") ||
+		!strings.Contains(response.Body.String(), "broken.yaml") || strings.Contains(response.Body.String(), "/Users/") {
+		t.Fatalf("snapshot status/body = %d/%s", response.Code, response.Body.String())
+	}
+}
+
 func TestRefreshRequestsAreSingleFlight(t *testing.T) {
 	t.Parallel()
 	syncer := &blockingWebSyncer{started: make(chan struct{}), release: make(chan struct{})}

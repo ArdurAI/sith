@@ -213,6 +213,8 @@ h2 { margin-bottom: 0; font: 650 21px/1.15 var(--display); letter-spacing: -.02e
 .context-node[aria-current="true"] { color: var(--cobalt); }
 .context-node strong { display: block; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
 .context-node small { display: block; margin-top: 2px; color: var(--muted); font: 10px/1.2 var(--mono); }
+.context-source { margin-top: 6px; border-top: 1px solid var(--line); }
+.context-diagnostic { margin: 8px 4px; color: var(--amber); font: 10px/1.35 var(--mono); }
 .rail-note { color: var(--muted); font-size: 11px; line-height: 1.5; }
 
 .fleet-board { min-width: 0; padding: 22px; }
