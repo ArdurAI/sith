@@ -101,7 +101,10 @@ No OCI image is published by this repository yet. Consumers must not infer a mut
 from a release archive. The [`charts/sith-hub`](../charts/sith-hub) chart accepts only an explicit
 immutable `repository@sha256:...` reference, and its defaults intentionally fail until an operator
 provides that reference and existing Secret names. Image publishing/signing/attestation will be
-added as a separate release-boundary change before any public deployment guidance.
+added as a separate release-boundary change before any public deployment guidance. Its fixed
+`light` and `heavy` profiles alter only the reviewed resource envelope; both preserve the same
+digest, Secret-reference, migration, RBAC, and workload-hardening contract. This first F9.3a
+slice is not a claim of the parent feature's future in-chart database, HA, or cloud-KMS topology.
 
 ## Maintainer release procedure
 

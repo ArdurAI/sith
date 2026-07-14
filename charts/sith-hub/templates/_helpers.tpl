@@ -33,3 +33,35 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "sith-hub.migrationSecretName" -}}
 {{- required "migration.existingSecret must name an operator-provided Secret" .Values.migration.existingSecret -}}
 {{- end -}}
+
+{{- define "sith-hub.profile" -}}
+{{- if hasKey .Values "resources" -}}
+{{- fail "resources is not configurable; select the fixed light or heavy profile" -}}
+{{- end -}}
+{{- $profile := required "profile must be light or heavy" .Values.profile -}}
+{{- if not (has $profile (list "light" "heavy")) -}}
+{{- fail "profile must be light or heavy; arbitrary resource profiles are forbidden" -}}
+{{- end -}}
+{{- $profile -}}
+{{- end -}}
+
+{{- define "sith-hub.resources" -}}
+{{- $profile := include "sith-hub.profile" . -}}
+{{- if eq $profile "light" }}
+requests:
+  cpu: "100m"
+  memory: "128Mi"
+limits:
+  cpu: "500m"
+  memory: "512Mi"
+{{- else if eq $profile "heavy" }}
+requests:
+  cpu: "500m"
+  memory: "512Mi"
+limits:
+  cpu: "2"
+  memory: "2Gi"
+{{- else -}}
+{{- fail "profile must be light or heavy" -}}
+{{- end -}}
+{{- end -}}

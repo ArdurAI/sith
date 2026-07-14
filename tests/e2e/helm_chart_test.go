@@ -25,6 +25,22 @@ const (
 	validHubImage       = "registry.example.invalid/sith/hub@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 )
 
+type helmProfileResources struct {
+	requests map[string]string
+	limits   map[string]string
+}
+
+var hubProfileResources = map[string]helmProfileResources{
+	"light": {
+		requests: map[string]string{"cpu": "100m", "memory": "128Mi"},
+		limits:   map[string]string{"cpu": "500m", "memory": "512Mi"},
+	},
+	"heavy": {
+		requests: map[string]string{"cpu": "500m", "memory": "512Mi"},
+		limits:   map[string]string{"cpu": "2", "memory": "2Gi"},
+	},
+}
+
 func TestHelmHubChartContract(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
@@ -41,21 +57,29 @@ func TestHelmHubChartContract(t *testing.T) {
 	}
 
 	chart := filepath.Join(root, "charts", "sith-hub")
-	values := writeHelmValues(t, validHubValues())
-	if output, err := runHelm(ctx, t, helm, root, "lint", chart, "--values", values); err != nil {
+	lightValues := writeHelmValues(t, validHubValues())
+	if output, err := runHelm(ctx, t, helm, root, "lint", chart, "--values", lightValues); err != nil {
 		t.Fatalf("helm lint valid chart: %v\n%s", err, output)
 	}
-	rendered, err := runHelm(ctx, t, helm, root, "template", "sith-hub", chart, "--namespace", "sith-system", "--values", values)
+	lightRendered, err := runHelm(ctx, t, helm, root, "template", "sith-hub", chart, "--namespace", "sith-system", "--values", lightValues)
 	if err != nil {
-		t.Fatalf("helm template valid chart: %v\n%s", err, rendered)
+		t.Fatalf("helm template light profile: %v\n%s", err, lightRendered)
 	}
-	assertHelmHubRender(t, rendered)
+	lightObjects := assertHelmHubRender(t, lightRendered, "light")
+	heavyRendered, err := runHelm(ctx, t, helm, root, "template", "sith-hub", chart, "--namespace", "sith-system", "--values", writeHelmValues(t, profileHubValues("heavy")))
+	if err != nil {
+		t.Fatalf("helm template heavy profile: %v\n%s", err, heavyRendered)
+	}
+	heavyObjects := assertHelmHubRender(t, heavyRendered, "heavy")
+	assertProfileOnlyChangesResources(t, lightObjects, heavyObjects)
 
 	for name, invalid := range map[string]string{
 		"mutable tag":                  strings.Replace(validHubValues(), validHubImage, "registry.example.invalid/sith/hub:latest", 1),
 		"missing digest":               strings.Replace(validHubValues(), validHubImage, "registry.example.invalid/sith/hub", 1),
 		"blank runtime secret":         strings.Replace(validHubValues(), "existingSecret: sith-runtime", "existingSecret: \"\"", 1),
+		"unknown profile":              strings.Replace(validHubValues(), "profile: light", "profile: unbounded", 1),
 		"unexpected image pull secret": validHubValues() + "\nimagePullSecrets:\n  password: must-not-render\n",
+		"unexpected resources":         validHubValues() + "\nresources:\n  requests:\n    cpu: 999\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if output, err := runHelm(ctx, t, helm, root, "template", "sith-hub", chart, "--namespace", "sith-system", "--values", writeHelmValues(t, invalid)); err == nil {
@@ -64,14 +88,26 @@ func TestHelmHubChartContract(t *testing.T) {
 		})
 	}
 
-	mutable := strings.Replace(validHubValues(), validHubImage, "registry.example.invalid/sith/hub:latest", 1)
-	if output, err := runHelm(ctx, t, helm, root, "template", "sith-hub", chart, "--namespace", "sith-system", "--skip-schema-validation", "--values", writeHelmValues(t, mutable)); err == nil {
-		t.Fatalf("helm template --skip-schema-validation accepted a mutable image:\n%s", output)
+	for name, invalid := range map[string]string{
+		"mutable image":        strings.Replace(validHubValues(), validHubImage, "registry.example.invalid/sith/hub:latest", 1),
+		"unknown profile":      strings.Replace(validHubValues(), "profile: light", "profile: unbounded", 1),
+		"unexpected resources": validHubValues() + "\nresources:\n  requests:\n    cpu: 999\n",
+	} {
+		t.Run("skip schema validation "+name, func(t *testing.T) {
+			if output, err := runHelm(ctx, t, helm, root, "template", "sith-hub", chart, "--namespace", "sith-system", "--skip-schema-validation", "--values", writeHelmValues(t, invalid)); err == nil {
+				t.Fatalf("helm template --skip-schema-validation accepted %s:\n%s", name, output)
+			}
+		})
 	}
 }
 
 func validHubValues() string {
-	return fmt.Sprintf(`image:
+	return profileHubValues("light")
+}
+
+func profileHubValues(profile string) string {
+	return fmt.Sprintf(`profile: %s
+image:
   reference: %s
 runtime:
   existingSecret: sith-runtime
@@ -84,7 +120,7 @@ runtime:
 migration:
   existingSecret: sith-migration
   applicationRole: sith_app
-`, validHubImage)
+`, profile, validHubImage)
 }
 
 func writeHelmValues(t *testing.T, contents string) string {
@@ -111,7 +147,7 @@ func runHelm(ctx context.Context, t *testing.T, helm, root string, args ...strin
 	return string(output), err
 }
 
-func assertHelmHubRender(t *testing.T, rendered string) {
+func assertHelmHubRender(t *testing.T, rendered, profile string) []*unstructured.Unstructured {
 	t.Helper()
 	if strings.Contains(rendered, "kind: Secret") || strings.Contains(rendered, "stringData:") || strings.Contains(rendered, "\ndata:") {
 		t.Fatal("rendered chart created or embedded secret data")
@@ -126,14 +162,15 @@ func assertHelmHubRender(t *testing.T, rendered string) {
 		}
 	}
 
-	serviceAccountName, selectorLabels := assertHubDeployment(t, requiredHelmObject(t, objects, "Deployment"))
+	serviceAccountName, selectorLabels := assertHubDeployment(t, requiredHelmObject(t, objects, "Deployment"), profile)
 	assertHubRBAC(t, requiredHelmObject(t, objects, "ClusterRole"), requiredHelmObject(t, objects, "ClusterRoleBinding"), serviceAccountName)
-	assertMigrationJob(t, requiredHelmObject(t, objects, "Job"))
+	assertMigrationJob(t, requiredHelmObject(t, objects, "Job"), profile)
 	assertHubService(t, requiredHelmObject(t, objects, "Service"), selectorLabels)
 	serviceAccount := requiredHelmObject(t, objects, "ServiceAccount")
 	if value, found, _ := unstructured.NestedBool(serviceAccount.Object, "automountServiceAccountToken"); !found || !value {
 		t.Fatal("hub ServiceAccount must explicitly mount its in-cluster token")
 	}
+	return objects
 }
 
 func decodeHelmObjects(t *testing.T, rendered string) []*unstructured.Unstructured {
@@ -174,7 +211,7 @@ func requiredHelmObject(t *testing.T, objects []*unstructured.Unstructured, kind
 	return found
 }
 
-func assertHubDeployment(t *testing.T, deployment *unstructured.Unstructured) (string, map[string]any) {
+func assertHubDeployment(t *testing.T, deployment *unstructured.Unstructured, profile string) (string, map[string]any) {
 	t.Helper()
 	podSpec := nestedHelmMap(t, deployment.Object, "spec", "template", "spec")
 	if value, found, _ := unstructured.NestedBool(podSpec, "automountServiceAccountToken"); !found || !value {
@@ -186,6 +223,7 @@ func assertHubDeployment(t *testing.T, deployment *unstructured.Unstructured) (s
 		t.Fatalf("hub image contract = %#v", container)
 	}
 	assertHelmContainerSecurity(t, container)
+	assertHelmProfileResources(t, container, profile)
 	environment := helmEnvironment(t, container)
 	if len(environment) != 14 || environment["SITH_HUB_DATABASE_URL"] != "secret:sith-runtime/database-url" {
 		t.Fatalf("hub environment = %#v", environment)
@@ -253,7 +291,7 @@ func assertHubRBAC(t *testing.T, role, binding *unstructured.Unstructured, servi
 	}
 }
 
-func assertMigrationJob(t *testing.T, job *unstructured.Unstructured) {
+func assertMigrationJob(t *testing.T, job *unstructured.Unstructured, profile string) {
 	t.Helper()
 	annotations := job.GetAnnotations()
 	if annotations["helm.sh/hook"] != "pre-install,pre-upgrade" || annotations["helm.sh/hook-delete-policy"] != "before-hook-creation,hook-succeeded" || annotations["helm.sh/hook-weight"] != "-10" {
@@ -276,10 +314,63 @@ func assertMigrationJob(t *testing.T, job *unstructured.Unstructured) {
 		t.Fatalf("migration arguments = %#v", container["args"])
 	}
 	assertHelmContainerSecurity(t, container)
+	assertHelmProfileResources(t, container, profile)
 	environment := helmEnvironment(t, container)
 	if len(environment) != 2 || environment["SITH_HUB_MIGRATION_OWNER_DATABASE_URL"] != "secret:sith-migration/owner-database-url" || environment["SITH_HUB_APPLICATION_DATABASE_ROLE"] != "sith_app" {
 		t.Fatalf("migration environment = %#v", environment)
 	}
+}
+
+func assertProfileOnlyChangesResources(t *testing.T, light, heavy []*unstructured.Unstructured) {
+	t.Helper()
+	if len(light) != len(heavy) {
+		t.Fatalf("light/heavy rendered object counts = %d/%d", len(light), len(heavy))
+	}
+	heavyByKind := make(map[string]*unstructured.Unstructured, len(heavy))
+	for _, object := range heavy {
+		heavyByKind[object.GetKind()] = object
+	}
+	for _, lightObject := range light {
+		heavyObject, found := heavyByKind[lightObject.GetKind()]
+		if !found {
+			t.Fatalf("heavy profile did not render %s", lightObject.GetKind())
+		}
+		lightCopy := lightObject.DeepCopy()
+		heavyCopy := heavyObject.DeepCopy()
+		removeHelmProfileResources(t, lightCopy)
+		removeHelmProfileResources(t, heavyCopy)
+		if !reflect.DeepEqual(lightCopy.Object, heavyCopy.Object) {
+			t.Fatalf("profile changed non-resource %s manifest", lightObject.GetKind())
+		}
+	}
+}
+
+func removeHelmProfileResources(t *testing.T, object *unstructured.Unstructured) {
+	t.Helper()
+	if object.GetKind() != "Deployment" && object.GetKind() != "Job" {
+		return
+	}
+	spec, ok := object.Object["spec"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s spec = %#v", object.GetKind(), object.Object["spec"])
+	}
+	template, ok := spec["template"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s template = %#v", object.GetKind(), spec["template"])
+	}
+	podSpec, ok := template["spec"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s Pod spec = %#v", object.GetKind(), template["spec"])
+	}
+	containers, ok := podSpec["containers"].([]any)
+	if !ok || len(containers) != 1 {
+		t.Fatalf("%s containers = %#v", object.GetKind(), podSpec["containers"])
+	}
+	container, ok := containers[0].(map[string]any)
+	if !ok {
+		t.Fatalf("%s container = %#v", object.GetKind(), containers[0])
+	}
+	delete(container, "resources")
 }
 
 func assertHelmPodSecurity(t *testing.T, podSpec map[string]any, requireFSGroup bool) {
@@ -317,6 +408,18 @@ func assertHelmContainerSecurity(t *testing.T, container map[string]any) {
 	}
 	if !reflect.DeepEqual(stringSlice(t, nestedHelmMap(t, security, "capabilities")["drop"]), []string{"ALL"}) {
 		t.Fatalf("container capabilities = %#v", security["capabilities"])
+	}
+}
+
+func assertHelmProfileResources(t *testing.T, container map[string]any, profile string) {
+	t.Helper()
+	want, found := hubProfileResources[profile]
+	if !found {
+		t.Fatalf("unknown expected profile %q", profile)
+	}
+	resources := nestedHelmMap(t, container, "resources")
+	if len(resources) != 2 || !reflect.DeepEqual(stringMap(t, nestedHelmMap(t, resources, "requests")), want.requests) || !reflect.DeepEqual(stringMap(t, nestedHelmMap(t, resources, "limits")), want.limits) {
+		t.Fatalf("%s profile resources = %#v", profile, resources)
 	}
 }
 
@@ -365,6 +468,19 @@ func stringSlice(t *testing.T, value any) []string {
 			t.Fatalf("string slice item = %#v", item)
 		}
 		result[index] = stringValue
+	}
+	return result
+}
+
+func stringMap(t *testing.T, values map[string]any) map[string]string {
+	t.Helper()
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		stringValue, ok := value.(string)
+		if !ok {
+			t.Fatalf("string map %s = %#v", key, value)
+		}
+		result[key] = stringValue
 	}
 	return result
 }

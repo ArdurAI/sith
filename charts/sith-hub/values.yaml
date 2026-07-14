@@ -1,5 +1,7 @@
 # image.reference is an explicit immutable repository@sha256 reference for a released Sith hub image.
 # It is intentionally empty: this repository does not publish a hub image yet.
+profile: light
+
 image:
   reference: ""
 
@@ -21,10 +23,6 @@ migration:
   existingSecret: ""
   applicationRole: ""
 
-# resources sets a conservative baseline until the later deployment-profile slice defines light and heavy profiles.
-resources:
-  requests:
-    cpu: 100m
-    memory: 128Mi
-  limits:
-    memory: 512Mi
+# profile selects a fixed, reviewed resource envelope for both the hub and its migration hook.
+# light requests 100m CPU / 128Mi memory and caps at 500m / 512Mi; heavy requests 500m / 512Mi
+# and caps at 2 CPU / 2Gi. Arbitrary resource overrides are intentionally rejected.
