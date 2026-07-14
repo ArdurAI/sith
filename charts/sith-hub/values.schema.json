@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Sith hub chart values",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["image", "runtime", "migration"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference"],
+      "properties": {
+        "reference": {
+          "type": "string",
+          "pattern": "^[^@[:space:]]+@sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["existingSecret", "sessionIssuer", "sessionAudience", "sessionKeyID", "proxyAddress", "proxyServerName", "kubeAPIServerName"],
+      "properties": {
+        "existingSecret": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+        "sessionIssuer": {"type": "string", "minLength": 1},
+        "sessionAudience": {"type": "string", "minLength": 1},
+        "sessionKeyID": {"type": "string", "minLength": 1},
+        "proxyAddress": {"type": "string", "minLength": 1},
+        "proxyServerName": {"type": "string", "minLength": 1},
+        "kubeAPIServerName": {"type": "string", "minLength": 1}
+      }
+    },
+    "migration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["existingSecret", "applicationRole"],
+      "properties": {
+        "existingSecret": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+        "applicationRole": {"type": "string", "pattern": "^[a-z_][a-z0-9_]{0,62}$"}
+      }
+    },
+    "resources": {"type": "object"}
+  }
+}

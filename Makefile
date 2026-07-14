@@ -8,6 +8,7 @@ BIN_DIR  := bin
 GOLANGCI ?= golangci-lint
 GOVULNCHECK ?= govulncheck
 KIND     ?= kind
+HELM     ?= helm
 GORELEASER ?= goreleaser
 DOCKER      ?= docker
 KUBECTL     ?= kubectl
@@ -28,7 +29,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/buildinfo.Commit=$(COMMIT) \
 	-X $(PKG)/internal/buildinfo.Date=$(DATE)
 
-.PHONY: all build test test-scripts perf e2e e2e-oci e2e-kind e2e-ocm e2e-postgres e2e-isolation lint vuln fmt fmt-check vet tidy clean run ci release-check help
+.PHONY: all build test test-scripts perf e2e e2e-helm e2e-oci e2e-kind e2e-ocm e2e-postgres e2e-isolation lint vuln fmt fmt-check vet tidy clean run ci release-check help
 
 all: build
 
@@ -47,6 +48,9 @@ perf: ## Enforce the warm-cache TUI p95 latency budget without race overhead
 
 e2e: ## Build and exercise the real binary as a subprocess
 	go test -race -count=1 -tags=e2e ./tests/e2e
+
+e2e-helm: ## Validate the fail-closed Helm hub chart with the pinned Helm CLI
+	HELM_BIN="$(HELM)" go test -race -count=1 -timeout=5m -tags='e2e helm' -run '^TestHelmHubChartContract$$' ./tests/e2e
 
 e2e-oci: ## Build and inspect the local immutable OCI image contract for linux/amd64 and linux/arm64
 	go test -race -count=1 -timeout=10m -tags='e2e oci' -run '^Test(OCIImageCrossPlatformContract|ContainerfileInstructionGuard)$$' ./tests/e2e

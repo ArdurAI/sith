@@ -1,0 +1,108 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sith-hub.fullname" . }}
+  labels:
+    {{- include "sith-hub.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "sith-hub.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sith-hub.selectorLabels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: true
+      serviceAccountName: {{ include "sith-hub.fullname" . }}
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: hub
+          image: {{ include "sith-hub.imageReference" . | quote }}
+          imagePullPolicy: IfNotPresent
+          args: ["hub"]
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          env:
+            - name: SITH_HUB_LISTEN_ADDR
+              value: "0.0.0.0:8443"
+            - name: SITH_HUB_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sith-hub.runtimeSecretName" . }}
+                  key: database-url
+            - name: SITH_HUB_SESSION_ISSUER
+              value: {{ required "runtime.sessionIssuer is required" .Values.runtime.sessionIssuer | quote }}
+            - name: SITH_HUB_SESSION_AUDIENCE
+              value: {{ required "runtime.sessionAudience is required" .Values.runtime.sessionAudience | quote }}
+            - name: SITH_HUB_SESSION_KEY_ID
+              value: {{ required "runtime.sessionKeyID is required" .Values.runtime.sessionKeyID | quote }}
+            - name: SITH_HUB_SESSION_PUBLIC_KEY_FILE
+              value: /var/run/sith/runtime/session-public.pem
+            - name: SITH_HUB_SERVER_TLS_CERT_FILE
+              value: /var/run/sith/runtime/server-tls.crt
+            - name: SITH_HUB_SERVER_TLS_KEY_FILE
+              value: /var/run/sith/runtime/server-tls.key
+            - name: SITH_HUB_PROXY_ADDRESS
+              value: {{ required "runtime.proxyAddress is required" .Values.runtime.proxyAddress | quote }}
+            - name: SITH_HUB_PROXY_SERVER_NAME
+              value: {{ required "runtime.proxyServerName is required" .Values.runtime.proxyServerName | quote }}
+            - name: SITH_HUB_PROXY_CA_FILE
+              value: /var/run/sith/runtime/proxy-ca.crt
+            - name: SITH_HUB_PROXY_CERT_FILE
+              value: /var/run/sith/runtime/proxy-tls.crt
+            - name: SITH_HUB_PROXY_KEY_FILE
+              value: /var/run/sith/runtime/proxy-tls.key
+            - name: SITH_HUB_KUBE_API_SERVER_NAME
+              value: {{ required "runtime.kubeAPIServerName is required" .Values.runtime.kubeAPIServerName | quote }}
+          livenessProbe:
+            tcpSocket:
+              port: https
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: https
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: runtime
+              mountPath: /var/run/sith/runtime
+              readOnly: true
+      volumes:
+        - name: runtime
+          secret:
+            secretName: {{ include "sith-hub.runtimeSecretName" . }}
+            defaultMode: 288
+            items:
+              - key: session-public.pem
+                path: session-public.pem
+              - key: server-tls.crt
+                path: server-tls.crt
+              - key: server-tls.key
+                path: server-tls.key
+              - key: proxy-ca.crt
+                path: proxy-ca.crt
+              - key: proxy-tls.crt
+                path: proxy-tls.crt
+              - key: proxy-tls.key
+                path: proxy-tls.key
