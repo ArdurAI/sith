@@ -560,6 +560,14 @@ func assertFleetStoreIntegration(t *testing.T, ctx context.Context, database *Ap
 			Source:     "cluster-a",
 			Provenance: fleet.Provenance{Adapter: hubfleet.SourceKind, ProtocolV: "1.0.0"},
 		},
+		{
+			Ref:        fleet.ResourceRef{SourceKind: hubfleet.SourceKind, Scope: "cluster-a", Kind: "Image", Name: digest},
+			Kind:       fleet.FactCVE,
+			Observed:   []byte(`{"image":"` + digest + `","ids":["CVE-2026-0001"],"severity":"high"}`),
+			ObservedAt: now,
+			Source:     "cluster-a",
+			Provenance: fleet.Provenance{Adapter: hubfleet.SourceKind, ProtocolV: "1.0.0"},
+		},
 	}}
 	if err := database.ReplaceSnapshot(ctx, scope, spokes[0], snapshot, now); err != nil {
 		t.Fatalf("replace workspace-a snapshot: %v", err)
@@ -607,11 +615,25 @@ func assertFleetStoreIntegration(t *testing.T, ctx context.Context, database *Ap
 			Source:     "cluster-a2",
 			Provenance: fleet.Provenance{Adapter: hubfleet.SourceKind, ProtocolV: "1.0.0"},
 		},
+		{
+			Ref:        fleet.ResourceRef{SourceKind: hubfleet.SourceKind, Scope: "cluster-a2", Kind: "Image", Name: digest},
+			Kind:       fleet.FactCVE,
+			Observed:   []byte(`{"image":"` + digest + `","ids":["CVE-2026-0001","CVE-2026-0002"],"severity":"critical"}`),
+			ObservedAt: now,
+			Source:     "cluster-a2",
+			Provenance: fleet.Provenance{Adapter: hubfleet.SourceKind, ProtocolV: "1.0.0"},
+		},
 	}}
 	if err := database.ReplaceSnapshot(ctx, scope, spokes[1], secondSnapshot, now); err != nil {
 		t.Fatalf("replace second workspace-a snapshot: %v", err)
 	}
 	correlator, err := hubfleet.NewCorrelator(hubfleet.CorrelatorConfig{
+		Querier: database, PEP: postgresReadPEP(t), Freshness: time.Minute, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cveSearcher, err := hubfleet.NewCVESearcher(hubfleet.CVESearcherConfig{
 		Querier: database, PEP: postgresReadPEP(t), Freshness: time.Minute, Now: func() time.Time { return now },
 	})
 	if err != nil {
@@ -627,6 +649,11 @@ func assertFleetStoreIntegration(t *testing.T, ctx context.Context, database *Ap
 	if err != nil || len(images.Facts) != 2 || images.Facts[0].Ref.Scope != "cluster-a" || images.Facts[1].Ref.Scope != "cluster-a2" ||
 		images.Coverage.Requested != 2 || images.Coverage.Reachable != 2 || len(images.Coverage.Stale) != 0 {
 		t.Fatalf("two-spoke exact image search = %#v, error = %v", images, err)
+	}
+	cves, err := cveSearcher.Search(ctx, scope, hubfleet.ImageSearchRequest{Digest: digest})
+	if err != nil || len(cves.Facts) != 2 || cves.Facts[0].Ref.Scope != "cluster-a" || cves.Facts[1].Ref.Scope != "cluster-a2" ||
+		cves.Coverage.Requested != 2 || cves.Coverage.Reachable != 2 || len(cves.Coverage.Stale) != 0 {
+		t.Fatalf("two-spoke exact CVE search = %#v, error = %v", cves, err)
 	}
 	correlated, err := correlator.Correlate(ctx, scope, hubfleet.CorrelationRequest{
 		ResourceKind: "Deployment", Name: "payments", Namespace: "payments", HealthNot: "Healthy",
@@ -652,6 +679,10 @@ func assertFleetStoreIntegration(t *testing.T, ctx context.Context, database *Ap
 	foreignImages, err := imageSearcher.Search(ctx, foreignScope, hubfleet.ImageSearchRequest{Digest: digest})
 	if err != nil || len(foreignImages.Facts) != 0 || foreignImages.Coverage.Requested != 1 || len(foreignImages.Coverage.Unreachable) != 1 {
 		t.Fatalf("cross-workspace image search = %#v, error = %v", foreignImages, err)
+	}
+	foreignCVEs, err := cveSearcher.Search(ctx, foreignScope, hubfleet.ImageSearchRequest{Digest: digest})
+	if err != nil || len(foreignCVEs.Facts) != 0 || foreignCVEs.Coverage.Requested != 1 || len(foreignCVEs.Coverage.Unreachable) != 1 {
+		t.Fatalf("cross-workspace CVE search = %#v, error = %v", foreignCVEs, err)
 	}
 	foreignResult, err := database.QueryFleet(ctx, foreignScope, fleet.Query{Scopes: []string{"cluster-a"}}, time.Minute, now)
 	if err != nil || len(foreignResult.Facts) != 0 || foreignResult.Coverage.Requested != 1 ||
@@ -685,7 +716,7 @@ func assertFleetStoreIntegration(t *testing.T, ctx context.Context, database *Ap
 		t.Fatalf("stale two-spoke correlation = %#v, error = %v", staleCorrelation, err)
 	}
 	staleResult, err := database.QueryFleet(ctx, scope, fleet.Query{Scopes: []string{"cluster-a"}}, time.Minute, now.Add(time.Second))
-	if err != nil || len(staleResult.Facts) != 4 || !staleResult.Facts[0].Stale || staleResult.Facts[0].StaleFor != "collection failed" ||
+	if err != nil || len(staleResult.Facts) != 5 || !staleResult.Facts[0].Stale || staleResult.Facts[0].StaleFor != "collection failed" ||
 		staleResult.Coverage.Reachable != 0 || len(staleResult.Coverage.Unreachable) != 1 || len(staleResult.Coverage.Stale) != 1 {
 		t.Fatalf("retained stale query = %#v, error = %v", staleResult, err)
 	}

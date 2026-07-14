@@ -607,6 +607,69 @@ EOF
     --timeout=180s
 }
 
+install_vulnerability_report_fixture() {
+  local context=$1
+  local image_id
+  local digest
+  image_id="$(${KUBECTL_BIN} --context "${context}" -n sith-demo get pod -l app=fixture \
+    -o jsonpath='{.items[0].status.containerStatuses[0].imageID}')"
+  if [[ ! "${image_id}" =~ (sha256:[a-f0-9]{64}) ]]; then
+    die "fixture runtime image ID did not contain one canonical digest"
+  fi
+  digest="${BASH_REMATCH[1]}"
+
+  # The fixture is a static, pre-existing Kubernetes-native report. It deliberately does not
+  # install or execute a scanner, and its CRD preserves only the report shape exercised by Sith.
+  "${KUBECTL_BIN}" --context "${context}" apply -f - <<'EOF'
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: vulnerabilityreports.aquasecurity.github.io
+spec:
+  group: aquasecurity.github.io
+  names:
+    kind: VulnerabilityReport
+    listKind: VulnerabilityReportList
+    plural: vulnerabilityreports
+    singular: vulnerabilityreport
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        x-kubernetes-preserve-unknown-fields: true
+EOF
+  "${KUBECTL_BIN}" --context "${context}" wait --for=condition=Established \
+    customresourcedefinition/vulnerabilityreports.aquasecurity.github.io --timeout=60s
+  "${KUBECTL_BIN}" --context "${context}" apply -f - <<EOF
+apiVersion: aquasecurity.github.io/v1alpha1
+kind: VulnerabilityReport
+metadata:
+  name: fixture-runtime-image
+  namespace: sith-demo
+report:
+  artifact:
+    digest: ${digest}
+    repository: ignored.example/fixture
+    tag: mutable-and-ignored
+  scanner:
+    name: ignored
+    vendor: ignored
+    version: ignored
+  vulnerabilities:
+  - vulnerabilityID: CVE-2026-0001
+    severity: HIGH
+    description: not-retained
+  - vulnerabilityID: CVE-2026-0002
+    severity: MEDIUM
+    links:
+    - https://ignored.invalid/not-retained
+EOF
+}
+
 create_scoped_identity() {
   local cluster=$1
   local context=$2
@@ -665,6 +728,9 @@ rules:
   verbs: ["list"]
 - apiGroups: ["argoproj.io"]
   resources: ["rollouts"]
+  verbs: ["list"]
+- apiGroups: ["aquasecurity.github.io"]
+  resources: ["vulnerabilityreports"]
   verbs: ["list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -892,6 +958,9 @@ run_lab() {
   build_fixture
   deploy_fixture spoke-a "${SPOKE_A_CONTEXT}"
   deploy_fixture spoke-b "${SPOKE_B_CONTEXT}"
+
+  install_vulnerability_report_fixture "${SPOKE_A_CONTEXT}"
+  install_vulnerability_report_fixture "${SPOKE_B_CONTEXT}"
   create_scoped_identity spoke-a "${SPOKE_A_CONTEXT}"
   create_scoped_identity spoke-b "${SPOKE_B_CONTEXT}"
   verify_lab

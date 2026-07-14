@@ -132,6 +132,13 @@ func TestValidateSnapshotRejectsUnsafeOrAmbiguousEvidence(t *testing.T) {
 		{name: "raw native identifier", snapshot: snapshotWith(func(fact *fleet.Evidence) { fact.Provenance.NativeID = "opaque-source-value" }, now)},
 		{name: "duplicate normalized fact", snapshot: duplicate},
 		{name: "old observation", snapshot: validSnapshot("spoke-a", now.Add(-6*time.Minute))},
+		{name: "CVE wrong resource", snapshot: cveSnapshot("spoke-a", now, func(fact *fleet.Evidence) { fact.Ref.Kind = "Pod" })},
+		{name: "CVE mutable image", snapshot: cveSnapshot("spoke-a", now, func(fact *fleet.Evidence) {
+			fact.Observed = json.RawMessage(`{"image":"registry.example/api:latest","ids":["CVE-2026-0001"],"severity":"high"}`)
+		})},
+		{name: "CVE duplicate key", snapshot: cveSnapshot("spoke-a", now, func(fact *fleet.Evidence) {
+			fact.Observed = json.RawMessage(`{"image":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","ids":["CVE-2026-0001"],"ids":["CVE-2026-0002"],"severity":"high"}`)
+		})},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -139,6 +146,16 @@ func TestValidateSnapshotRejectsUnsafeOrAmbiguousEvidence(t *testing.T) {
 				t.Fatal("ValidateSnapshot() unexpectedly accepted unsafe snapshot")
 			}
 		})
+	}
+}
+
+func TestValidateSnapshotAcceptsCanonicalCVEObservation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.July, 14, 18, 0, 0, 0, time.UTC)
+	snapshot := cveSnapshot("spoke-a", now, nil)
+	if err := ValidateSnapshot(Spoke{ID: "spoke-a", ManagedClusterRef: "ocm/spoke-a"}, snapshot, now); err != nil {
+		t.Fatalf("ValidateSnapshot() error = %v", err)
 	}
 }
 
@@ -326,6 +343,22 @@ func validSnapshot(spokeID string, observedAt time.Time) Snapshot {
 			Provenance: fleet.Provenance{Adapter: SourceKind, ProtocolV: protocolVersion},
 		},
 	}}
+}
+
+func cveSnapshot(spokeID string, observedAt time.Time, change func(*fleet.Evidence)) Snapshot {
+	digest := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	fact := fleet.Evidence{
+		Ref:        fleet.ResourceRef{SourceKind: SourceKind, Scope: spokeID, Kind: "Image", Name: digest},
+		Kind:       fleet.FactCVE,
+		Observed:   json.RawMessage(`{"image":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","ids":["CVE-2026-0001"],"severity":"high"}`),
+		ObservedAt: observedAt,
+		Source:     spokeID,
+		Provenance: fleet.Provenance{Adapter: SourceKind, ProtocolV: protocolVersion},
+	}
+	if change != nil {
+		change(&fact)
+	}
+	return Snapshot{ObservedAt: observedAt, Facts: []fleet.Evidence{fact}}
 }
 
 func snapshotWith(change func(*fleet.Evidence), observedAt time.Time) Snapshot {

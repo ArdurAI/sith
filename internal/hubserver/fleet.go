@@ -29,6 +29,11 @@ type FleetImageSearcher interface {
 	Search(context.Context, tenancy.Scope, hubfleet.ImageSearchRequest) (fleet.QueryResult, error)
 }
 
+// FleetCVESearcher resolves one exact immutable image's normalized CVE observations.
+type FleetCVESearcher interface {
+	Search(context.Context, tenancy.Scope, hubfleet.ImageSearchRequest) (fleet.QueryResult, error)
+}
+
 // FleetHandlerConfig supplies the authenticated dependencies for the fixed hub fleet API.
 type FleetHandlerConfig struct {
 	Verifier      Verifier
@@ -36,6 +41,7 @@ type FleetHandlerConfig struct {
 	Collector     FleetRefresher
 	Reader        hubfleet.FleetReader
 	ImageSearcher FleetImageSearcher
+	CVESearcher   FleetCVESearcher
 	PEP           *pep.Enforcer
 }
 
@@ -113,6 +119,22 @@ func NewFleetHandler(config FleetHandlerConfig) (http.Handler, error) {
 				return
 			}
 			writeFleetJSON(response, http.StatusOK, result)
+		case fleetOperationCVESearch:
+			if request.Method != http.MethodGet {
+				response.Header().Set("Allow", http.MethodGet)
+				writeFleetError(response, http.StatusMethodNotAllowed, "method_not_allowed")
+				return
+			}
+			if config.CVESearcher == nil {
+				writeFleetError(response, http.StatusServiceUnavailable, "cve_search_unavailable")
+				return
+			}
+			result, err := config.CVESearcher.Search(request.Context(), scope, hubfleet.ImageSearchRequest{Digest: imageDigest})
+			if err != nil {
+				writeFleetError(response, http.StatusServiceUnavailable, "cve_search_unavailable")
+				return
+			}
+			writeFleetJSON(response, http.StatusOK, result)
 		default:
 			writeFleetError(response, http.StatusNotFound, "not_found")
 		}
@@ -127,6 +149,7 @@ const (
 	fleetOperationRead fleetOperation = iota + 1
 	fleetOperationRefresh
 	fleetOperationImageSearch
+	fleetOperationCVESearch
 )
 
 func parseFleetRoute(requestURL *url.URL) (tenancy.WorkspaceID, fleetOperation, string, bool) {
@@ -156,14 +179,22 @@ func parseFleetRoute(requestURL *url.URL) (tenancy.WorkspaceID, fleetOperation, 
 		return workspaceID, fleetOperationRefresh, "", true
 	default:
 		digestSegment, found := strings.CutPrefix(resource, "fleet/images/")
-		if !found || digestSegment == "" || strings.Contains(digestSegment, "/") {
+		if !found || digestSegment == "" {
+			return "", 0, "", false
+		}
+		operation := fleetOperationImageSearch
+		if strings.HasSuffix(digestSegment, "/cves") {
+			operation = fleetOperationCVESearch
+			digestSegment = strings.TrimSuffix(digestSegment, "/cves")
+		}
+		if digestSegment == "" || strings.Contains(digestSegment, "/") {
 			return "", 0, "", false
 		}
 		digest, err := url.PathUnescape(digestSegment)
 		if err != nil || url.PathEscape(digest) != digestSegment || fleet.ValidateImageDigest(digest) != nil {
 			return "", 0, "", false
 		}
-		return workspaceID, fleetOperationImageSearch, digest, true
+		return workspaceID, operation, digest, true
 	}
 }
 

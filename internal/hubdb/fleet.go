@@ -69,7 +69,7 @@ func (database *AppDB) RegisteredSpokes(ctx context.Context, scope tenancy.Scope
 	return spokes, nil
 }
 
-// ReplaceSnapshot atomically replaces one registered spoke's normalized inventory and health facts.
+// ReplaceSnapshot atomically replaces one registered spoke's normalized inventory, health, and CVE facts.
 func (database *AppDB) ReplaceSnapshot(
 	ctx context.Context,
 	scope tenancy.Scope,
@@ -204,7 +204,7 @@ func (database *AppDB) ReadFleet(
 	return fleet.FleetResult{Clusters: clusters, Coverage: coverage}, nil
 }
 
-// QueryFleet returns only the active workspace's normalized inventory and health facts.
+// QueryFleet returns only the active workspace's normalized inventory, health, and CVE facts.
 func (database *AppDB) QueryFleet(
 	ctx context.Context,
 	scope tenancy.Scope,
@@ -333,7 +333,12 @@ func queryFacts(ctx context.Context, tx pgx.Tx, workspaceID tenancy.WorkspaceID,
 		conditions = append(conditions, "fact.payload->>'status' <> "+placeholder(query.Selector.HealthNot))
 	}
 	if query.Selector.Image != "" {
-		conditions = append(conditions, "fact.payload->'image_digests' ? "+placeholder(query.Selector.Image))
+		switch query.Kinds[0] {
+		case fleet.FactInventory:
+			conditions = append(conditions, "fact.payload->'image_digests' ? "+placeholder(query.Selector.Image))
+		case fleet.FactCVE:
+			conditions = append(conditions, "fact.payload->>'image' = "+placeholder(query.Selector.Image))
+		}
 	}
 	limit := query.Limit
 	if limit == 0 {
@@ -425,7 +430,7 @@ func normalizeFleetQuery(query fleet.Query) (fleet.Query, []string, error) {
 		return fleet.Query{}, nil, err
 	}
 	for _, kind := range query.Kinds {
-		if kind != fleet.FactInventory && kind != fleet.FactHealth {
+		if kind != fleet.FactInventory && kind != fleet.FactHealth && kind != fleet.FactCVE {
 			return fleet.Query{}, nil, fmt.Errorf("fact kind %q is not available from persisted spoke snapshots", kind)
 		}
 	}
@@ -436,10 +441,21 @@ func normalizeFleetQuery(query fleet.Query) (fleet.Query, []string, error) {
 		if err := fleet.ValidateImageDigest(query.Selector.Image); err != nil {
 			return fleet.Query{}, nil, fmt.Errorf("image selector: %w", err)
 		}
-		if len(query.Kinds) != 1 || query.Kinds[0] != fleet.FactInventory || query.Selector.ResourceKind != "Pod" ||
-			query.Selector.Namespace != "" || query.Selector.Name != "" || query.Selector.NamePrefix != "" ||
+		if len(query.Kinds) != 1 || query.Selector.Namespace != "" || query.Selector.Name != "" || query.Selector.NamePrefix != "" ||
 			query.Selector.Health != "" || query.Selector.HealthNot != "" {
-			return fleet.Query{}, nil, fmt.Errorf("image selector requires exactly the Pod inventory fact kind")
+			return fleet.Query{}, nil, fmt.Errorf("image selector requires one exact supported image fact kind")
+		}
+		switch query.Kinds[0] {
+		case fleet.FactInventory:
+			if query.Selector.ResourceKind != "Pod" {
+				return fleet.Query{}, nil, fmt.Errorf("inventory image selector requires the Pod resource kind")
+			}
+		case fleet.FactCVE:
+			if query.Selector.ResourceKind != "Image" {
+				return fleet.Query{}, nil, fmt.Errorf("CVE image selector requires the Image resource kind")
+			}
+		default:
+			return fleet.Query{}, nil, fmt.Errorf("image selector requires an inventory or CVE fact kind")
 		}
 	} else if (query.Selector.Health != "" || query.Selector.HealthNot != "") &&
 		(len(query.Kinds) != 1 || query.Kinds[0] != fleet.FactHealth) {

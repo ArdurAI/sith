@@ -51,6 +51,7 @@ func (function fleetImageSearcherFunc) Search(
 var _ FleetRefresher = fleetRefresherFunc(nil)
 var _ hubfleet.FleetReader = fleetReaderFunc(nil)
 var _ FleetImageSearcher = fleetImageSearcherFunc(nil)
+var _ FleetCVESearcher = fleetImageSearcherFunc(nil)
 
 func TestFleetHandlerRefreshUsesOnlySignedWorkspaceScope(t *testing.T) {
 	now := time.Date(2026, 7, 14, 7, 0, 0, 0, time.UTC)
@@ -277,9 +278,11 @@ func TestFleetHandlerRejectsUnsupportedRoutesMethodsAndQueries(t *testing.T) {
 		{name: "unknown route", method: http.MethodGet, target: "/v1/workspaces/workspace-a/fleet/extra", wantCode: http.StatusNotFound, wantBody: "{\"error\":\"not_found\"}\n"},
 		{name: "query rejected", method: http.MethodGet, target: "/v1/workspaces/workspace-a/fleet?freshness=1s", wantCode: http.StatusNotFound, wantBody: "{\"error\":\"not_found\"}\n"},
 		{name: "noncanonical image", method: http.MethodGet, target: "/v1/workspaces/workspace-a/fleet/images/registry.example%2Fpayments%3Alatest", wantCode: http.StatusNotFound, wantBody: "{\"error\":\"not_found\"}\n"},
+		{name: "CVE suffix rejects extra path", method: http.MethodGet, target: "/v1/workspaces/workspace-a/fleet/images/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/cves/extra", wantCode: http.StatusNotFound, wantBody: "{\"error\":\"not_found\"}\n"},
 		{name: "read method", method: http.MethodPost, target: "/v1/workspaces/workspace-a/fleet", wantCode: http.StatusMethodNotAllowed, wantBody: "{\"error\":\"method_not_allowed\"}\n", wantAllow: http.MethodGet},
 		{name: "refresh method", method: http.MethodGet, target: "/v1/workspaces/workspace-a/fleet:refresh", wantCode: http.StatusMethodNotAllowed, wantBody: "{\"error\":\"method_not_allowed\"}\n", wantAllow: http.MethodPost},
 		{name: "image method", method: http.MethodPost, target: "/v1/workspaces/workspace-a/fleet/images/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", wantCode: http.StatusMethodNotAllowed, wantBody: "{\"error\":\"method_not_allowed\"}\n", wantAllow: http.MethodGet},
+		{name: "CVE method", method: http.MethodPost, target: "/v1/workspaces/workspace-a/fleet/images/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/cves", wantCode: http.StatusMethodNotAllowed, wantBody: "{\"error\":\"method_not_allowed\"}\n", wantAllow: http.MethodGet},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := httptest.NewRecorder()
@@ -362,6 +365,48 @@ func TestFleetHandlerSearchesOneExactImageDigestInSignedWorkspace(t *testing.T) 
 	var result fleet.QueryResult
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil || len(result.Facts) != 1 || result.Facts[0].Ref.Scope != "spoke-a" || !result.Coverage.Complete() {
 		t.Fatalf("image result = %#v, error = %v", result, err)
+	}
+}
+
+func TestFleetHandlerSearchesCVEsForOneExactImageDigestInSignedWorkspace(t *testing.T) {
+	now := time.Date(2026, 7, 14, 19, 0, 0, 0, time.UTC)
+	verifier, privateKey := fleetTestVerifier(t, now)
+	digest := "sha256:" + strings.Repeat("a", 64)
+	called := false
+	handler, err := NewFleetHandler(FleetHandlerConfig{
+		Verifier: verifier,
+		Collector: fleetRefresherFunc(func(context.Context, tenancy.Scope) (fleet.Coverage, error) {
+			t.Fatal("CVE search reached collector")
+			return fleet.Coverage{}, nil
+		}),
+		Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
+			t.Fatal("CVE search reached fleet reader")
+			return fleet.FleetResult{}, nil
+		}),
+		ImageSearcher: fleetImageSearcherFunc(func(context.Context, tenancy.Scope, hubfleet.ImageSearchRequest) (fleet.QueryResult, error) {
+			t.Fatal("CVE search reached image searcher")
+			return fleet.QueryResult{}, nil
+		}),
+		CVESearcher: fleetImageSearcherFunc(func(_ context.Context, scope tenancy.Scope, request hubfleet.ImageSearchRequest) (fleet.QueryResult, error) {
+			called = true
+			if scope.WorkspaceID() != "workspace-a" || request.Digest != digest || request.Limit != 0 {
+				t.Fatalf("CVE search scope/request = %#v/%#v", scope, request)
+			}
+			return fleet.QueryResult{Facts: []fleet.Fact{{Workspace: "workspace-a", Evidence: fleet.Evidence{Ref: fleet.ResourceRef{Scope: "spoke-a", Kind: "Image", Name: digest}}}}, Coverage: fleet.Coverage{Requested: 2, Reachable: 2}}, nil
+		}),
+		PEP: fleetTestPEP(t, pep.AllowReadHook{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, authenticatedFleetRequest(t, http.MethodGet, "/v1/workspaces/workspace-a/fleet/images/"+digest+"/cves", privateKey, now))
+	if response.Code != http.StatusOK || !called || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("status/called/cache = %d/%t/%q", response.Code, called, response.Header().Get("Cache-Control"))
+	}
+	var result fleet.QueryResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil || len(result.Facts) != 1 || result.Facts[0].Ref.Kind != "Image" || !result.Coverage.Complete() {
+		t.Fatalf("CVE result = %#v, error = %v", result, err)
 	}
 }
 
