@@ -456,6 +456,22 @@ verify_chart_digest() {
     die "chart digest mismatch for $(basename "${archive}")"
 }
 
+wait_for_addon_creation() {
+  local cluster=$1
+  local addon=$2
+  local deadline=$((SECONDS + 300))
+
+  while ! "${KUBECTL_BIN}" --context "${HUB_CONTEXT}" -n "${cluster}" get \
+    "managedclusteraddon/${addon}" >/dev/null 2>&1; do
+    if (( SECONDS >= deadline )); then
+      die "timed out waiting for ${cluster} managedclusteraddon/${addon} creation"
+    fi
+    sleep 1
+  done
+  "${KUBECTL_BIN}" --context "${HUB_CONTEXT}" -n "${cluster}" wait \
+    "managedclusteraddon/${addon}" --for=condition=Available --timeout=300s
+}
+
 install_addons() {
   local cluster_proxy_chart="${SCRATCH_NAME}/charts/cluster-proxy-${CLUSTER_PROXY_VERSION}.tgz"
   local msa_chart="${SCRATCH_NAME}/charts/managed-serviceaccount-${MANAGED_SERVICEACCOUNT_VERSION}.tgz"
@@ -490,10 +506,8 @@ install_addons() {
     --kube-context "${HUB_CONTEXT}" --wait --timeout 5m
 
   for cluster in spoke-a spoke-b; do
-    "${KUBECTL_BIN}" --context "${HUB_CONTEXT}" -n "${cluster}" wait \
-      managedclusteraddon/cluster-proxy --for=condition=Available --timeout=300s
-    "${KUBECTL_BIN}" --context "${HUB_CONTEXT}" -n "${cluster}" wait \
-      managedclusteraddon/managed-serviceaccount --for=condition=Available --timeout=300s
+    wait_for_addon_creation "${cluster}" cluster-proxy
+    wait_for_addon_creation "${cluster}" managed-serviceaccount
   done
 }
 
@@ -611,6 +625,39 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: sith-reader-svcproxy
+EOF
+
+  # Cross-namespace inventory is intentionally limited to the three resource kinds
+  # normalized by Sith. This does not grant Secrets, Nodes, writes, list/watch of the
+  # hub API, or an arbitrary Kubernetes API surface.
+  "${KUBECTL_BIN}" --context "${context}" apply -f - <<'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sith-reader-inventory
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["list"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["list"]
+- apiGroups: ["argoproj.io"]
+  resources: ["rollouts"]
+  verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sith-reader-inventory
+subjects:
+- kind: ServiceAccount
+  name: sith-reader
+  namespace: open-cluster-management-agent-addon
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sith-reader-inventory
 EOF
 
   # Projected secrets may contain only the token and CA, never a kubeconfig.
