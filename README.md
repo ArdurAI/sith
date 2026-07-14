@@ -206,6 +206,12 @@ actor, spoke, endpoint, resource, selector, argument digest, credential, raw err
 data in trace events. This is not a telemetry exporter: it adds no OpenTelemetry SDK, listener,
 network egress, queue, trace store, persistence, or action-intent protocol.
 
+Before a signed scope exists, the authentication gate emits one local WARN record for every
+refusal with only the fixed `hub-auth` surface and `refused` outcome. It deliberately does not
+distinguish credential failure modes or carry a trace/correlation ID, token, header, path, client
+address, workspace, principal, or verifier error. The record is a passive alerting signal, not an
+audit record, rate limiter, telemetry export, or additional authentication decision.
+
 The image route answers one exact, immutable runtime digest question across registered spokes. The
 direct reader accepts only canonical digests normalized from ordinary
 `Pod.Status.ContainerStatuses[].ImageID`; PodSpec image strings, init and ephemeral container

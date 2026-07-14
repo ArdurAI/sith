@@ -21,7 +21,16 @@ type Verifier interface {
 }
 
 // Authenticate constructs middleware that removes spoofable identity headers and requires a token.
+// It uses no authentication observer; composition roots that need local security logging should
+// use AuthenticateWithObserver.
 func Authenticate(verifier Verifier, next http.Handler) (http.Handler, error) {
+	return AuthenticateWithObserver(verifier, nil, next)
+}
+
+// AuthenticateWithObserver constructs authentication middleware with one passive refusal
+// observer. The observer is never given request metadata, credentials, verifier errors, or caller
+// correlation values, and cannot alter the uniform unauthorized response.
+func AuthenticateWithObserver(verifier Verifier, observer AuthObserver, next http.Handler) (http.Handler, error) {
 	if verifier == nil {
 		return nil, fmt.Errorf("construct authentication middleware: verifier is required")
 	}
@@ -35,13 +44,13 @@ func Authenticate(verifier Verifier, next http.Handler) (http.Handler, error) {
 		stripUntrustedCorrelationHeaders(cloned.Header)
 		rawToken, ok := bearerToken(cloned.Header.Values("Authorization"))
 		if !ok {
-			writeUnauthorized(response)
+			refuseAuthentication(observer, response)
 			return
 		}
 		cloned.Header.Del("Authorization")
 		principal, err := verifier.Verify(cloned.Context(), rawToken)
 		if err != nil {
-			writeUnauthorized(response)
+			refuseAuthentication(observer, response)
 			return
 		}
 		ctx := context.WithValue(cloned.Context(), principalContextKey{}, principal)
@@ -106,4 +115,9 @@ func writeUnauthorized(response http.ResponseWriter) {
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusUnauthorized)
 	_, _ = response.Write([]byte("{\"error\":\"unauthorized\"}\n"))
+}
+
+func refuseAuthentication(observer AuthObserver, response http.ResponseWriter) {
+	ObserveAuth(observer, AuthEvent{Outcome: AuthOutcomeRefused})
+	writeUnauthorized(response)
 }
