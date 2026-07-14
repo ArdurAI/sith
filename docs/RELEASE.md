@@ -110,9 +110,10 @@ slice is not a claim of the parent feature's future in-chart database, HA, or cl
 ## Maintainer release procedure
 
 1. Merge the feature PR into `dev`, ensure the full CI and release-snapshot jobs are green, then
-   merge a reviewed `dev` to `main` release PR. `dev` is the durable integration source: never use
-   `--delete-branch` for this release PR. Automatic branch deletion is reserved for merged feature
-   branches.
+   open a `dev` to `main` release PR. The same full CI and release-snapshot jobs must be green on
+   that release PR before merging it, and the exact `main` push run must pass afterward. `dev` is
+   the durable integration source: never use `--delete-branch` for this release PR. Automatic
+   branch deletion is reserved for merged feature branches.
 2. From an up-to-date `main`, run `make ci` and `make release-check`. The latter compares archive
    SHA-256 digests across two complete builds; SBOM creation timestamps and Sigstore signatures are
    intentionally not expected to be byte-for-byte reproducible.

@@ -44,6 +44,7 @@ test-scripts: ## Run focused safety tests for operator-facing shell harnesses
 	bash tests/scripts/m0_ocm_falsification_safety_test.sh
 	bash tests/scripts/release_tag_identity_guide_test.sh
 	bash tests/scripts/release_tag_policy_test.sh
+	bash tests/scripts/release_pr_gate_policy_test.sh
 
 perf: ## Enforce the warm-cache TUI p95 latency budget without race overhead
 	go test -count=1 -run '^TestWarmViewP95UnderOneHundredMilliseconds$$' ./internal/tui
