@@ -12,7 +12,7 @@ cross the `hubfleet.Transport` seam.
 
 [S] Scope: `internal/hubocm`, the M0 experiment and its safety suite, narrowly reviewed privacy
 boundary exceptions, dependencies, and operator-facing documentation. The ClusterGateway-specific
-#103/#104 route remains out of scope and blocked pending an official upstream release.
+Issues #103 and #104 remain out of scope and blocked pending an official upstream release.
 
 [A] Action: chose the released ClusterProxy `0.10.0`-matched Konnectivity client `v0.31.2`, rather
 than an unreleased ClusterGateway fix or a custom agent/tunnel. The adapter treats

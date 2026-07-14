@@ -54,6 +54,31 @@ env SITH_M0_SCRATCH_ROOT="${owned_root}" SITH_M0_ALLOW_NON_EXTENDED=1 \
   ' _ "${SCRIPT}"
 pass "owned scratch lifecycle preserves the valid control"
 
+default_tmpdir="${TEST_ROOT}/default-tmp"
+mkdir -m 0700 "${default_tmpdir}"
+env TMPDIR="${default_tmpdir}" bash -c '
+    source "$1"
+    [[ "${SCRATCH_ROOT}" == "${DEFAULT_SCRATCH_ROOT}" ]]
+    prepare_scratch
+    validate_owned_scratch
+    remove_scratch
+    [[ ! -e "${SCRATCH_ROOT}" ]]
+  ' _ "${SCRIPT}"
+pass "portable default scratch lifecycle remains private and removable"
+
+default_tmpdir_alias="${TEST_ROOT}/default-tmp-alias"
+ln -s "${default_tmpdir}" "${default_tmpdir_alias}"
+env TMPDIR="${default_tmpdir_alias}" bash -c '
+    source "$1"
+    [[ "${DEFAULT_TMPDIR}" == "${2}" ]]
+    [[ "${SCRATCH_ROOT}" == "${DEFAULT_SCRATCH_ROOT}" ]]
+    prepare_scratch
+    validate_owned_scratch
+    remove_scratch
+    [[ ! -e "${SCRATCH_ROOT}" ]]
+  ' _ "${SCRIPT}" "${default_tmpdir}"
+pass "portable default canonicalizes a symlinked temporary directory"
+
 unowned_root="${TEST_ROOT}/unowned-root"
 mkdir -p "${unowned_root}"
 printf 'keep\n' >"${unowned_root}/sentinel"

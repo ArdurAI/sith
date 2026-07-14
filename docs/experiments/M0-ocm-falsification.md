@@ -135,12 +135,13 @@ including `--force-internal-endpoint-lookup` for local kind clusters.
 
 ## Reproduce
 
-The default scratch root is `/Volumes/EXTENDED/tmp/sith-m0`; the runner refuses another
-filesystem unless the operator explicitly opts in. The path must be canonical, must not already
-exist for a fresh run, and is deleted only when its regular ownership marker belongs to the
-current user. The runner verifies the entered parent's device/inode against the validated path,
-enters it once, and uses relative child paths from that held working directory, so racing or later
-renaming a writable ancestor cannot redirect creation or cleanup.
+The default scratch root is a private canonical `${TMPDIR:-/tmp}/sith-m0-<uid>/lab`; the runner
+creates its parent with mode `0700`. Another non-EXTENDED path requires the operator to set
+`SITH_M0_ALLOW_NON_EXTENDED=1` deliberately. The path must be canonical, must not already exist
+for a fresh run, and is deleted only when its regular ownership marker belongs to the current
+user. The runner verifies the entered parent's device/inode against the validated path, enters it
+once, and uses relative child paths from that held working directory, so racing or later renaming a
+writable ancestor cannot redirect creation or cleanup.
 It uses a dedicated kubeconfig and isolated Helm state, requires a local Unix-socket Docker
 endpoint, gives the image builder only a fixture-only context, and never reads or modifies the
 user's kubeconfig.
@@ -190,9 +191,10 @@ through the narrow `get` reader. It requires direct TLS-verified snapshots from 
 MSA-token `Forbidden` for a cluster-wide Secrets list, and a replacement projection with a changed
 token before a subsequent snapshot. No token, CA, response body, or port-forward output is printed.
 
-To support that product read boundary, each M0 `sith-reader` gets only cluster-wide `list` on
-Pods, Deployments, and Rollouts. The existing namespaced service-proxy Role is separate; there is
-still no grant for Secrets, Nodes, writes, watches, or hub API access.
+To support that product read boundary, each M0 `sith-reader` gets cluster-wide `list` on Pods,
+Deployments, and Rollouts plus namespaced `get/list` on Pods, Services, and `services/proxy` in
+`sith-demo`. Those are the complete combined grants; there is still no grant for Secrets, Nodes,
+writes, watches, or hub API access.
 
 ## What the runner proves
 

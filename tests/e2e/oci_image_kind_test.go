@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 
@@ -111,7 +110,44 @@ func assertOCIImageJob(ctx context.Context, t *testing.T, kindBinary, clusterNam
 		t.Fatalf("find OCI Job Pod on %s: %#v", clusterName, pods.Items)
 	}
 	output, err := client.CoreV1().Pods("default").GetLogs(pods.Items[0].Name, &corev1.PodLogOptions{}).Do(ctx).Raw()
-	if err != nil || !json.Valid(output) || !strings.Contains(string(output), "\"version\"") {
+	if err == nil {
+		err = validateVersionOutput(output)
+	}
+	if err != nil {
 		t.Fatalf("OCI Job output on %s = %q / %v", clusterName, output, err)
+	}
+}
+
+func validateVersionOutput(output []byte) error {
+	var versionOutput struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(output, &versionOutput); err != nil {
+		return fmt.Errorf("decode version output: %w", err)
+	}
+	if versionOutput.Version == "" {
+		return fmt.Errorf("version output omitted a non-empty version")
+	}
+	return nil
+}
+
+func TestValidateVersionOutput(t *testing.T) {
+	t.Parallel()
+
+	for name, test := range map[string]struct {
+		output string
+		valid  bool
+	}{
+		"version":                  {output: `{"version":"v0.2.0"}`, valid: true},
+		"unrelated version string": {output: `{"message":"version"}`},
+		"empty version":            {output: `{"version":""}`},
+		"invalid JSON":             {output: `{`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := validateVersionOutput([]byte(test.output))
+			if (err == nil) != test.valid {
+				t.Fatalf("validateVersionOutput(%q) error = %v, want valid=%t", test.output, err, test.valid)
+			}
+		})
 	}
 }
