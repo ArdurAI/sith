@@ -1,0 +1,48 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "sith-hub.fullname" . }}-migrate
+  labels:
+    {{- include "sith-hub.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "sith-hub.selectorLabels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: {{ include "sith-hub.imageReference" . | quote }}
+          imagePullPolicy: IfNotPresent
+          args: ["hub", "migrate"]
+          env:
+            - name: SITH_HUB_MIGRATION_OWNER_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sith-hub.migrationSecretName" . }}
+                  key: owner-database-url
+            - name: SITH_HUB_APPLICATION_DATABASE_ROLE
+              value: {{ required "migration.applicationRole is required" .Values.migration.applicationRole | quote }}
+          resources:
+            {{- include "sith-hub.resources" . | nindent 12 }}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

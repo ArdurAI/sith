@@ -27,6 +27,28 @@ executable evidence and dependency caveats are in
 [`experiments/M0-ocm-falsification.md`](experiments/M0-ocm-falsification.md). The bespoke
 transport/agent scope is deleted; the hub track proceeds to Phase 1.
 
+> **Phase-1 ClusterGateway authorization gate (2026-07-13).** M0 proves reverse-tunnel
+> connectivity and scoped-token RBAC; it does **not** authorize a Sith transport to use a
+> ClusterGateway proxy that forwards a hub caller's inbound `Authorization` header. The tracked
+> upstream remediation ([oam-dev/cluster-gateway#171](https://github.com/oam-dev/cluster-gateway/pull/171))
+> removes that header before client-go applies the selected managed-service-account credential and
+> adds a header-precedence regression. It is verified green but remains open, and no official
+> ClusterGateway release contains it. Keep [#103](https://github.com/ArdurAI/sith/issues/103)
+> blocked by [#104](https://github.com/ArdurAI/sith/issues/104) until an official upstream release
+> includes the fix; then rerun the Sith two-spoke negative route and require `403` for the scoped
+> Secrets denial without logging credentials or response bodies.
+
+> **Phase-1 direct ClusterProxy alternative (2026-07-13).** [#123](https://github.com/ArdurAI/sith/issues/123)
+> delivers the same bounded read contract without consuming ClusterGateway: it uses the released
+> ClusterProxy Konnectivity client directly, the exact rotating `sith-reader` MSA projection, and
+> a fixed registered managed-cluster target. The adapter does not forward caller authorization,
+> disables neither proxy nor Kubernetes TLS verification, and returns only normalized
+> Pods/Deployments/Rollouts inventory plus health. `make e2e-ocm` proves the direct route across
+> both M0 spokes, its `403` Secrets negative control, an MSA projection replacement, and the
+> authenticated TLS runtime refresh/read composition. This does not unblock [#103](https://github.com/ArdurAI/sith/issues/103); that ClusterGateway-specific
+> transport remains blocked by [#104](https://github.com/ArdurAI/sith/issues/104) pending an
+> official upstream release.
+
 **Assumption under test:** OCM `cluster-proxy` + `managed-serviceaccount` really do
 deliver outbound-only, cross-network, reach-cluster-local-services connectivity — so we do
 **not** need to build a bespoke tunnel/agent.

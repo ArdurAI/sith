@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/ArdurAI/sith/internal/tenancy"
+	"github.com/ArdurAI/sith/internal/tracing"
 )
 
 const (
@@ -26,13 +27,14 @@ type Verb string
 const (
 	VerbFleetRead            Verb = "fleet.read"
 	VerbFleetCorrelate       Verb = "fleet.correlate"
+	VerbFleetImageSearch     Verb = "fleet.image.search"
 	VerbSpokeSnapshotRefresh Verb = "fleet.snapshot.refresh"
 )
 
 // Valid reports whether a verb belongs to the currently supported closed vocabulary.
 func (verb Verb) Valid() bool {
 	switch verb {
-	case VerbFleetRead, VerbFleetCorrelate, VerbSpokeSnapshotRefresh:
+	case VerbFleetRead, VerbFleetCorrelate, VerbFleetImageSearch, VerbSpokeSnapshotRefresh:
 		return true
 	default:
 		return false
@@ -99,6 +101,7 @@ func (function HookFunc) Decide(ctx context.Context, request Request) (Decision,
 // fixed operation metadata; it intentionally omits credentials, query arguments, targets, and data.
 type AuditEvent struct {
 	At          time.Time
+	TraceID     tracing.ID
 	WorkspaceID tenancy.WorkspaceID
 	Actor       string
 	Role        tenancy.Role
@@ -123,16 +126,20 @@ func (function AuditFunc) Record(ctx context.Context, event AuditEvent) error {
 
 // Config constructs an enforcement point with mandatory policy and audit dependencies.
 type Config struct {
-	Hook    PolicyHook
-	Auditor Auditor
-	Now     func() time.Time
+	Hook          PolicyHook
+	Auditor       Auditor
+	Observer      DecisionObserver
+	TraceObserver tracing.Observer
+	Now           func() time.Time
 }
 
 // Enforcer applies the fixed Phase-1 read pipeline and creates one audit record for every decision.
 type Enforcer struct {
-	hook    PolicyHook
-	auditor Auditor
-	now     func() time.Time
+	hook     PolicyHook
+	auditor  Auditor
+	observer DecisionObserver
+	tracer   tracing.Observer
+	now      func() time.Time
 }
 
 // NewEnforcer constructs a fail-closed policy enforcement point.
@@ -143,7 +150,13 @@ func NewEnforcer(config Config) (*Enforcer, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	return &Enforcer{hook: config.Hook, auditor: config.Auditor, now: config.Now}, nil
+	if config.Observer == nil {
+		config.Observer = noopDecisionObserver{}
+	}
+	if config.TraceObserver == nil {
+		config.TraceObserver = tracing.NoopObserver()
+	}
+	return &Enforcer{hook: config.Hook, auditor: config.Auditor, observer: config.Observer, tracer: config.TraceObserver, now: config.Now}, nil
 }
 
 // AllowReadHook is the temporary Phase-1 policy implementation. It allows only the closed read
@@ -165,25 +178,46 @@ func (enforcer *Enforcer) AuthorizeRead(ctx context.Context, scope tenancy.Scope
 	if enforcer == nil || enforcer.hook == nil || enforcer.auditor == nil || ctx == nil {
 		return fmt.Errorf("authorize read: enforcer and context are required")
 	}
+	traceContext, _, err := tracing.Ensure(ctx)
+	if err != nil {
+		return fmt.Errorf("authorize read: establish trace context: %w", err)
+	}
+	ctx = traceContext
+	startedAt := time.Now()
+	outcome := DecisionOutcomeError
+	defer func() {
+		enforcer.observeDecision(input.Verb, outcome, time.Since(startedAt))
+		enforcer.observeTrace(ctx, outcome, time.Since(startedAt))
+	}()
 	request := Request{
 		WorkspaceID: scope.WorkspaceID(), Actor: scope.Subject(), Role: scope.Role(), Action: tenancy.ActionRead,
 		Verb: input.Verb, ArgumentsDigest: input.ArgumentsDigest,
 	}
 	if err := request.Validate(); err != nil {
+		outcome = DecisionOutcomeDeny
 		return enforcer.refuse(ctx, request, VerdictDeny, "invalid-request", "authorize read: invalid policy request")
 	}
 	if err := scope.Authorize(tenancy.ActionRead); err != nil {
+		outcome = DecisionOutcomeDeny
 		return enforcer.refuse(ctx, request, VerdictDeny, "role-denied", "authorize read: role does not permit read")
 	}
 	decision, err := enforcer.hook.Decide(ctx, request)
 	if err != nil {
+		outcome = DecisionOutcomeError
 		return enforcer.refuse(ctx, request, VerdictDeny, "hook-error", "authorize read: policy hook failed")
 	}
 	if err := decision.Validate(); err != nil {
+		outcome = DecisionOutcomeError
 		return enforcer.refuse(ctx, request, VerdictDeny, "invalid-decision", "authorize read: policy hook returned an invalid decision")
 	}
 	if decision.Verdict != VerdictAllow {
+		if decision.Verdict == VerdictRequireApproval {
+			outcome = DecisionOutcomeRequireApproval
+		} else {
+			outcome = DecisionOutcomeDeny
+		}
 		if err := enforcer.record(ctx, request, decision); err != nil {
+			outcome = DecisionOutcomeError
 			return fmt.Errorf("authorize read: audit policy refusal: %w", err)
 		}
 		if decision.Verdict == VerdictRequireApproval {
@@ -192,8 +226,10 @@ func (enforcer *Enforcer) AuthorizeRead(ctx context.Context, scope tenancy.Scope
 		return fmt.Errorf("authorize read: policy denied request")
 	}
 	if err := enforcer.record(ctx, request, decision); err != nil {
+		outcome = DecisionOutcomeError
 		return fmt.Errorf("authorize read: audit policy decision: %w", err)
 	}
+	outcome = DecisionOutcomeAllow
 	return nil
 }
 
@@ -229,8 +265,12 @@ func (enforcer *Enforcer) refuse(ctx context.Context, request Request, verdict V
 }
 
 func (enforcer *Enforcer) record(ctx context.Context, request Request, decision Decision) error {
+	traceID, ok := tracing.FromContext(ctx)
+	if !ok {
+		return fmt.Errorf("record policy audit: trace context is required")
+	}
 	return enforcer.auditor.Record(ctx, AuditEvent{
-		At: enforcer.now().UTC(), WorkspaceID: request.WorkspaceID, Actor: request.Actor, Role: request.Role,
+		At: enforcer.now().UTC(), TraceID: traceID, WorkspaceID: request.WorkspaceID, Actor: request.Actor, Role: request.Role,
 		Action: request.Action, Verb: request.Verb, Verdict: decision.Verdict, ReasonCode: decision.ReasonCode,
 	})
 }

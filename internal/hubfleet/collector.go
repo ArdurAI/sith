@@ -18,6 +18,7 @@ import (
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/pep"
 	"github.com/ArdurAI/sith/internal/tenancy"
+	"github.com/ArdurAI/sith/internal/tracing"
 )
 
 const (
@@ -42,6 +43,7 @@ var observedKeys = map[fleet.FactKind]map[string]struct{}{
 		"available_replicas": {},
 		"ready":              {},
 		"generation":         {},
+		"image_digests":      {},
 	},
 	fleet.FactHealth: {"status": {}},
 }
@@ -117,6 +119,8 @@ type CollectorConfig struct {
 	Store          Store
 	Transport      Transport
 	PEP            *pep.Enforcer
+	Observer       SnapshotObserver
+	TraceObserver  tracing.Observer
 	SpokeTimeout   time.Duration
 	MaxSnapshotAge time.Duration
 	Now            func() time.Time
@@ -127,6 +131,8 @@ type Collector struct {
 	store          Store
 	transport      Transport
 	pep            *pep.Enforcer
+	observer       SnapshotObserver
+	tracer         tracing.Observer
 	spokeTimeout   time.Duration
 	maxSnapshotAge time.Duration
 	now            func() time.Time
@@ -152,10 +158,18 @@ func NewCollector(config CollectorConfig) (*Collector, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
+	if config.Observer == nil {
+		config.Observer = noopSnapshotObserver{}
+	}
+	if config.TraceObserver == nil {
+		config.TraceObserver = tracing.NoopObserver()
+	}
 	return &Collector{
 		store:          config.Store,
 		transport:      config.Transport,
 		pep:            config.PEP,
+		observer:       config.Observer,
+		tracer:         config.TraceObserver,
 		spokeTimeout:   config.SpokeTimeout,
 		maxSnapshotAge: config.MaxSnapshotAge,
 		now:            config.Now,
@@ -174,6 +188,11 @@ func (collector *Collector) Collect(ctx context.Context, scope tenancy.Scope) (f
 	if tenancy.ValidateWorkspaceID(scope.WorkspaceID()) != nil {
 		return fleet.Coverage{}, fmt.Errorf("collect spoke snapshots: validated workspace scope is required")
 	}
+	traceContext, _, err := tracing.Ensure(ctx)
+	if err != nil {
+		return fleet.Coverage{}, fmt.Errorf("collect spoke snapshots: establish trace context: %w", err)
+	}
+	ctx = traceContext
 	if err := collector.pep.AuthorizeRead(ctx, scope, pep.NewReadInput(pep.VerbSpokeSnapshotRefresh, nil)); err != nil {
 		return fleet.Coverage{}, fmt.Errorf("collect spoke snapshots: %w", err)
 	}
@@ -192,11 +211,14 @@ func (collector *Collector) Collect(ctx context.Context, scope tenancy.Scope) (f
 			return coverage, fmt.Errorf("collect spoke snapshots: %w", err)
 		}
 		attemptedAt := collector.now().UTC()
+		startedAt := time.Now()
 		spokeContext, cancel := context.WithTimeout(ctx, collector.spokeTimeout)
 		snapshot, collectionErr := collector.transport.Snapshot(spokeContext, scope.WorkspaceID(), cloneSpoke(spoke))
 		deadlineErr := spokeContext.Err()
 		cancel()
 		if err := ctx.Err(); err != nil {
+			collector.observeSnapshot(SnapshotOutcomeCanceled, time.Since(startedAt))
+			collector.observeTrace(ctx, tracing.OutcomeCanceled, time.Since(startedAt))
 			return coverage, fmt.Errorf("collect spoke snapshots: %w", err)
 		}
 		if collectionErr == nil && deadlineErr != nil {
@@ -204,20 +226,32 @@ func (collector *Collector) Collect(ctx context.Context, scope tenancy.Scope) (f
 		}
 		if collectionErr != nil {
 			if err := collector.recordFailure(ctx, scope, spoke, failureFor(collectionErr), attemptedAt, &coverage); err != nil {
+				collector.observeSnapshot(SnapshotOutcomeStoreError, time.Since(startedAt))
+				collector.observeTrace(ctx, tracing.OutcomeFailure, time.Since(startedAt))
 				return coverage, err
 			}
+			collector.observeSnapshot(snapshotOutcomeForFailure(failureFor(collectionErr)), time.Since(startedAt))
+			collector.observeTrace(ctx, tracing.OutcomeFailure, time.Since(startedAt))
 			continue
 		}
 		if err := validateSnapshot(spoke, snapshot, attemptedAt, collector.maxSnapshotAge); err != nil {
 			if failureErr := collector.recordFailure(ctx, scope, spoke, FailureInvalidSnapshot, attemptedAt, &coverage); failureErr != nil {
+				collector.observeSnapshot(SnapshotOutcomeStoreError, time.Since(startedAt))
+				collector.observeTrace(ctx, tracing.OutcomeFailure, time.Since(startedAt))
 				return coverage, failureErr
 			}
+			collector.observeSnapshot(SnapshotOutcomeInvalidSnapshot, time.Since(startedAt))
+			collector.observeTrace(ctx, tracing.OutcomeFailure, time.Since(startedAt))
 			continue
 		}
 		if err := collector.store.ReplaceSnapshot(ctx, scope, spoke, cloneSnapshot(snapshot), attemptedAt); err != nil {
+			collector.observeSnapshot(SnapshotOutcomeStoreError, time.Since(startedAt))
+			collector.observeTrace(ctx, tracing.OutcomeFailure, time.Since(startedAt))
 			return coverage, fmt.Errorf("collect spoke snapshots: persist %q: %w", spoke.ID, err)
 		}
 		coverage.Reachable++
+		collector.observeSnapshot(SnapshotOutcomeSuccess, time.Since(startedAt))
+		collector.observeTrace(ctx, tracing.OutcomeSuccess, time.Since(startedAt))
 	}
 	sort.Strings(coverage.Unreachable)
 	sort.Strings(coverage.Stale)
@@ -331,6 +365,11 @@ func validateEvidence(spoke Spoke, evidence fleet.Evidence, snapshotObservedAt, 
 	if err := validateObserved(evidence.Kind, evidence.Observed); err != nil {
 		return err
 	}
+	if evidence.Kind == fleet.FactInventory {
+		if err := validateInventoryImageDigests(evidence); err != nil {
+			return err
+		}
+	}
 	return validateDisplay(evidence.Display)
 }
 
@@ -361,6 +400,35 @@ func validateObserved(kind fleet.FactKind, observed json.RawMessage) error {
 			return fmt.Errorf("observed payload has trailing JSON tokens")
 		}
 		return fmt.Errorf("observed payload is not valid JSON: %w", err)
+	}
+	return nil
+}
+
+func validateInventoryImageDigests(evidence fleet.Evidence) error {
+	var observed map[string]json.RawMessage
+	if err := json.Unmarshal(evidence.Observed, &observed); err != nil {
+		return fmt.Errorf("decode normalized inventory: %w", err)
+	}
+	rawDigests, present := observed["image_digests"]
+	if !present {
+		return nil
+	}
+	if evidence.Ref.Kind != "Pod" {
+		return fmt.Errorf("image digests are allowed only on normalized Pod inventory")
+	}
+	var digests []string
+	if err := json.Unmarshal(rawDigests, &digests); err != nil || len(digests) == 0 || len(digests) > 64 {
+		return fmt.Errorf("image digests must be a non-empty bounded string array")
+	}
+	previous := ""
+	for _, digest := range digests {
+		if err := fleet.ValidateImageDigest(digest); err != nil {
+			return fmt.Errorf("normalized Pod image digest: %w", err)
+		}
+		if previous != "" && previous >= digest {
+			return fmt.Errorf("normalized Pod image digests must be unique and sorted")
+		}
+		previous = digest
 	}
 	return nil
 }

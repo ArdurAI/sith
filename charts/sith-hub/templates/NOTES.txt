@@ -1,0 +1,5 @@
+The Sith hub chart intentionally has no runnable default values.
+
+Set image.reference to a released immutable repository@sha256 reference, and provide the existing
+runtime and migration Secrets described in charts/sith-hub/README.md. This chart never creates
+Secrets or materializes KMS values; an approved external secret materializer owns that boundary.

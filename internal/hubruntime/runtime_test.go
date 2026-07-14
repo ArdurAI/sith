@@ -1,0 +1,180 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package hubruntime
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
+	"math/big"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestServerServesTLSAndStopsWithContext(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverTLS, clientTLS := runtimeTestTLS(t)
+	server, err := NewServer(ServerConfig{
+		Listener: listener,
+		Handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			if request.TLS == nil {
+				t.Fatal("plaintext request reached hub handler")
+			}
+			response.WriteHeader(http.StatusNoContent)
+		}),
+		TLSConfig: serverTLS,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(ctx) }()
+
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: clientTLS}, Timeout: time.Second}
+	defer client.CloseIdleConnections()
+	endpoint := "https://" + listener.Addr().String()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		response, requestErr := client.Get(endpoint)
+		if requestErr == nil {
+			if response.StatusCode != http.StatusNoContent {
+				t.Fatalf("status = %d", response.StatusCode)
+			}
+			_ = response.Body.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("TLS request failed: %v", requestErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNewServerRejectsUnsafeConfiguration(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	serverTLS, _ := runtimeTestTLS(t)
+	for _, test := range []struct {
+		name   string
+		mutate func(*ServerConfig)
+	}{
+		{name: "missing handler", mutate: func(config *ServerConfig) { config.Handler = nil }},
+		{name: "missing listener", mutate: func(config *ServerConfig) { config.Listener = nil }},
+		{name: "weak TLS", mutate: func(config *ServerConfig) { config.TLSConfig.MinVersion = tls.VersionTLS11 }},
+		{name: "dynamic certificate", mutate: func(config *ServerConfig) {
+			config.TLSConfig.GetCertificate = func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil }
+		}},
+		{name: "bad timeout", mutate: func(config *ServerConfig) { config.ShutdownTimeout = 500 * time.Millisecond }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := ServerConfig{Listener: listener, Handler: http.NotFoundHandler(), TLSConfig: serverTLS.Clone()}
+			test.mutate(&config)
+			if _, err := NewServer(config); err == nil {
+				t.Fatal("NewServer accepted unsafe configuration")
+			}
+		})
+	}
+}
+
+func TestLoadDeploymentConfigRequiresEverySecurityInput(t *testing.T) {
+	config, err := loadDeploymentConfig(func(string) (string, bool) { return "", false })
+	if err == nil || config != (deploymentConfig{}) {
+		t.Fatalf("config/error = %#v/%v", config, err)
+	}
+	values := map[string]string{
+		"SITH_HUB_LISTEN_ADDR":             "127.0.0.1:8443",
+		"SITH_HUB_DATABASE_URL":            "postgres://sith@db/sith?sslmode=require",
+		"SITH_HUB_SESSION_ISSUER":          "https://issuer.sith.test",
+		"SITH_HUB_SESSION_AUDIENCE":        "https://hub.sith.test",
+		"SITH_HUB_SESSION_KEY_ID":          "session-2026-07",
+		"SITH_HUB_SESSION_PUBLIC_KEY_FILE": "/mnt/session/public.pem",
+		"SITH_HUB_SERVER_TLS_CERT_FILE":    "/mnt/server/tls.crt",
+		"SITH_HUB_SERVER_TLS_KEY_FILE":     "/mnt/server/tls.key",
+		"SITH_HUB_PROXY_ADDRESS":           "proxy.sith.test:8090",
+		"SITH_HUB_PROXY_SERVER_NAME":       "proxy.sith.test",
+		"SITH_HUB_PROXY_CA_FILE":           "/mnt/proxy/ca.crt",
+		"SITH_HUB_PROXY_CERT_FILE":         "/mnt/proxy/tls.crt",
+		"SITH_HUB_PROXY_KEY_FILE":          "/mnt/proxy/tls.key",
+		"SITH_HUB_KUBE_API_SERVER_NAME":    "kubernetes",
+	}
+	config, err = loadDeploymentConfig(func(name string) (string, bool) { value, ok := values[name]; return value, ok })
+	if err != nil || config.listenAddress != "127.0.0.1:8443" || config.proxyAddress != "proxy.sith.test:8090" {
+		t.Fatalf("config/error = %#v/%v", config, err)
+	}
+	values["SITH_HUB_LISTEN_ADDR"] = ":8443"
+	if _, err := loadDeploymentConfig(func(name string) (string, bool) { value, ok := values[name]; return value, ok }); err == nil {
+		t.Fatal("loadDeploymentConfig accepted an ambiguous listener")
+	}
+}
+
+func TestReadMountedFileRequiresReadOnlyRegularFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mounted.pem")
+	if err := os.WriteFile(path, []byte("mounted material"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readMountedFile("test material", path, 1024); err == nil {
+		t.Fatal("readMountedFile accepted a writable file")
+	}
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := readMountedFile("test material", path, 1024)
+	if err != nil || string(contents) != "mounted material" {
+		t.Fatalf("contents/error = %q/%v", contents, err)
+	}
+	clear(contents)
+	if _, err := readMountedFile("test directory", filepath.Dir(path), 1024); err == nil {
+		t.Fatal("readMountedFile accepted a directory")
+	}
+}
+
+func runtimeTestTLS(t *testing.T) (*tls.Config, *tls.Config) {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	certificateDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+		SerialNumber: big.NewInt(1), NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour), DNSNames: []string{"localhost"},
+		KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+	}, &x509.Certificate{
+		SerialNumber: big.NewInt(1), NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour), DNSNames: []string{"localhost"},
+		KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+	}, publicKey, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificatePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER})
+	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privatePEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})
+	certificate, err := tls.X509KeyPair(certificatePEM, privatePEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(&x509.Certificate{Raw: certificateDER})
+	return &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{certificate}}, &tls.Config{RootCAs: pool, ServerName: "localhost", MinVersion: tls.VersionTLS12}
+}

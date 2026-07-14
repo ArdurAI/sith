@@ -8,8 +8,12 @@ BIN_DIR  := bin
 GOLANGCI ?= golangci-lint
 GOVULNCHECK ?= govulncheck
 KIND     ?= kind
+HELM     ?= helm
 GORELEASER ?= goreleaser
 DOCKER      ?= docker
+KUBECTL     ?= kubectl
+OCM_SCRATCH_ROOT ?= /Volumes/EXTENDED/tmp/sith-m0
+OCM_PREFIX       ?= sith-m0
 
 KIND_NODE_IMAGE ?= kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
 POSTGRES_IMAGE  ?= postgres:18.4-alpine3.23@sha256:996d0920e4ff9df1fc19dacb904492f3c1ec0ec1cc338f0ad7123be7731c5f5e
@@ -25,7 +29,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/buildinfo.Commit=$(COMMIT) \
 	-X $(PKG)/internal/buildinfo.Date=$(DATE)
 
-.PHONY: all build test test-scripts perf e2e e2e-kind e2e-postgres e2e-isolation lint vuln fmt fmt-check vet tidy clean run ci release-check help
+.PHONY: all build test test-scripts perf e2e e2e-helm e2e-oci e2e-kind e2e-ocm e2e-postgres e2e-isolation lint vuln fmt fmt-check vet tidy clean run ci release-check help
 
 all: build
 
@@ -45,9 +49,37 @@ perf: ## Enforce the warm-cache TUI p95 latency budget without race overhead
 e2e: ## Build and exercise the real binary as a subprocess
 	go test -race -count=1 -tags=e2e ./tests/e2e
 
+e2e-helm: ## Validate the fail-closed Helm hub chart with the pinned Helm CLI
+	HELM_BIN="$(HELM)" go test -race -count=1 -timeout=5m -tags='e2e helm' -run '^TestHelmHubChartContract$$' ./tests/e2e
+
+e2e-oci: ## Build and inspect the local immutable OCI image contract for linux/amd64 and linux/arm64
+	go test -race -count=1 -timeout=10m -tags='e2e oci' -run '^Test(OCIImageCrossPlatformContract|ContainerfileInstructionGuard)$$' ./tests/e2e
+
 e2e-kind: ## Exercise adapter and binary against two real kind clusters
 	KIND_BIN="$(KIND)" KIND_NODE_IMAGE="$(KIND_NODE_IMAGE)" \
-		go test -race -count=1 -timeout=15m -tags='e2e kind' -run '^TestKindFleetFanout$$' ./tests/e2e
+		go test -race -count=1 -timeout=15m -tags='e2e kind' -run '^Test(KindFleetFanout|KindOCIImageContract)$$' ./tests/e2e
+
+e2e-ocm: ## Prove direct ClusterProxy transport in the pinned two-spoke M0 lab
+	@set -euo pipefail; \
+		run_required_e2e_test() { \
+			local test_name="$$1"; shift; \
+			local output; \
+			if ! output="$$("$$@" 2>&1)"; then \
+				printf '%s\n' "$$output" >&2; return 1; \
+			fi; \
+			printf '%s\n' "$$output"; \
+			grep -Fq -- "--- PASS: $${test_name}" <<<"$$output" || { \
+				echo "required M0 test $${test_name} did not run" >&2; return 1; \
+			}; \
+		}; \
+		trap 'KIND_BIN="$(KIND)" SITH_M0_SCRATCH_ROOT="$(OCM_SCRATCH_ROOT)" SITH_M0_PREFIX="$(OCM_PREFIX)" hack/experiments/m0-ocm-falsification.sh cleanup' EXIT; \
+		KIND_BIN="$(KIND)" SITH_M0_SCRATCH_ROOT="$(OCM_SCRATCH_ROOT)" SITH_M0_PREFIX="$(OCM_PREFIX)" SITH_M0_KEEP_CLUSTERS=1 \
+			hack/experiments/m0-ocm-falsification.sh run; \
+		export KUBECTL_BIN="$(KUBECTL)" SITH_OCM_HUB_KUBECONFIG="$(OCM_SCRATCH_ROOT)/kubeconfig" SITH_OCM_HUB_CONTEXT="kind-$(OCM_PREFIX)-hub"; \
+		run_required_e2e_test TestDirectClusterProxyM0 \
+			go test -v -race -count=1 -timeout=8m -tags='e2e ocm' -run '^TestDirectClusterProxyM0$$' ./internal/hubocm; \
+		run_required_e2e_test TestHubRuntimeDirectClusterProxyM0 \
+			go test -v -race -count=1 -timeout=8m -tags='e2e ocm' -run '^TestHubRuntimeDirectClusterProxyM0$$' ./internal/hubruntime
 
 e2e-postgres: ## Prove forced RLS against a temporary digest-pinned PostgreSQL container
 	DOCKER_BIN="$(DOCKER)" POSTGRES_IMAGE="$(POSTGRES_IMAGE)" \
@@ -92,7 +124,7 @@ ci: fmt-check vet lint vuln test test-scripts perf e2e build ## Run the full CI 
 release-check: ## Build and verify the reproducible multi-platform release snapshot twice
 	@command -v "$(GORELEASER)" >/dev/null || { echo "goreleaser is required" >&2; exit 1; }
 	@command -v syft >/dev/null || { echo "syft is required" >&2; exit 1; }
-	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+	@set -e; tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
 		go mod download; \
 		go mod verify; \
 		"$(GORELEASER)" check .goreleaser.yaml; \

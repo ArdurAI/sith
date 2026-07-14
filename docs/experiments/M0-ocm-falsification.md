@@ -172,6 +172,28 @@ Replay the committed terminal capture locally:
 asciinema play docs/experiments/M0-ocm-falsification.cast
 ```
 
+### Direct ClusterProxy adapter gate
+
+The Phase-1 direct adapter is tested by the following target. It creates the same pinned M0 lab,
+retains it only long enough for the direct Go test, and always invokes the owned-scratch cleanup
+path on exit:
+
+```bash
+KIND=/Volumes/EXTENDED/MacData/tools/bin/kind \
+  make e2e-ocm
+```
+
+The test uses a loopback-only temporary port-forward to the hub's `proxy-entrypoint` only because
+it runs from the developer host. It loads the hub proxy CA/client certificate fixture only to model
+the read-only deployment mount; its actual per-spoke path reads the exact `sith-reader` projection
+through the narrow `get` reader. It requires direct TLS-verified snapshots from both spokes, an
+MSA-token `Forbidden` for a cluster-wide Secrets list, and a replacement projection with a changed
+token before a subsequent snapshot. No token, CA, response body, or port-forward output is printed.
+
+To support that product read boundary, each M0 `sith-reader` gets only cluster-wide `list` on
+Pods, Deployments, and Rollouts. The existing namespaced service-proxy Role is separate; there is
+still no grant for Secrets, Nodes, writes, watches, or hub API access.
+
 ## What the runner proves
 
 ### Registration and addon health

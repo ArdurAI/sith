@@ -1,0 +1,28 @@
+# image.reference is an explicit immutable repository@sha256 reference for a released Sith hub image.
+# It is intentionally empty: this repository does not publish a hub image yet.
+profile: light
+
+image:
+  reference: ""
+
+# runtime.existingSecret is an operator-provided Secret materialized outside this chart. It contains
+# database-url, session-public.pem, server-tls.crt, server-tls.key, proxy-ca.crt, proxy-tls.crt,
+# and proxy-tls.key. The chart never creates or renders secret data.
+runtime:
+  existingSecret: ""
+  sessionIssuer: ""
+  sessionAudience: ""
+  sessionKeyID: ""
+  proxyAddress: ""
+  proxyServerName: ""
+  kubeAPIServerName: ""
+
+# migration.existingSecret is an operator-provided Secret containing owner-database-url only.
+# migration.applicationRole is the non-owner Postgres role enforced by the migration ledger.
+migration:
+  existingSecret: ""
+  applicationRole: ""
+
+# profile selects a fixed, reviewed resource envelope for both the hub and its migration hook.
+# light requests 100m CPU / 128Mi memory and caps at 500m / 512Mi; heavy requests 500m / 512Mi
+# and caps at 2 CPU / 2Gi. Arbitrary resource overrides are intentionally rejected.

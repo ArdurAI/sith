@@ -107,6 +107,28 @@ expect_failure "Docker validation rejects a remote endpoint override" \
   env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/docker-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
   DOCKER_HOST="tcp://127.0.0.1:2375" bash -c 'source "$1"; validate_local_docker_endpoint' _ "${SCRIPT}"
 
+health_fallback_marker="${TEST_ROOT}/health-fallback"
+health_fallback_output="$(env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/health-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
+  HEALTH_FALLBACK_MARKER="${health_fallback_marker}" bash -c '
+    source "$1"
+    proxy_health_port_available() { return 1; }
+    verify_cluster_registration() { :; }
+    verify_scoped_proxy() { : >"${HEALTH_FALLBACK_MARKER}"; }
+    verify_spoke_ingress_boundary() { :; }
+    verify_outbound_only() { :; }
+    verify_lab
+  ' _ "${SCRIPT}")"
+[[ ! -e "${health_fallback_marker}" ]]
+[[ "${health_fallback_output}" == *"deferring clusteradm proxy checks to the mandatory direct e2e gate"* ]] || {
+  printf '[m0-safety] FAIL: occupied port did not log the direct-e2e fallback\n' >&2
+  exit 1
+}
+[[ "${health_fallback_output}" == *"transport=direct-e2e-required"* ]] || {
+  printf '[m0-safety] FAIL: occupied port did not select direct-e2e-required transport\n' >&2
+  exit 1
+}
+pass "occupied ClusterProxy port defers clusteradm checks to direct e2e"
+
 cleanup_marker="${TEST_ROOT}/forced-cleanup"
 expect_failure "retained run fails closed when bootstrap rotation is unproven" \
   env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/rotation-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
@@ -146,6 +168,31 @@ expect_failure "malformed token output still requires invalidation" \
   ' _ unused "${SCRIPT}"
 [[ "$(cat "${token_flag_marker}")" == "1" ]]
 pass "token acquisition boundary is conservative"
+
+addon_wait_marker="${TEST_ROOT}/addon-wait"
+env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/addon-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
+  KUBECTL_BIN=fake_kubectl ADDON_WAIT_MARKER="${addon_wait_marker}" bash -c '
+    attempts=0
+    fake_kubectl() {
+      for argument in "$@"; do
+        if [[ "${argument}" == "get" ]]; then
+          attempts=$((attempts + 1))
+          [[ "${attempts}" -ge 3 ]]
+          return
+        fi
+        if [[ "${argument}" == "wait" ]]; then
+          printf "%s\n" "${attempts}" >"${ADDON_WAIT_MARKER}"
+          return 0
+        fi
+      done
+      return 1
+    }
+    sleep() { :; }
+    source "$1"
+    wait_for_addon_creation spoke-a cluster-proxy
+  ' _ "${SCRIPT}"
+[[ "$(cat "${addon_wait_marker}")" == "3" ]]
+pass "addon wait tolerates asynchronous creation before availability"
 
 expect_failure "unrelated hub exec failure cannot satisfy the active deny" \
   env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/probe-root" SITH_M0_ALLOW_NON_EXTENDED=1 \

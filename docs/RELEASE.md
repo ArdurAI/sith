@@ -84,10 +84,34 @@ These checks establish producer identity, artifact integrity, build provenance, 
 binding. They do not prove that every dependency is vulnerability-free; consumers must still
 evaluate the attached SBOM against their own policy and current advisory data.
 
+## OCI image contract
+
+Sith's deployment image recipe is validated locally before any registry publication. It assembles
+the existing static Linux binary into a digest-pinned distroless runtime, uses non-root UID/GID
+`65532`, and exposes only the `sith` entrypoint. The test builds and inspects both `linux/amd64`
+and `linux/arm64` variants without pushing, then runs the native image with a read-only filesystem,
+no network, no capabilities, and `no-new-privileges`; the same image must complete a hardened Job
+on two real Kind clusters.
+
+No network is an isolated image-check constraint, not the operational hub policy. A deployment
+must allow only narrowly scoped egress to configured runtime dependencies, including the database
+and, where enabled, the pinned OIDC discovery and JWKS endpoints.
+
+No OCI image is published by this repository yet. Consumers must not infer a mutable image tag
+from a release archive. The [`charts/sith-hub`](../charts/sith-hub) chart accepts only an explicit
+immutable `repository@sha256:...` reference, and its defaults intentionally fail until an operator
+provides that reference and existing Secret names. Image publishing/signing/attestation will be
+added as a separate release-boundary change before any public deployment guidance. Its fixed
+`light` and `heavy` profiles alter only the reviewed resource envelope; both preserve the same
+digest, Secret-reference, migration, RBAC, and workload-hardening contract. This first F9.3a
+slice is not a claim of the parent feature's future in-chart database, HA, or cloud-KMS topology.
+
 ## Maintainer release procedure
 
 1. Merge the feature PR into `dev`, ensure the full CI and release-snapshot jobs are green, then
-   merge a reviewed `dev` to `main` release PR.
+   merge a reviewed `dev` to `main` release PR. `dev` is the durable integration source: never use
+   `--delete-branch` for this release PR. Automatic branch deletion is reserved for merged feature
+   branches.
 2. From an up-to-date `main`, run `make ci` and `make release-check`. The latter compares archive
    SHA-256 digests across two complete builds; SBOM creation timestamps and Sigstore signatures are
    intentionally not expected to be byte-for-byte reproducible.
@@ -97,6 +121,8 @@ evaluate the attached SBOM against their own policy and current advisory data.
 5. Verify one archive with the commands above, dispatch the `ArdurAI/homebrew-tap` sync workflow,
    and prove a clean `brew install sith && sith version` before announcing the release.
 6. Check Dependabot, code-scanning, and secret-scanning alerts after publication.
+7. Confirm `dev` still exists at the intended integration tip before starting the next feature
+   branch.
 
 Published versions are immutable. A bad public release is corrected with a new patch version; do
 not replace its tag or silently rewrite assets. The release job uses only short-lived GitHub OIDC

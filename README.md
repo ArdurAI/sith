@@ -90,9 +90,10 @@ revoked immediately. Exchange responses, including generic failures, are non-cac
 handler includes a bounded per-process attempt limiter; a replicated hub must additionally enforce
 a shared limit at its ingress or gateway. Deployments must provide the HMAC pepper and Ed25519
 private key through a secret manager, keep both out of logs and configuration repositories, and
-rotate them under an explicit operational procedure. These are E1 library and HTTP boundaries;
-the `sith hub` runtime remains staged behind later hub epics rather than exposing an incomplete
-service.
+rotate them under an explicit operational procedure. These are E1 library and HTTP boundaries.
+The P1 `sith hub` runtime now mounts only the session-authenticated fleet read/refresh surface
+below; API-key, OIDC, and cloud-proof exchange handlers remain intentionally unmounted until their
+ingress and operator lifecycle are composed.
 
 Pinned OIDC federation uses the same exchange model. Each endpoint is fixed to one requested
 workspace, and each provider configuration allowlists an exact HTTPS issuer, audience, token type,
@@ -159,12 +160,99 @@ only the workspace boundary and registered managed-cluster reference; it never r
 kubeconfig, endpoint, or token through the Sith collector contract. Only normalized `inventory`
 and `health` facts are accepted, source-stamped, freshness-bounded, and stored behind forced RLS.
 Failed refreshes retain the last snapshot as explicitly stale evidence and record only a closed
-failure category. The concrete OCM ClusterGateway transport is deliberately not exposed by the
-`sith hub` stub until its projected-token lifecycle is wired and exercised as a product adapter.
-The same model now answers a read-only, exact cross-cluster correlation such as “every deployment
+failure category. The pinned direct OCM ClusterProxy adapter reads the exact rotating
+`sith-reader` managed-serviceaccount Secret for a registered spoke, opens a short-lived
+Konnectivity tunnel only to that spoke, and verifies both proxy mTLS and the spoke Kubernetes
+certificate; it never forwards a caller `Authorization` header, stores a credential, disables
+TLS verification, lists or watches Secrets, or carries raw Kubernetes objects across the
+collector seam. Its executable two-spoke M0 gate is `make e2e-ocm`, which now also drives a
+signed-session request through the TLS hub runtime across both spokes. The same model now answers
+a read-only, exact cross-cluster correlation such as “every deployment
 named `payments` that is not Healthy” within one workspace. Matching is by exact kind/name/namespace
-rather than a prefix, and every answer retains full stale/unreachable coverage rather than claiming
+rather than a prefix. Every returned cluster and matching fact retains its source identity and
+observation time, and every answer retains full stale/unreachable coverage rather than claiming
 that a partial fleet is complete.
+
+### Governed hub runtime (P1)
+
+`sith hub` is an in-cluster, TLS-only process. It has no listener default and exits non-zero before
+opening a listener, database pool, or Kubernetes client unless all of these deployment inputs are
+present and valid:
+
+- `SITH_HUB_LISTEN_ADDR` and `SITH_HUB_DATABASE_URL` (the database must use the existing
+  non-owner, forced-RLS application role and TLS);
+- `SITH_HUB_SESSION_ISSUER`, `SITH_HUB_SESSION_AUDIENCE`, `SITH_HUB_SESSION_KEY_ID`, and
+  `SITH_HUB_SESSION_PUBLIC_KEY_FILE` (a static Ed25519 PKIX public key; no remote discovery);
+- `SITH_HUB_SERVER_TLS_CERT_FILE` and `SITH_HUB_SERVER_TLS_KEY_FILE` for the hub HTTPS listener;
+- `SITH_HUB_PROXY_ADDRESS`, `SITH_HUB_PROXY_SERVER_NAME`, `SITH_HUB_PROXY_CA_FILE`,
+  `SITH_HUB_PROXY_CERT_FILE`, `SITH_HUB_PROXY_KEY_FILE`, and `SITH_HUB_KUBE_API_SERVER_NAME` for
+  the direct ClusterProxy mTLS path.
+
+Every referenced key, certificate, or CA file must be a read-only regular file from a deployment
+mount. The runtime obtains its Kubernetes identity only with in-cluster configuration; it has no
+kubeconfig fallback and uses that identity through the fixed `sith-reader` Secret reader. It serves
+only `POST /v1/workspaces/{workspace}/fleet:refresh`,
+`GET /v1/workspaces/{workspace}/fleet`, and
+`GET /v1/workspaces/{workspace}/fleet/images/{sha256:<64-lowercase-hex>}`. Every route requires an
+exact signed Sith session, derives the workspace scope from its signed memberships, carries that
+scope through the PEP and RLS seams, accepts no query parameters, and returns only normalized
+coverage/fleet data under `Cache-Control: no-store`.
+
+After deriving the signed scope, the hub mints one opaque local trace ID for the governed request.
+It strips common caller-supplied trace and correlation carriers, never echoes or forwards them,
+and carries the local ID through the PEP audit record and each snapshot transport attempt. The hub
+logs only local trace ID, fixed stage, fixed outcome, and bounded duration; it records no workspace,
+actor, spoke, endpoint, resource, selector, argument digest, credential, raw error, or returned
+data in trace events. This is not a telemetry exporter: it adds no OpenTelemetry SDK, listener,
+network egress, queue, trace store, persistence, or action-intent protocol.
+
+Before a signed scope exists, the authentication gate emits one local WARN record for every
+refusal with only the fixed `hub-auth` surface and `refused` outcome. It deliberately does not
+distinguish credential failure modes or carry a trace/correlation ID, token, header, path, client
+address, workspace, principal, or verifier error. The record is a passive alerting signal, not an
+audit record, rate limiter, telemetry export, or additional authentication decision.
+
+The image route answers one exact, immutable runtime digest question across registered spokes. The
+direct reader accepts only canonical digests normalized from ordinary
+`Pod.Status.ContainerStatuses[].ImageID`; PodSpec image strings, init and ephemeral container
+statuses, mutable tags, malformed values, and ambiguous runtime IDs abstain. Sith makes no registry
+request, image pull, SBOM retrieval, vulnerability-feed lookup, or credential use for this read.
+The result remains coverage-honest: matching Pod inventory facts retain source and freshness, and
+unreachable or stale spokes are reported rather than assumed clean.
+
+### Hub schema migration
+
+Run `sith hub migrate` as a short-lived deployment Job before starting `sith hub`. It accepts only
+`SITH_HUB_MIGRATION_OWNER_DATABASE_URL` and `SITH_HUB_APPLICATION_DATABASE_ROLE`; mount the owner
+database URL from the deployment secret provider and set the application role explicitly. The
+command requires TLS for any non-local database target, applies the checksum-locked serializable
+migration ledger, audits forced RLS, attempts to close its one owner connection, and exits. It never opens the
+hub listener, creates a Kubernetes client, or starts collection.
+
+The normal hub process continues to use only `SITH_HUB_DATABASE_URL` for the non-owner application
+role. Do not reuse the migration-owner credential in the hub Deployment or place either database
+URL, certificates, tokens, or private keys in chart values or logs.
+
+### OCI image deployment contract
+
+The hub OCI recipe uses the digest-pinned distroless static Debian 12 runtime and contains only a
+static Linux Sith binary running as UID/GID `65532`. It has no shell, package manager, default
+configuration, Kubernetes credential, certificate, database URL, or secret. The source test builds
+and inspects both `linux/amd64` and `linux/arm64` variants without publishing; the native image must
+also run with a read-only filesystem, no network, no Linux capabilities, and no privilege
+escalation, then complete the same contract as a hardened Job on each of two Kind clusters.
+The no-network setting applies only to those isolated image checks. A deployed hub needs narrowly
+allowlisted egress to its configured runtime dependencies, including its database and, when
+enabled, the pinned OIDC discovery and JWKS endpoints.
+
+This is not a published image reference. The fail-closed [`charts/sith-hub`](charts/sith-hub)
+chart requires an explicit immutable `repository@sha256:...` image reference and refuses tags,
+especially `latest`; it invokes `sith hub migrate` in a separate short-lived Job before the
+non-owner hub Deployment starts. Its defaults intentionally cannot install until a release-bound
+hub image and operator-provided Secret references exist; it never renders secret material. The
+chart permits only fixed `light` and `heavy` resource profiles, which retain identical security,
+credential, and RBAC controls. This first F9.3a profile slice does not claim a public image,
+in-chart database, or HA; those parent-F9.3 topology and custody capabilities need later evidence.
 
 `sith serve --mcp` exposes `fleet.inventory`, `fleet.health`, `fleet.correlate`, and
 `fleet.cve-search` over MCP Streamable HTTP. All four tools are cache-only and carry
@@ -260,7 +348,8 @@ make release-check
 The gate also compiles the binary under a functional HTTP/HTTPS egress sentinel and exercises
 local commands, deterministic investigation, plus the running web UI and MCP server with an official SDK client. A source
 boundary exact-allowlists production network, filesystem-write, and subprocess imports, confines
-client-go transport to the kubeconfig adapter, and rejects known telemetry SDKs and low-level
+local-mode client-go transport to the kubeconfig adapter, permits only the separately reviewed
+tenant-scoped direct OCM adapter in governed mode, and rejects known telemetry SDKs and low-level
 network bypasses. Together these checks prove the reviewed paths; they are regression controls
 rather than an operating-system network sandbox.
 

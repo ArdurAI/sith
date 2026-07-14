@@ -129,6 +129,38 @@ func TestAuthenticateRejectsMissingForgedAndAmbiguousBearerTokens(t *testing.T) 
 	}
 }
 
+func TestAuthenticateStripsUntrustedCorrelationHeaders(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	publicKey, privateKey := hubTestKeyPair()
+	verifier, err := hubauth.NewJWTVerifier(hubauth.JWTConfig{
+		Issuer: hubTestIssuer, Audience: hubTestAudience, Keys: map[string]ed25519.PublicKey{hubTestKeyID: publicKey}, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := Authenticate(verifier, http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		for _, name := range []string{"Traceparent", "Tracestate", "B3", "X-B3-Traceid", "X-Request-ID", "X-Correlation-ID", "X-Trace-ID"} {
+			if value := request.Header.Get(name); value != "" {
+				t.Fatalf("untrusted correlation header %s reached handler: %q", name, value)
+			}
+		}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "https://hub.sith.test/api", nil)
+	request.Header.Set("Authorization", "Bearer "+signHubTestToken(t, hubValidClaims(now), privateKey))
+	for _, name := range []string{"Traceparent", "Tracestate", "B3", "X-B3-Traceid", "X-Request-ID", "X-Correlation-ID", "X-Trace-ID"} {
+		request.Header.Set(name, "workspace-a/token=secret")
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, body = %q", response.Code, response.Body.String())
+	}
+}
+
 func FuzzBearerTokenNeverAcceptsMetadata(f *testing.F) {
 	f.Add("Bearer token")
 	f.Add("bearer abc.def.ghi")
