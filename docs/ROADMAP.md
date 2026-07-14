@@ -46,7 +46,8 @@ transport/agent scope is deleted; the hub track proceeds to Phase 1.
 > Pods/Deployments/Rollouts inventory plus health and, where already present, bounded
 > runtime-proven `VulnerabilityReport` CVE facts. `make e2e-ocm` proves the direct route across
 > both M0 spokes, its `403` Secrets negative control, an MSA projection replacement, and the
-> authenticated TLS runtime refresh/read composition. This does not unblock [#103](https://github.com/ArdurAI/sith/issues/103); that ClusterGateway-specific
+> authenticated TLS runtime refresh/read composition and exact runtime-proven image/CVE queries.
+> This does not unblock [#103](https://github.com/ArdurAI/sith/issues/103); that ClusterGateway-specific
 > transport remains blocked by [#104](https://github.com/ArdurAI/sith/issues/104) pending an
 > official upstream release.
 

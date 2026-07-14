@@ -655,6 +655,11 @@ func assertFleetStoreIntegration(t *testing.T, ctx context.Context, database *Ap
 		cves.Coverage.Requested != 2 || cves.Coverage.Reachable != 2 || len(cves.Coverage.Stale) != 0 {
 		t.Fatalf("two-spoke exact CVE search = %#v, error = %v", cves, err)
 	}
+	identifierCVEs, err := cveSearcher.SearchByIdentifier(ctx, scope, hubfleet.CVEIdentifierSearchRequest{Identifier: "CVE-2026-0001"})
+	if err != nil || len(identifierCVEs.Facts) != 2 || identifierCVEs.Facts[0].Ref.Scope != "cluster-a" || identifierCVEs.Facts[1].Ref.Scope != "cluster-a2" ||
+		identifierCVEs.Coverage.Requested != 2 || identifierCVEs.Coverage.Reachable != 2 || len(identifierCVEs.Coverage.Stale) != 0 {
+		t.Fatalf("two-spoke exact CVE identifier search = %#v, error = %v", identifierCVEs, err)
+	}
 	correlated, err := correlator.Correlate(ctx, scope, hubfleet.CorrelationRequest{
 		ResourceKind: "Deployment", Name: "payments", Namespace: "payments", HealthNot: "Healthy",
 	})
@@ -683,6 +688,10 @@ func assertFleetStoreIntegration(t *testing.T, ctx context.Context, database *Ap
 	foreignCVEs, err := cveSearcher.Search(ctx, foreignScope, hubfleet.ImageSearchRequest{Digest: digest})
 	if err != nil || len(foreignCVEs.Facts) != 0 || foreignCVEs.Coverage.Requested != 1 || len(foreignCVEs.Coverage.Unreachable) != 1 {
 		t.Fatalf("cross-workspace CVE search = %#v, error = %v", foreignCVEs, err)
+	}
+	foreignIdentifierCVEs, err := cveSearcher.SearchByIdentifier(ctx, foreignScope, hubfleet.CVEIdentifierSearchRequest{Identifier: "CVE-2026-0001"})
+	if err != nil || len(foreignIdentifierCVEs.Facts) != 0 || foreignIdentifierCVEs.Coverage.Requested != 1 || len(foreignIdentifierCVEs.Coverage.Unreachable) != 1 {
+		t.Fatalf("cross-workspace CVE identifier search = %#v, error = %v", foreignIdentifierCVEs, err)
 	}
 	foreignResult, err := database.QueryFleet(ctx, foreignScope, fleet.Query{Scopes: []string{"cluster-a"}}, time.Minute, now)
 	if err != nil || len(foreignResult.Facts) != 0 || foreignResult.Coverage.Requested != 1 ||

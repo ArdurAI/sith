@@ -49,6 +49,29 @@ func TestNormalizeFleetQueryAllowsOnlyExactImageCVEFacts(t *testing.T) {
 	}
 }
 
+func TestNormalizeFleetQueryAllowsOnlyExactCanonicalCVEIdentifierFacts(t *testing.T) {
+	t.Parallel()
+
+	query, scopes, err := normalizeFleetQuery(fleet.Query{
+		Kinds:    []fleet.FactKind{fleet.FactCVE},
+		Selector: fleet.Selector{ResourceKind: "Image", CVE: "CVE-2026-0001"},
+	})
+	if err != nil || len(scopes) != 0 || query.Selector.CVE != "CVE-2026-0001" {
+		t.Fatalf("normalize exact CVE identifier query = %#v, scopes = %#v, error = %v", query, scopes, err)
+	}
+	for _, invalid := range []fleet.Query{
+		{Kinds: []fleet.FactKind{fleet.FactCVE}, Selector: fleet.Selector{ResourceKind: "Image", CVE: "cve-2026-0001"}},
+		{Kinds: []fleet.FactKind{fleet.FactCVE}, Selector: fleet.Selector{ResourceKind: "Image", CVE: "CVE-2026-0001*"}},
+		{Kinds: []fleet.FactKind{fleet.FactCVE}, Selector: fleet.Selector{ResourceKind: "Image", CVE: "CVE-2026-0001", Image: "sha256:" + strings.Repeat("a", 64)}},
+		{Kinds: []fleet.FactKind{fleet.FactInventory}, Selector: fleet.Selector{ResourceKind: "Image", CVE: "CVE-2026-0001"}},
+		{Kinds: []fleet.FactKind{fleet.FactCVE}, Selector: fleet.Selector{ResourceKind: "Pod", CVE: "CVE-2026-0001"}},
+	} {
+		if _, _, err := normalizeFleetQuery(invalid); err == nil {
+			t.Fatalf("normalizeFleetQuery(%#v) succeeded", invalid)
+		}
+	}
+}
+
 func TestNormalizeFleetQueryRejectsBroadOrUnsafeImageSelectors(t *testing.T) {
 	t.Parallel()
 

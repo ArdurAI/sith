@@ -197,7 +197,8 @@ kubeconfig fallback and uses that identity through the fixed `sith-reader` Secre
 only `POST /v1/workspaces/{workspace}/fleet:refresh`,
 `GET /v1/workspaces/{workspace}/fleet`, and
 `GET /v1/workspaces/{workspace}/fleet/images/{sha256:<64-lowercase-hex>}`, and
-`GET /v1/workspaces/{workspace}/fleet/images/{sha256:<64-lowercase-hex>}/cves`. Every route requires an
+`GET /v1/workspaces/{workspace}/fleet/images/{sha256:<64-lowercase-hex>}/cves`, and
+`GET /v1/workspaces/{workspace}/fleet/cves/{CVE-YYYY-N...}`. Every route requires an
 exact signed Sith session, derives the workspace scope from its signed memberships, carries that
 scope through the PEP and RLS seams, accepts no query parameters, and returns only normalized
 coverage/fleet data under `Cache-Control: no-store`.
@@ -234,6 +235,13 @@ discarded. Sith does not install or execute a scanner, pull an image, request an
 registry or vulnerability feed, or use a new credential. A missing report CRD yields no positive
 CVE fact, not a clean-image claim; any other report-list failure makes the existing snapshot stale
 and unreachable under the same coverage contract.
+
+The inverse CVE route accepts one exact, canonical upper-case CVE identifier only—no case
+normalization, lists, globs, severity filters, or arbitrary JSON selectors. It returns the same
+bounded normalized image facts and coverage metadata as the image route, scoped through the
+signed workspace membership, PEP, and forced-RLS query. An empty result is only an absence of
+currently reported runtime-proven evidence; it is never a claim that the workspace or fleet is
+free of that CVE.
 
 ### Hub schema migration
 

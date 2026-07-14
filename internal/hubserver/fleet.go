@@ -34,15 +34,21 @@ type FleetCVESearcher interface {
 	Search(context.Context, tenancy.Scope, hubfleet.ImageSearchRequest) (fleet.QueryResult, error)
 }
 
+// FleetCVEIdentifierSearcher resolves normalized image CVE observations for one exact identifier.
+type FleetCVEIdentifierSearcher interface {
+	SearchByIdentifier(context.Context, tenancy.Scope, hubfleet.CVEIdentifierSearchRequest) (fleet.QueryResult, error)
+}
+
 // FleetHandlerConfig supplies the authenticated dependencies for the fixed hub fleet API.
 type FleetHandlerConfig struct {
-	Verifier      Verifier
-	AuthObserver  AuthObserver
-	Collector     FleetRefresher
-	Reader        hubfleet.FleetReader
-	ImageSearcher FleetImageSearcher
-	CVESearcher   FleetCVESearcher
-	PEP           *pep.Enforcer
+	Verifier              Verifier
+	AuthObserver          AuthObserver
+	Collector             FleetRefresher
+	Reader                hubfleet.FleetReader
+	ImageSearcher         FleetImageSearcher
+	CVESearcher           FleetCVESearcher
+	CVEIdentifierSearcher FleetCVEIdentifierSearcher
+	PEP                   *pep.Enforcer
 }
 
 // NewFleetHandler constructs the fixed, authenticated hub read surface.
@@ -56,7 +62,7 @@ func NewFleetHandler(config FleetHandlerConfig) (http.Handler, error) {
 
 	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		setNoStore(response.Header())
-		workspaceID, operation, imageDigest, ok := parseFleetRoute(request.URL)
+		workspaceID, operation, selector, ok := parseFleetRoute(request.URL)
 		if !ok {
 			writeFleetError(response, http.StatusNotFound, "not_found")
 			return
@@ -113,7 +119,7 @@ func NewFleetHandler(config FleetHandlerConfig) (http.Handler, error) {
 				writeFleetError(response, http.StatusMethodNotAllowed, "method_not_allowed")
 				return
 			}
-			result, err := config.ImageSearcher.Search(request.Context(), scope, hubfleet.ImageSearchRequest{Digest: imageDigest})
+			result, err := config.ImageSearcher.Search(request.Context(), scope, hubfleet.ImageSearchRequest{Digest: selector})
 			if err != nil {
 				writeFleetError(response, http.StatusServiceUnavailable, "image_search_unavailable")
 				return
@@ -129,9 +135,25 @@ func NewFleetHandler(config FleetHandlerConfig) (http.Handler, error) {
 				writeFleetError(response, http.StatusServiceUnavailable, "cve_search_unavailable")
 				return
 			}
-			result, err := config.CVESearcher.Search(request.Context(), scope, hubfleet.ImageSearchRequest{Digest: imageDigest})
+			result, err := config.CVESearcher.Search(request.Context(), scope, hubfleet.ImageSearchRequest{Digest: selector})
 			if err != nil {
 				writeFleetError(response, http.StatusServiceUnavailable, "cve_search_unavailable")
+				return
+			}
+			writeFleetJSON(response, http.StatusOK, result)
+		case fleetOperationCVEIdentifierSearch:
+			if request.Method != http.MethodGet {
+				response.Header().Set("Allow", http.MethodGet)
+				writeFleetError(response, http.StatusMethodNotAllowed, "method_not_allowed")
+				return
+			}
+			if config.CVEIdentifierSearcher == nil {
+				writeFleetError(response, http.StatusServiceUnavailable, "cve_identifier_search_unavailable")
+				return
+			}
+			result, err := config.CVEIdentifierSearcher.SearchByIdentifier(request.Context(), scope, hubfleet.CVEIdentifierSearchRequest{Identifier: selector})
+			if err != nil {
+				writeFleetError(response, http.StatusServiceUnavailable, "cve_identifier_search_unavailable")
 				return
 			}
 			writeFleetJSON(response, http.StatusOK, result)
@@ -150,6 +172,7 @@ const (
 	fleetOperationRefresh
 	fleetOperationImageSearch
 	fleetOperationCVESearch
+	fleetOperationCVEIdentifierSearch
 )
 
 func parseFleetRoute(requestURL *url.URL) (tenancy.WorkspaceID, fleetOperation, string, bool) {
@@ -178,6 +201,21 @@ func parseFleetRoute(requestURL *url.URL) (tenancy.WorkspaceID, fleetOperation, 
 	case "fleet:refresh":
 		return workspaceID, fleetOperationRefresh, "", true
 	default:
+		identifierSegment, found := strings.CutPrefix(resource, "fleet/cves/")
+		if found {
+			if identifierSegment == "" || strings.Contains(identifierSegment, "/") {
+				return "", 0, "", false
+			}
+			identifier, err := url.PathUnescape(identifierSegment)
+			if err != nil || url.PathEscape(identifier) != identifierSegment {
+				return "", 0, "", false
+			}
+			canonical, err := fleet.NormalizeCVEIdentifier(identifier)
+			if err != nil || canonical != identifier {
+				return "", 0, "", false
+			}
+			return workspaceID, fleetOperationCVEIdentifierSearch, identifier, true
+		}
 		digestSegment, found := strings.CutPrefix(resource, "fleet/images/")
 		if !found || digestSegment == "" {
 			return "", 0, "", false
