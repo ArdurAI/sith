@@ -231,10 +231,11 @@ The no-network setting applies only to those isolated image checks. A deployed h
 allowlisted egress to its configured runtime dependencies, including its database and, when
 enabled, the pinned OIDC discovery and JWKS endpoints.
 
-This is the chart-ready artifact contract, not a published image reference. A future Helm chart
-must require an explicit immutable `repository@sha256:...` image reference and must refuse tags,
-especially `latest`; it will invoke `sith hub migrate` in a separate short-lived Job before the
-non-owner hub Deployment starts.
+This is not a published image reference. The fail-closed [`charts/sith-hub`](charts/sith-hub)
+chart requires an explicit immutable `repository@sha256:...` image reference and refuses tags,
+especially `latest`; it invokes `sith hub migrate` in a separate short-lived Job before the
+non-owner hub Deployment starts. Its defaults intentionally cannot install until a release-bound
+hub image and operator-provided Secret references exist; it never renders secret material.
 
 `sith serve --mcp` exposes `fleet.inventory`, `fleet.health`, `fleet.correlate`, and
 `fleet.cve-search` over MCP Streamable HTTP. All four tools are cache-only and carry

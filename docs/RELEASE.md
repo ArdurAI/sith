@@ -98,9 +98,10 @@ must allow only narrowly scoped egress to configured runtime dependencies, inclu
 and, where enabled, the pinned OIDC discovery and JWKS endpoints.
 
 No OCI image is published by this repository yet. Consumers must not infer a mutable image tag
-from a release archive. The forthcoming Helm chart will accept only an explicit immutable
-`repository@sha256:...` reference, and image publishing/signing/attestation will be added as a
-separate release-boundary change before any public deployment guidance.
+from a release archive. The [`charts/sith-hub`](../charts/sith-hub) chart accepts only an explicit
+immutable `repository@sha256:...` reference, and its defaults intentionally fail until an operator
+provides that reference and existing Secret names. Image publishing/signing/attestation will be
+added as a separate release-boundary change before any public deployment guidance.
 
 ## Maintainer release procedure
 
