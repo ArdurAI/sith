@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/ArdurAI/sith/internal/tenancy"
+	"github.com/ArdurAI/sith/internal/tracing"
 )
 
 const (
@@ -100,6 +101,7 @@ func (function HookFunc) Decide(ctx context.Context, request Request) (Decision,
 // fixed operation metadata; it intentionally omits credentials, query arguments, targets, and data.
 type AuditEvent struct {
 	At          time.Time
+	TraceID     tracing.ID
 	WorkspaceID tenancy.WorkspaceID
 	Actor       string
 	Role        tenancy.Role
@@ -124,10 +126,11 @@ func (function AuditFunc) Record(ctx context.Context, event AuditEvent) error {
 
 // Config constructs an enforcement point with mandatory policy and audit dependencies.
 type Config struct {
-	Hook     PolicyHook
-	Auditor  Auditor
-	Observer DecisionObserver
-	Now      func() time.Time
+	Hook          PolicyHook
+	Auditor       Auditor
+	Observer      DecisionObserver
+	TraceObserver tracing.Observer
+	Now           func() time.Time
 }
 
 // Enforcer applies the fixed Phase-1 read pipeline and creates one audit record for every decision.
@@ -135,6 +138,7 @@ type Enforcer struct {
 	hook     PolicyHook
 	auditor  Auditor
 	observer DecisionObserver
+	tracer   tracing.Observer
 	now      func() time.Time
 }
 
@@ -149,7 +153,10 @@ func NewEnforcer(config Config) (*Enforcer, error) {
 	if config.Observer == nil {
 		config.Observer = noopDecisionObserver{}
 	}
-	return &Enforcer{hook: config.Hook, auditor: config.Auditor, observer: config.Observer, now: config.Now}, nil
+	if config.TraceObserver == nil {
+		config.TraceObserver = tracing.NoopObserver()
+	}
+	return &Enforcer{hook: config.Hook, auditor: config.Auditor, observer: config.Observer, tracer: config.TraceObserver, now: config.Now}, nil
 }
 
 // AllowReadHook is the temporary Phase-1 policy implementation. It allows only the closed read
@@ -171,10 +178,16 @@ func (enforcer *Enforcer) AuthorizeRead(ctx context.Context, scope tenancy.Scope
 	if enforcer == nil || enforcer.hook == nil || enforcer.auditor == nil || ctx == nil {
 		return fmt.Errorf("authorize read: enforcer and context are required")
 	}
+	traceContext, _, err := tracing.Ensure(ctx)
+	if err != nil {
+		return fmt.Errorf("authorize read: establish trace context: %w", err)
+	}
+	ctx = traceContext
 	startedAt := time.Now()
 	outcome := DecisionOutcomeError
 	defer func() {
 		enforcer.observeDecision(input.Verb, outcome, time.Since(startedAt))
+		enforcer.observeTrace(ctx, outcome, time.Since(startedAt))
 	}()
 	request := Request{
 		WorkspaceID: scope.WorkspaceID(), Actor: scope.Subject(), Role: scope.Role(), Action: tenancy.ActionRead,
@@ -252,8 +265,12 @@ func (enforcer *Enforcer) refuse(ctx context.Context, request Request, verdict V
 }
 
 func (enforcer *Enforcer) record(ctx context.Context, request Request, decision Decision) error {
+	traceID, ok := tracing.FromContext(ctx)
+	if !ok {
+		return fmt.Errorf("record policy audit: trace context is required")
+	}
 	return enforcer.auditor.Record(ctx, AuditEvent{
-		At: enforcer.now().UTC(), WorkspaceID: request.WorkspaceID, Actor: request.Actor, Role: request.Role,
+		At: enforcer.now().UTC(), TraceID: traceID, WorkspaceID: request.WorkspaceID, Actor: request.Actor, Role: request.Role,
 		Action: request.Action, Verb: request.Verb, Verdict: decision.Verdict, ReasonCode: decision.ReasonCode,
 	})
 }

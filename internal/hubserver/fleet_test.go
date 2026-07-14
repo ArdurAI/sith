@@ -18,6 +18,7 @@ import (
 	"github.com/ArdurAI/sith/internal/hubfleet"
 	"github.com/ArdurAI/sith/internal/pep"
 	"github.com/ArdurAI/sith/internal/tenancy"
+	"github.com/ArdurAI/sith/internal/tracing"
 )
 
 type fleetRefresherFunc func(context.Context, tenancy.Scope) (fleet.Coverage, error)
@@ -99,6 +100,69 @@ func TestFleetHandlerRefreshUsesOnlySignedWorkspaceScope(t *testing.T) {
 	}
 	if coverage.Requested != 2 || coverage.Reachable != 2 || len(coverage.Unreachable) != 0 || len(coverage.Stale) != 0 {
 		t.Fatalf("coverage = %+v", coverage)
+	}
+}
+
+func TestFleetHandlerMintsLocalTraceAfterSignedScope(t *testing.T) {
+	now := time.Date(2026, 7, 14, 7, 0, 0, 0, time.UTC)
+	verifier, privateKey := fleetTestVerifier(t, now)
+	var auditEvents []pep.AuditEvent
+	var traceEvents []tracing.Event
+	enforcer, err := pep.NewEnforcer(pep.Config{
+		Hook: pep.AllowReadHook{},
+		Auditor: pep.AuditFunc(func(_ context.Context, event pep.AuditEvent) error {
+			auditEvents = append(auditEvents, event)
+			return nil
+		}),
+		TraceObserver: tracing.ObserverFunc(func(event tracing.Event) { traceEvents = append(traceEvents, event) }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var collectorTrace tracing.ID
+	handler, err := NewFleetHandler(FleetHandlerConfig{
+		Verifier: verifier,
+		Collector: fleetRefresherFunc(func(ctx context.Context, scope tenancy.Scope) (fleet.Coverage, error) {
+			var ok bool
+			collectorTrace, ok = tracing.FromContext(ctx)
+			if !ok {
+				t.Fatal("authenticated collector received no trace context")
+			}
+			if err := enforcer.AuthorizeRead(ctx, scope, pep.NewReadInput(pep.VerbSpokeSnapshotRefresh, nil)); err != nil {
+				t.Fatalf("AuthorizeRead() error = %v", err)
+			}
+			return fleet.Coverage{Requested: 1, Reachable: 1}, nil
+		}),
+		Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
+			t.Fatal("refresh reached fleet reader")
+			return fleet.FleetResult{}, nil
+		}),
+		ImageSearcher: fleetImageSearcherFunc(func(context.Context, tenancy.Scope, hubfleet.ImageSearchRequest) (fleet.QueryResult, error) {
+			t.Fatal("refresh reached image searcher")
+			return fleet.QueryResult{}, nil
+		}),
+		PEP: enforcer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := authenticatedFleetRequest(t, http.MethodPost, "/v1/workspaces/workspace-a/fleet:refresh", privateKey, now)
+	request.Header.Set("Traceparent", "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")
+	request.Header.Set("X-B3-Traceid", "0123456789abcdef0123456789abcdef")
+	request.Header.Set("X-Request-ID", "workspace-a/token=secret")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !collectorTrace.Valid() {
+		t.Fatalf("status = %d trace = %q body = %q", response.Code, collectorTrace, response.Body.String())
+	}
+	if collectorTrace == "0123456789abcdef0123456789abcdef" || len(auditEvents) != 1 || auditEvents[0].TraceID != collectorTrace ||
+		len(traceEvents) != 1 || traceEvents[0].TraceID != collectorTrace || traceEvents[0].Stage != tracing.StagePEPDecision {
+		t.Fatalf("trace propagation = collector %q audits %#v events %#v", collectorTrace, auditEvents, traceEvents)
+	}
+	for _, name := range []string{"Traceparent", "Tracestate", "B3", "X-B3-Traceid", "X-Request-ID", "X-Correlation-ID", "X-Trace-ID"} {
+		if value := response.Header().Get(name); value != "" {
+			t.Fatalf("response echoed untrusted trace header %s: %q", name, value)
+		}
 	}
 }
 

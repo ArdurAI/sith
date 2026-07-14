@@ -32,6 +32,7 @@ func Authenticate(verifier Verifier, next http.Handler) (http.Handler, error) {
 		cloned := request.Clone(request.Context())
 		cloned.Header = request.Header.Clone()
 		stripUntrustedIdentityHeaders(cloned.Header)
+		stripUntrustedCorrelationHeaders(cloned.Header)
 		rawToken, ok := bearerToken(cloned.Header.Values("Authorization"))
 		if !ok {
 			writeUnauthorized(response)
@@ -85,6 +86,17 @@ func stripUntrustedIdentityHeaders(headers http.Header) {
 				headers.Del(name)
 				break
 			}
+		}
+	}
+}
+
+func stripUntrustedCorrelationHeaders(headers http.Header) {
+	for name := range headers {
+		normalized := strings.ToLower(name)
+		if normalized == "traceparent" || normalized == "tracestate" || normalized == "b3" ||
+			normalized == "x-request-id" || normalized == "x-correlation-id" || normalized == "x-trace-id" ||
+			strings.HasPrefix(normalized, "x-b3-") {
+			headers.Del(name)
 		}
 	}
 }

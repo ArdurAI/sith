@@ -35,6 +35,7 @@ func (auditor slogAuditor) Record(ctx context.Context, event AuditEvent) error {
 		"audit", true,
 		"surface", "hub-pep",
 		slog.Time("audit_at", event.At.UTC()),
+		"trace_id", event.TraceID,
 		"workspace", event.WorkspaceID,
 		"actor", event.Actor,
 		"role", event.Role,
@@ -55,6 +56,9 @@ func (auditor slogAuditor) Record(ctx context.Context, event AuditEvent) error {
 func (event AuditEvent) Validate() error {
 	if event.At.IsZero() || event.At.After(time.Now().Add(time.Minute)) {
 		return fmt.Errorf("policy audit time is invalid")
+	}
+	if !event.TraceID.Valid() {
+		return fmt.Errorf("policy audit trace identifier is invalid")
 	}
 	if err := tenancy.ValidateWorkspaceID(event.WorkspaceID); err != nil {
 		return fmt.Errorf("policy audit workspace: %w", err)

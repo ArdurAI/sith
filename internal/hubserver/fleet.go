@@ -14,6 +14,7 @@ import (
 	"github.com/ArdurAI/sith/internal/hubfleet"
 	"github.com/ArdurAI/sith/internal/pep"
 	"github.com/ArdurAI/sith/internal/tenancy"
+	"github.com/ArdurAI/sith/internal/tracing"
 )
 
 const fleetRoutePrefix = "/v1/workspaces/"
@@ -58,6 +59,12 @@ func NewFleetHandler(config FleetHandlerConfig) (http.Handler, error) {
 			writeFleetError(response, http.StatusForbidden, "forbidden")
 			return
 		}
+		traceContext, _, err := tracing.Ensure(request.Context())
+		if err != nil {
+			writeFleetError(response, http.StatusServiceUnavailable, "trace_unavailable")
+			return
+		}
+		request = request.WithContext(traceContext)
 
 		switch operation {
 		case fleetOperationRead:
