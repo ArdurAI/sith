@@ -27,6 +27,10 @@ import (
 const (
 	csrfHeader = "X-Sith-CSRF"
 	localMode  = "local"
+
+	// DesktopOrigin is Wails' in-process macOS WebView origin. It never binds a
+	// TCP listener and is accepted only by the native desktop host.
+	DesktopOrigin = "wails://wails"
 )
 
 //go:embed assets/*
@@ -85,11 +89,16 @@ func New(ctx context.Context, store *fleetcache.Store, syncer Syncer, local loca
 	}, nil
 }
 
-// Handler returns the hardened frontend/API handler for one exact listener URL.
+// Handler returns the hardened frontend/API handler for one exact local origin.
 func (application *Application) Handler(baseURL string) (http.Handler, error) {
 	parsed, err := url.Parse(baseURL)
-	if err != nil || parsed.Scheme != "http" || parsed.Host == "" || parsed.Path != "" {
-		return nil, fmt.Errorf("configure web UI handler: base URL must be an http origin")
+	if err != nil || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, fmt.Errorf("configure web UI handler: base URL must be an exact local origin")
+	}
+	if baseURL != DesktopOrigin {
+		if parsed.Scheme != "http" || ValidateLoopbackAddress(parsed.Hostname()) != nil {
+			return nil, fmt.Errorf("configure web UI handler: base URL must be a loopback http origin")
+		}
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", application.serveIndex)

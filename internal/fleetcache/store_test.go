@@ -438,6 +438,25 @@ func TestParseCorrelationSupportsHealthAndImageForms(t *testing.T) {
 	}
 }
 
+func TestSnapshotRetainsSafeDiscoveryMetadata(t *testing.T) {
+	t.Parallel()
+	store := New()
+	now := time.Now().UTC()
+	store.SetDiscovery(fleet.LocalWorkspace, connector.Discovery{
+		Scopes: []connector.Scope{{
+			Name: "import-123/context/prod", DisplayName: "prod", Origin: "team-a.yaml", Reachable: true, ObservedAt: now,
+		}},
+		Diagnostics: []connector.Diagnostic{{Source: "bad.yaml", Message: "invalid kubeconfig"}},
+	})
+	snapshot := store.Query(fleet.LocalWorkspace, Query{})
+	if len(snapshot.Scopes) != 1 || snapshot.Scopes[0].DisplayName != "prod" || snapshot.Scopes[0].Origin != "team-a.yaml" {
+		t.Fatalf("scopes = %#v", snapshot.Scopes)
+	}
+	if !slices.Equal(snapshot.Diagnostics, []connector.Diagnostic{{Source: "bad.yaml", Message: "invalid kubeconfig"}}) {
+		t.Fatalf("diagnostics = %#v", snapshot.Diagnostics)
+	}
+}
+
 func podFact(t *testing.T, cluster, name, status, image string, observed time.Time) fleet.Fact {
 	t.Helper()
 	object := map[string]any{

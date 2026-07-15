@@ -132,6 +132,8 @@ func TestKindFleetFanout(t *testing.T) {
 	runCommand(ctx, t, root, "go", "build", "-trimpath", "-o", binary, "./cmd/sith")
 	exerciseLocalOperations(ctx, t, binary, kubeconfigPath, clusterNames)
 	exerciseWebUI(ctx, t, binary, kubeconfigPath, clusterNames)
+	kubeconfigDirectory := splitKindKubeconfigDirectory(t, kubeconfigPath, clusterNames)
+	exerciseWebUIDirectoryImport(ctx, t, binary, kubeconfigDirectory, clusterNames)
 	exerciseMCP(ctx, t, binary, kubeconfigPath, clusterNames)
 	command := exec.CommandContext(ctx, binary, "clusters", "--output", "json")
 	command.Env = append(os.Environ(), "KUBECONFIG="+kubeconfigPath, "XDG_CONFIG_HOME="+t.TempDir())
@@ -741,6 +743,43 @@ func mergedKindKubeconfig(ctx context.Context, t *testing.T, kindBinary string, 
 		t.Fatalf("write merged kind kubeconfig: %v", err)
 	}
 	return path
+}
+
+func splitKindKubeconfigDirectory(t *testing.T, mergedPath string, clusters []string) string {
+	t.Helper()
+	merged, err := clientcmd.LoadFromFile(mergedPath)
+	if err != nil {
+		t.Fatalf("load merged kind kubeconfig: %v", err)
+	}
+	directory := t.TempDir()
+	first := clientcmdapi.NewConfig()
+	for _, cluster := range clusters {
+		contextName := "kind-" + cluster
+		contextConfig, exists := merged.Contexts[contextName]
+		if !exists {
+			t.Fatalf("merged kubeconfig missing context %q", contextName)
+		}
+		first.Clusters[contextConfig.Cluster] = merged.Clusters[contextConfig.Cluster].DeepCopy()
+		first.AuthInfos[contextConfig.AuthInfo] = merged.AuthInfos[contextConfig.AuthInfo].DeepCopy()
+		first.Contexts[contextName] = contextConfig.DeepCopy()
+		first.CurrentContext = contextName
+	}
+	firstPath := filepath.Join(directory, "first.yaml")
+	if err := clientcmd.WriteToFile(*first, firstPath); err != nil {
+		t.Fatalf("write imported kind kubeconfig %q: %v", firstPath, err)
+	}
+	secondContext := "kind-" + clusters[len(clusters)-1]
+	contextConfig := merged.Contexts[secondContext]
+	second := clientcmdapi.NewConfig()
+	second.Clusters[contextConfig.Cluster] = merged.Clusters[contextConfig.Cluster].DeepCopy()
+	second.AuthInfos[contextConfig.AuthInfo] = merged.AuthInfos[contextConfig.AuthInfo].DeepCopy()
+	second.Contexts[secondContext] = contextConfig.DeepCopy()
+	second.CurrentContext = secondContext
+	secondPath := filepath.Join(directory, "nested", "second.yaml")
+	if err := clientcmd.WriteToFile(*second, secondPath); err != nil {
+		t.Fatalf("write imported kind kubeconfig %q: %v", secondPath, err)
+	}
+	return directory
 }
 
 func mergeConfigMaps(destination, source *clientcmdapi.Config) {

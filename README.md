@@ -57,6 +57,8 @@ make build
 ./bin/sith port-forward service/api --context kind-dev -n apps :http
 ./bin/sith edit configmap/api-settings --context kind-dev -n apps
 ./bin/sith ui                    # loopback-only embedded fleet IDE
+./bin/sith ui --kubeconfig-dir "$HOME/kubeconfigs" # import a folder of kubeconfig files for this UI session
+./bin/sith desktop               # native macOS window for the same local fleet IDE
 ./bin/sith serve --mcp           # loopback-only MCP read server
 ./bin/sith serve --mcp --require-token
 ```
@@ -332,7 +334,16 @@ component dependency enters the binary.
 
 `sith ui` serves a build-free frontend embedded in the same Go binary. It binds to
 `127.0.0.1` on an available port by default; `--address` accepts loopback addresses only and
-`--no-open` suppresses browser launch. The browser renders the same cache, lenses, ordering,
+`--no-open` suppresses browser launch. `--kubeconfig-dir <directory>` imports a bounded recursive
+set of regular kubeconfig files for that UI session. It does not replace the standard
+`KUBECONFIG`/`~/.kube/config` mode, write or persist a config, or follow directory symlinks. The
+supplied root must be an existing real directory; a file, symlink, or missing root fails before the
+local listener starts. Invalid, oversized, unreadable, or symlinked entries beneath a valid root
+are skipped with safe warnings that do not expose kubeconfig contents or an absolute local path.
+Each imported source is labeled by its relative filename; contexts with the same name remain
+isolated, and selecting a source in the context rail filters to its contexts. The import is limited
+to 128 traversed filesystem entries (including ignored symlinks and directories), 4 MiB per regular
+kubeconfig file, and eight nested directory levels. The browser renders the same cache, lenses, ordering,
 coverage, search/correlation grammar, and per-resource operations as the CLI/TUI. Its local HTTP
 boundary requires an exact Host/Origin and a per-process capability header, uses a restrictive
 Content Security Policy, and loads no remote assets. YAML apply additionally requires a short-lived,
@@ -349,6 +360,16 @@ editing stays in memory behind its explicit disclosure action. Non-Secret edit f
 diff. Port-forward accepts loopback addresses only (`localhost`, `127.0.0.1`, or `::1`). Streaming
 can hold API connections for its lifetime, but it creates no cloud resources or persistent local
 cache.
+
+On macOS, `sith desktop` runs the same embedded fleet IDE in a native Wails v2 window. It uses an
+in-process WebView origin (`wails://wails`), so it does not open a TCP listener. The **Import folder**
+control appears only in that window and opens a native directory chooser; it passes the selection to
+the identical bounded, in-memory kubeconfig importer used by `sith ui --kubeconfig-dir`. The UI
+receives success, cancellation, or a sanitized failure category—never the selected absolute path or
+kubeconfig content. Build
+an ad-hoc-signed Apple Silicon development bundle with `make desktop-build`; public releases remain
+blocked on Developer ID signing, notarization, stapling, and E9 release provenance, so this is not yet
+a distributed replacement for Lens.
 
 Each active lens holds one Kubernetes watch per reachable context after its initial list. A
 two-minute safety rediscovery recovers contexts that were offline at launch; it is not the primary

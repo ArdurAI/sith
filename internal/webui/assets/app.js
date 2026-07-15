@@ -1,6 +1,7 @@
 "use strict";
 
 const csrfToken = document.querySelector('meta[name="sith-csrf-token"]').content;
+const desktopHydrationFailure = "live cache refresh stopped; re-import the folder or restart Sith";
 const state = {
   meta: null,
   snapshot: null,
@@ -18,7 +19,7 @@ const dom = Object.fromEntries([
   "query-mode", "context-list", "board-heading", "board-kicker", "result-count", "fleet-rows",
   "empty-state", "coverage-line", "inspector-empty", "inspector-content", "inspector-kind",
   "inspector-name", "inspector-address", "inspector-facts", "operation-grid", "refresh-button",
-  "forwards-button", "forward-count", "toast-region", "action-dialog", "dialog-title",
+  "forwards-button", "forward-count", "import-folder-button", "toast-region", "action-dialog", "dialog-title",
   "dialog-kicker", "dialog-body", "dialog-actions", "dialog-close", "loading-template",
 ].map((id) => [id, document.getElementById(id)]));
 
@@ -85,12 +86,14 @@ function renderSnapshot() {
   const snapshot = state.snapshot;
   const coverage = snapshot.coverage || {};
   dom["coverage-count"].textContent = `${coverage.reachable || 0} of ${coverage.requested || 0} contexts answering`;
-  dom["coverage-detail"].textContent = snapshot.state === "offline" ? "Offline — last-known fleet remains visible." : coverageText(coverage);
+  const coverageDetail = snapshot.state === "offline" ? "Offline — last-known fleet remains visible." : coverageText(coverage);
+  const safeDesktopFailure = snapshot.last_error === desktopHydrationFailure ? snapshot.last_error : "";
+  dom["coverage-detail"].textContent = safeDesktopFailure ? `${coverageDetail} · ${safeDesktopFailure}` : coverageDetail;
   dom["coverage-line"].textContent = coverageText(coverage);
   dom["board-heading"].textContent = state.correlate || state.query ? "Fleet results" : `${state.lens}s`;
   dom["board-kicker"].textContent = state.correlate ? "Correlation answer" : state.query ? "Filtered cache" : "Aggregated lens";
   dom["result-count"].textContent = `${snapshot.records.length} cached row${snapshot.records.length === 1 ? "" : "s"}`;
-  renderContexts(snapshot.scopes || [], coverage);
+  renderContexts(snapshot.scopes || [], coverage, snapshot.diagnostics || []);
   renderRows(snapshot.records || []);
   if (state.selected) {
     const identity = recordIdentity(state.selected);
@@ -99,7 +102,7 @@ function renderSnapshot() {
   renderInspector();
 }
 
-function renderContexts(scopes, coverage) {
+function renderContexts(scopes, coverage, diagnostics) {
   const entries = [];
   const all = node("button", "context-node");
   all.type = "button";
@@ -108,16 +111,37 @@ function renderContexts(scopes, coverage) {
   all.append(contextLabel("All contexts", compactCoverage(coverage)));
   all.addEventListener("click", () => { state.scope = ""; loadSnapshot(); });
   entries.push(all);
+  const grouped = new Map();
   for (const scope of scopes) {
+    const origin = scope.origin || "";
+    if (!grouped.has(origin)) grouped.set(origin, []);
+    grouped.get(origin).push(scope);
+  }
+  for (const [origin, members] of grouped) {
+    if (origin) {
+      const sourceScopes = members.map((scope) => scope.name).join(",");
+      const source = node("button", "context-node context-source");
+      source.type = "button";
+      source.setAttribute("aria-current", String(state.scope === sourceScopes));
+      source.append(contextLabel(origin, `${members.length} imported context${members.length === 1 ? "" : "s"}`));
+      source.addEventListener("click", () => { state.scope = state.scope === sourceScopes ? "" : sourceScopes; state.selected = null; loadSnapshot(); });
+      entries.push(source);
+    }
+    for (const scope of members) {
     const button = node("button", "context-node");
     button.type = "button";
     const isDown = !scope.reachable;
     const isStale = (coverage.stale || []).includes(scope.name);
     button.dataset.state = isDown ? "down" : isStale ? "stale" : "fresh";
     button.setAttribute("aria-current", String(state.scope === scope.name));
-    button.append(contextLabel(scope.name, `${isDown ? "unreachable" : isStale ? "stale" : "reachable"} · ${ageLabel(scope.observed_at)}`));
+    button.append(contextLabel(scope.display_name || scope.name, `${isDown ? "unreachable" : isStale ? "stale" : "reachable"} · ${ageLabel(scope.observed_at)}`));
     button.addEventListener("click", () => { state.scope = state.scope === scope.name ? "" : scope.name; loadSnapshot(); });
     entries.push(button);
+  }
+  }
+  for (const diagnostic of diagnostics) {
+    const source = diagnostic.source ? `${diagnostic.source}: ` : "";
+    entries.push(node("div", "context-diagnostic", `Import warning — ${source}${diagnostic.message}`));
   }
   replaceChildren(dom["context-list"], entries);
 }
@@ -396,6 +420,15 @@ dom["query-mode"].addEventListener("click", () => {
 });
 dom["refresh-button"].addEventListener("click", async () => { try { await api("/api/v1/sync", {method: "POST", body: "{}"}); toast("Fleet refresh scheduled."); } catch (error) { toast(error.message, "error"); } });
 dom["forwards-button"].addEventListener("click", showForwards);
+const directoryPicker = window.go?.cli?.DesktopBridge?.ChooseKubeconfigDirectory;
+if (typeof directoryPicker === "function") {
+  dom["import-folder-button"].hidden = false;
+  dom["import-folder-button"].addEventListener("click", async () => {
+    try {
+      if (await directoryPicker()) window.location.reload();
+    } catch (error) { toast(error.message || "Unable to import folder.", "error"); }
+  });
+}
 dom["dialog-close"].addEventListener("click", () => dom["action-dialog"].close());
 dom["action-dialog"].addEventListener("close", () => { state.logAbort?.abort(); state.logAbort = null; });
 document.addEventListener("keydown", (event) => {

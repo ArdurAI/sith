@@ -31,15 +31,16 @@ const (
 
 // Snapshot is an immutable cache-only answer for one render interaction.
 type Snapshot struct {
-	Version   uint64            `json:"version"`
-	State     State             `json:"state"`
-	Syncing   bool              `json:"syncing"`
-	Paused    bool              `json:"paused"`
-	Records   []Record          `json:"records"`
-	Coverage  fleet.Coverage    `json:"coverage"`
-	UpdatedAt time.Time         `json:"updated_at,omitempty"`
-	LastError string            `json:"last_error,omitempty"`
-	Scopes    []connector.Scope `json:"scopes"`
+	Version     uint64                 `json:"version"`
+	State       State                  `json:"state"`
+	Syncing     bool                   `json:"syncing"`
+	Paused      bool                   `json:"paused"`
+	Records     []Record               `json:"records"`
+	Coverage    fleet.Coverage         `json:"coverage"`
+	UpdatedAt   time.Time              `json:"updated_at,omitempty"`
+	LastError   string                 `json:"last_error,omitempty"`
+	Scopes      []connector.Scope      `json:"scopes"`
+	Diagnostics []connector.Diagnostic `json:"diagnostics,omitempty"`
 }
 
 // Store owns normalized last-known fleet state and never performs network I/O.
@@ -50,6 +51,7 @@ type Store struct {
 	coverage        map[string]fleet.Coverage
 	aliases         map[string]string
 	scopes          map[string]connector.Scope
+	diagnostics     map[string][]connector.Diagnostic
 	scopeWorkspaces map[string]map[string]bool
 	warmed          map[string]bool
 	expected        map[string]bool
@@ -74,6 +76,7 @@ func newStore(now func() time.Time, freshFor time.Duration) *Store {
 		coverage:        make(map[string]fleet.Coverage),
 		aliases:         make(map[string]string),
 		scopes:          make(map[string]connector.Scope),
+		diagnostics:     make(map[string][]connector.Diagnostic),
 		scopeWorkspaces: make(map[string]map[string]bool),
 		warmed:          make(map[string]bool),
 		expected:        make(map[string]bool),
@@ -129,6 +132,7 @@ func (store *Store) SetDiscovery(workspace string, discovery connector.Discovery
 		store.scopes[name] = scope
 		store.markScopeWorkspaceLocked(workspace, name)
 	}
+	store.diagnostics[workspace] = cloneDiagnostics(discovery.Diagnostics)
 	store.notifyLocked()
 }
 
@@ -336,7 +340,7 @@ func (store *Store) Query(workspace string, query Query) Snapshot {
 	store.mu.RLock()
 	defer store.mu.RUnlock()
 	if strings.TrimSpace(workspace) == "" {
-		return Snapshot{State: StateCold, Records: []Record{}, Scopes: []connector.Scope{}}
+		return Snapshot{State: StateCold, Records: []Record{}, Scopes: []connector.Scope{}, Diagnostics: []connector.Diagnostic{}}
 	}
 	now := store.now().UTC()
 	records := make([]Record, 0)
@@ -382,15 +386,16 @@ func (store *Store) Query(workspace string, query Query) Snapshot {
 	}
 	pending := selectedKind != "" && !store.warmed[selectedKind]
 	return Snapshot{
-		Version:   store.version,
-		State:     store.stateLocked(coverage, store.recordCountLocked(workspace), pending),
-		Syncing:   store.syncing,
-		Paused:    store.paused,
-		Records:   records,
-		Coverage:  coverage,
-		UpdatedAt: store.updatedAt,
-		LastError: store.lastError,
-		Scopes:    store.scopesLocked(workspace, query.Scopes),
+		Version:     store.version,
+		State:       store.stateLocked(coverage, store.recordCountLocked(workspace), pending),
+		Syncing:     store.syncing,
+		Paused:      store.paused,
+		Records:     records,
+		Coverage:    coverage,
+		UpdatedAt:   store.updatedAt,
+		LastError:   store.lastError,
+		Scopes:      store.scopesLocked(workspace, query.Scopes),
+		Diagnostics: cloneDiagnostics(store.diagnostics[workspace]),
 	}
 }
 
@@ -634,4 +639,8 @@ func cloneCoverage(coverage fleet.Coverage) fleet.Coverage {
 func cloneScope(scope connector.Scope) connector.Scope {
 	scope.Kinds = append([]string(nil), scope.Kinds...)
 	return scope
+}
+
+func cloneDiagnostics(values []connector.Diagnostic) []connector.Diagnostic {
+	return append([]connector.Diagnostic(nil), values...)
 }

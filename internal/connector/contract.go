@@ -115,16 +115,26 @@ type WatchEvent struct {
 
 // Discovery describes the scopes a reader can currently address.
 type Discovery struct {
-	Scopes      []Scope  `json:"scopes"`
-	Unreachable []string `json:"unreachable,omitempty"`
+	Scopes      []Scope      `json:"scopes"`
+	Unreachable []string     `json:"unreachable,omitempty"`
+	Diagnostics []Diagnostic `json:"diagnostics,omitempty"`
 }
 
 // Scope is one cluster, context, or spoke exposed by a reader.
 type Scope struct {
-	Name       string    `json:"name"`
-	Kinds      []string  `json:"kinds"`
-	Reachable  bool      `json:"reachable"`
-	ObservedAt time.Time `json:"observed_at,omitempty"`
+	Name        string    `json:"name"`
+	DisplayName string    `json:"display_name,omitempty"`
+	Origin      string    `json:"origin,omitempty"`
+	Kinds       []string  `json:"kinds"`
+	Reachable   bool      `json:"reachable"`
+	ObservedAt  time.Time `json:"observed_at,omitempty"`
+}
+
+// Diagnostic is a bounded, safe-to-render discovery warning. It must never contain a credential,
+// a kubeconfig payload, or an absolute local path.
+type Diagnostic struct {
+	Source  string `json:"source,omitempty"`
+	Message string `json:"message"`
 }
 
 // Differ computes desired-versus-observed state without mutation.
