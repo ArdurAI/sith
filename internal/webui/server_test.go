@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -85,6 +86,51 @@ func TestHandlerEnforcesHostOriginCapabilityAndSecurityHeaders(t *testing.T) {
 	}
 	if payload["mode"] != "local" || payload["account_required"] != false || payload["telemetry"] != false {
 		t.Fatalf("meta = %#v", payload)
+	}
+}
+
+func TestHandlerAllowsOnlyTheExplicitDesktopOrigin(t *testing.T) {
+	t.Parallel()
+	application := testApplication(t)
+	handler, err := application.Handler(DesktopOrigin)
+	if err != nil {
+		t.Fatalf("Handler(%q) error = %v", DesktopOrigin, err)
+	}
+	request := httptest.NewRequest(http.MethodGet, DesktopOrigin+"/api/v1/meta", nil)
+	request.Host = "wails"
+	request.Header.Set(csrfHeader, application.token)
+	request.Header.Set("Origin", DesktopOrigin)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("desktop meta status/body = %d/%s", recorder.Code, recorder.Body.String())
+	}
+	for _, origin := range []string{"https://wails.localhost", "http://example.com", "wails://attacker"} {
+		if _, err := application.Handler(origin); err == nil {
+			t.Errorf("Handler(%q) error = nil", origin)
+		}
+	}
+}
+
+func TestDesktopFolderBridgeIsOptInAndDoesNotExposePaths(t *testing.T) {
+	t.Parallel()
+	index, err := fs.ReadFile(embeddedAssets, "assets/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := fs.ReadFile(embeddedAssets, "assets/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(index), `id="import-folder-button" class="quiet-action" type="button" hidden`) {
+		t.Fatal("desktop import control is not hidden by default")
+	}
+	if !strings.Contains(string(script), "window.go?.cli?.DesktopBridge?.ChooseKubeconfigDirectory") ||
+		!strings.Contains(string(script), "if (await directoryPicker()) window.location.reload()") {
+		t.Fatal("desktop bridge is not opt-in or does not reload after a successful source swap")
+	}
+	if strings.Contains(string(script), "selectedDirectory") || strings.Contains(string(script), "kubeconfigDir") {
+		t.Fatal("desktop bridge must not retain a selected local path in the UI")
 	}
 }
 

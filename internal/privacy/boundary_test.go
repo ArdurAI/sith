@@ -43,7 +43,9 @@ var approvedNetworkImports = map[string]map[string]bool{
 	"internal/mcpserver/server.go":      {"net": true, "net/http": true, "net/url": true},
 	"internal/observability/metrics.go": {"net/http": true},
 	"internal/webui/api.go":             {"net/http": true},
-	"internal/webui/server.go":          {"net": true, "net/http": true, "net/url": true},
+	// In-process Wails WebView routing; it has no socket listener or egress path.
+	"internal/webui/desktop.go": {"net/http": true},
+	"internal/webui/server.go":  {"net": true, "net/http": true, "net/url": true},
 }
 
 var approvedFilesystemWrites = map[string]map[string]bool{

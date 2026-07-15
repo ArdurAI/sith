@@ -1,0 +1,17 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "Sith",
+  "outputfilename": "Sith",
+  "frontend:install": "",
+  "frontend:build": "true",
+  "author": {
+    "name": "ArdurAI",
+    "email": "security@ardur.ai"
+  },
+  "info": {
+    "companyName": "ArdurAI",
+    "productName": "Sith",
+    "productVersion": "0.0.0-dev",
+    "comments": "Local-first Kubernetes fleet IDE"
+  }
+}

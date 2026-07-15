@@ -10,6 +10,9 @@ GOVULNCHECK ?= govulncheck
 KIND     ?= kind
 HELM     ?= helm
 GORELEASER ?= goreleaser
+WAILS      ?= wails
+CODESIGN   ?= codesign
+PLISTBUDDY ?= /usr/libexec/PlistBuddy
 DOCKER      ?= docker
 KUBECTL     ?= kubectl
 OCM_SCRATCH_ROOT ?= $(shell python3 -c 'import os; print(os.path.join(os.path.realpath(os.environ.get("TMPDIR", "/tmp")), "sith-m0-{}".format(os.getuid()), "lab"))')
@@ -29,13 +32,25 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/buildinfo.Commit=$(COMMIT) \
 	-X $(PKG)/internal/buildinfo.Date=$(DATE)
 
-.PHONY: all build test test-scripts perf e2e e2e-helm e2e-oci e2e-kind e2e-ocm e2e-postgres e2e-isolation lint vuln fmt fmt-check vet tidy clean run ci release-check help
+.PHONY: all build desktop-build test test-scripts perf e2e e2e-helm e2e-oci e2e-kind e2e-ocm e2e-postgres e2e-isolation lint vuln fmt fmt-check vet tidy clean run ci release-check help
 
 all: build
 
 build: ## Build the sith binary into bin/
 	@mkdir -p $(BIN_DIR)
 	go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/$(BINARY) $(CMD)
+
+desktop-build: ## Build the ad-hoc-signed macOS arm64 Sith.app development bundle
+	@command -v "$(WAILS)" >/dev/null || { echo "wails v2 is required" >&2; exit 1; }
+	@"$(WAILS)" version | grep -q 'v2\.' || { echo "Wails v2 is required" >&2; exit 1; }
+	cd cmd/sith-desktop && "$(WAILS)" build -clean -s -trimpath -platform darwin/arm64
+	@set -euo pipefail; \
+		app='cmd/sith-desktop/build/bin/Sith.app'; \
+		test -d "$$app"; \
+		"$(PLISTBUDDY)" -c 'Set :CFBundleIdentifier com.ardurai.sith' "$$app/Contents/Info.plist"; \
+		"$(CODESIGN)" --force --sign - "$$app"; \
+		"$(CODESIGN)" --verify --strict "$$app"; \
+		plutil -extract CFBundleIdentifier raw -o - "$$app/Contents/Info.plist" | grep -qx 'com.ardurai.sith'
 
 test: ## Run unit tests with the race detector and report coverage
 	go test -race -count=1 -coverprofile=coverage.out ./...
