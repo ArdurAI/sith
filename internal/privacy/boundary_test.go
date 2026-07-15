@@ -61,9 +61,12 @@ var approvedFilesystemWrites = map[string]map[string]bool{
 }
 
 var approvedProcessImports = map[string]map[string]bool{
-	"internal/cli/local.go":         {"os/exec": true},
-	"internal/cli/ui.go":            {"os/exec": true},
-	"internal/tui/local_actions.go": {"os/exec": true},
+	// The Hub-only process audit sink starts the current trusted Sith executable with an inherited
+	// bounded Unix datagram FD. It passes no environment, config, request values, or credentials.
+	"internal/auditdelivery/process.go": {"os/exec": true},
+	"internal/cli/local.go":             {"os/exec": true},
+	"internal/cli/ui.go":                {"os/exec": true},
+	"internal/tui/local_actions.go":     {"os/exec": true},
 }
 
 var forbiddenTelemetryPrefixes = []string{

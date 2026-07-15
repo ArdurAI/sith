@@ -9,9 +9,11 @@ import (
 	"github.com/ArdurAI/sith/internal/hubserver"
 )
 
-// NewSlogAuthObserver constructs the local structured authentication-refusal recorder used by
-// the hub runtime. It serializes only the closed AuthEvent contract; it owns no listener,
-// exporter, queue, persistence, telemetry backend, or network path.
+// NewSlogAuthObserver constructs a synchronous structured authentication-refusal recorder for a
+// controlled embedding. The Hub runtime uses the process-supervised auditdelivery observer so an
+// arbitrary local slog handler cannot delay a governed response. This adapter serializes only the
+// closed AuthEvent contract; it owns no listener, exporter, queue, persistence, telemetry backend,
+// or network path.
 func NewSlogAuthObserver(logger *slog.Logger) (hubserver.AuthObserver, error) {
 	if logger == nil {
 		return nil, fmt.Errorf("construct authentication observer: logger is required")

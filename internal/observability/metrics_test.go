@@ -25,6 +25,7 @@ func TestMetricsExposeOnlyBoundedSelfObservability(t *testing.T) {
 	metrics.ObserveDecision(pep.Verb("workspace-a/token=secret"), pep.DecisionOutcome("untrusted"), -time.Second)
 	metrics.ObserveSpokeSnapshot(hubfleet.SnapshotOutcomeSuccess, 25*time.Millisecond)
 	metrics.ObserveSpokeSnapshot(hubfleet.SnapshotOutcome("spoke-a/token=secret"), -time.Second)
+	metrics.ObserveAuthRefusalDeliveryDrop()
 
 	response := httptest.NewRecorder()
 	metrics.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://metrics.invalid/metrics", nil))
@@ -38,6 +39,7 @@ func TestMetricsExposeOnlyBoundedSelfObservability(t *testing.T) {
 		"sith_policy_decision_duration_seconds",
 		"sith_federation_spoke_snapshot_attempts_total",
 		"sith_federation_spoke_snapshot_duration_seconds",
+		"sith_auth_refusal_delivery_drops_total 1",
 		`verb="fleet.read"`,
 		`verb="invalid"`,
 		`outcome="allow"`,
@@ -124,6 +126,7 @@ func assertSithMetricLabels(t *testing.T, metrics *Metrics) {
 		"sith_policy_decision_duration_seconds":           {"outcome": true, "verb": true},
 		"sith_federation_spoke_snapshot_attempts_total":   {"outcome": true},
 		"sith_federation_spoke_snapshot_duration_seconds": {"outcome": true},
+		"sith_auth_refusal_delivery_drops_total":          {},
 	}
 	for _, family := range families {
 		labels, sithMetric := allowed[family.GetName()]

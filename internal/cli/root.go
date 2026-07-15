@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/ArdurAI/sith/internal/auditdelivery"
 	"github.com/ArdurAI/sith/internal/config"
 	"github.com/ArdurAI/sith/internal/connector"
 	"github.com/ArdurAI/sith/internal/connector/kubeconfig"
@@ -50,6 +51,12 @@ type backend struct {
 
 // Execute builds and runs the command tree, returning a process exit code.
 func Execute() int {
+	if len(os.Args) == 2 && os.Args[1] == auditdelivery.ChildArgument {
+		if auditdelivery.RunChild(os.Stderr) != nil {
+			return 1
+		}
+		return 0
+	}
 	adapter := kubeconfig.Default()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()

@@ -35,6 +35,16 @@ containers in a Pod share a network namespace; that is deliberately a local oper
 not a public or tenant-visible metrics endpoint. See the [Kubernetes Pod networking
 documentation](https://kubernetes.io/docs/concepts/workloads/pods/#how-pods-manage-multiple-containers).
 
+The Hub also starts a restricted same-container child for the one closed authentication-refusal
+record. Sith supplies only an inherited bounded Unix datagram descriptor and stderr: no
+configuration, environment, listener, socket pathname, network endpoint, or Secret value. The
+child still shares the container's mounts, UID, and network namespace, so it is a bounded delivery
+and shutdown boundary, not a filesystem or network sandbox. A full or dead local transport drops
+the fixed record without delaying the governed response and increments the unlabeled
+`sith_auth_refusal_delivery_drops_total` counter. Enabling `runtime.metrics` is the only way to
+scrape that process-wide loss signal; the chart still renders no related Service port, ingress,
+sidecar, queue, exporter, or remote telemetry path.
+
 Validate supplied values before applying anything:
 
 ```bash
