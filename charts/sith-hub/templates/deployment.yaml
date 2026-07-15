@@ -1,7 +1,18 @@
 {{- $browserOIDC := .Values.runtime.browserOIDC }}
 {{- $browserEnabled := and $browserOIDC.issuer $browserOIDC.clientID $browserOIDC.redirectURI }}
+{{- $metrics := default (dict "listenAddress" "") .Values.runtime.metrics }}
+{{- $metricsListenAddress := default "" $metrics.listenAddress }}
 {{- if and (or $browserOIDC.issuer $browserOIDC.clientID $browserOIDC.redirectURI) (not $browserEnabled) }}
 {{- fail "runtime.browserOIDC.issuer, runtime.browserOIDC.clientID, and runtime.browserOIDC.redirectURI must be set together" }}
+{{- end }}
+{{- if $metricsListenAddress }}
+{{- if not (regexMatch "^(127\\.0\\.0\\.1|\\[::1\\]):[1-9][0-9]{0,4}$" $metricsListenAddress) }}
+{{- fail "runtime.metrics.listenAddress must use exact IPv4 or IPv6 loopback with a non-zero port" }}
+{{- end }}
+{{- $metricsPort := regexFind "[0-9]+$" $metricsListenAddress }}
+{{- if gt (int $metricsPort) 65535 }}
+{{- fail "runtime.metrics.listenAddress port must be at most 65535" }}
+{{- end }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -39,9 +50,18 @@ spec:
             - name: https
               containerPort: 8443
               protocol: TCP
+            {{- if $metricsListenAddress }}
+            - name: metrics
+              containerPort: {{ regexFind "[0-9]+$" $metricsListenAddress | int }}
+              protocol: TCP
+            {{- end }}
           env:
             - name: SITH_HUB_LISTEN_ADDR
               value: "0.0.0.0:8443"
+            {{- if $metricsListenAddress }}
+            - name: SITH_HUB_METRICS_LISTEN_ADDR
+              value: {{ $metricsListenAddress | quote }}
+            {{- end }}
             - name: SITH_HUB_DATABASE_URL
               valueFrom:
                 secretKeyRef:

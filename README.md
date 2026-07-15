@@ -220,6 +220,15 @@ public OIDC client with PKCE, never a frontend client secret or refresh token. T
 must be reachable through the existing no-proxy, TLS 1.2+, public-network-only discovery/JWKS
 transport; deployments must allow only that issuer's required endpoints.
 
+The optional `SITH_HUB_METRICS_LISTEN_ADDR` is disabled unless it is exactly
+`127.0.0.1:<non-zero-port>` or `[::1]:<non-zero-port>`. When configured, it exposes only a
+separate plaintext `GET /metrics` listener backed by Sith's isolated, bounded-label registry. It
+is not a tenant route, Service port, ingress, exporter, or telemetry backend, and cannot bind to a
+hostname, wildcard, or cluster-routable address. A same-Pod collector may scrape it over
+`localhost`; that preserves process-wide operational visibility without disclosing counters to a
+workspace principal. This trade-off intentionally requires the operator to supply their own
+collector and does not provide cross-Pod or remote scraping.
+
 Every referenced key, certificate, or CA file must be a read-only regular file from a deployment
 mount. The runtime obtains its Kubernetes identity only with in-cluster configuration; it has no
 kubeconfig fallback and uses that identity through the fixed `sith-reader` Secret reader. It serves

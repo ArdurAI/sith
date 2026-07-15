@@ -100,22 +100,7 @@ func TestLoadDeploymentConfigRequiresEverySecurityInput(t *testing.T) {
 	if err == nil || config != (deploymentConfig{}) {
 		t.Fatalf("config/error = %#v/%v", config, err)
 	}
-	values := map[string]string{
-		"SITH_HUB_LISTEN_ADDR":             "127.0.0.1:8443",
-		"SITH_HUB_DATABASE_URL":            "postgres://sith@db/sith?sslmode=require",
-		"SITH_HUB_SESSION_ISSUER":          "https://issuer.sith.test",
-		"SITH_HUB_SESSION_AUDIENCE":        "https://hub.sith.test",
-		"SITH_HUB_SESSION_KEY_ID":          "session-2026-07",
-		"SITH_HUB_SESSION_PUBLIC_KEY_FILE": "/mnt/session/public.pem",
-		"SITH_HUB_SERVER_TLS_CERT_FILE":    "/mnt/server/tls.crt",
-		"SITH_HUB_SERVER_TLS_KEY_FILE":     "/mnt/server/tls.key",
-		"SITH_HUB_PROXY_ADDRESS":           "proxy.sith.test:8090",
-		"SITH_HUB_PROXY_SERVER_NAME":       "proxy.sith.test",
-		"SITH_HUB_PROXY_CA_FILE":           "/mnt/proxy/ca.crt",
-		"SITH_HUB_PROXY_CERT_FILE":         "/mnt/proxy/tls.crt",
-		"SITH_HUB_PROXY_KEY_FILE":          "/mnt/proxy/tls.key",
-		"SITH_HUB_KUBE_API_SERVER_NAME":    "kubernetes",
-	}
+	values := deploymentConfigEnvironment()
 	config, err = loadDeploymentConfig(func(name string) (string, bool) { value, ok := values[name]; return value, ok })
 	if err != nil || config.listenAddress != "127.0.0.1:8443" || config.proxyAddress != "proxy.sith.test:8090" {
 		t.Fatalf("config/error = %#v/%v", config, err)
@@ -127,22 +112,7 @@ func TestLoadDeploymentConfigRequiresEverySecurityInput(t *testing.T) {
 }
 
 func TestLoadDeploymentConfigRequiresCompleteBrowserOIDCInputs(t *testing.T) {
-	values := map[string]string{
-		"SITH_HUB_LISTEN_ADDR":             "127.0.0.1:8443",
-		"SITH_HUB_DATABASE_URL":            "postgres://sith@db/sith?sslmode=require",
-		"SITH_HUB_SESSION_ISSUER":          "https://issuer.sith.test",
-		"SITH_HUB_SESSION_AUDIENCE":        "https://hub.sith.test",
-		"SITH_HUB_SESSION_KEY_ID":          "session-2026-07",
-		"SITH_HUB_SESSION_PUBLIC_KEY_FILE": "/mnt/session/public.pem",
-		"SITH_HUB_SERVER_TLS_CERT_FILE":    "/mnt/server/tls.crt",
-		"SITH_HUB_SERVER_TLS_KEY_FILE":     "/mnt/server/tls.key",
-		"SITH_HUB_PROXY_ADDRESS":           "proxy.sith.test:8090",
-		"SITH_HUB_PROXY_SERVER_NAME":       "proxy.sith.test",
-		"SITH_HUB_PROXY_CA_FILE":           "/mnt/proxy/ca.crt",
-		"SITH_HUB_PROXY_CERT_FILE":         "/mnt/proxy/tls.crt",
-		"SITH_HUB_PROXY_KEY_FILE":          "/mnt/proxy/tls.key",
-		"SITH_HUB_KUBE_API_SERVER_NAME":    "kubernetes",
-	}
+	values := deploymentConfigEnvironment()
 	lookup := func(name string) (string, bool) { value, ok := values[name]; return value, ok }
 	config, err := loadDeploymentConfig(lookup)
 	if err != nil || config.browserOIDC != nil {
@@ -158,6 +128,69 @@ func TestLoadDeploymentConfigRequiresCompleteBrowserOIDCInputs(t *testing.T) {
 	config, err = loadDeploymentConfig(lookup)
 	if err != nil || config.browserOIDC == nil || config.browserOIDC.clientID != "sith-browser" || config.browserOIDC.sessionPrivateKeyFile != "/mnt/session/private.pem" {
 		t.Fatalf("browser OIDC config/error = %#v/%v", config.browserOIDC, err)
+	}
+}
+
+func TestLoadDeploymentConfigAllowsOnlyExactLoopbackMetricsAddresses(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value string
+		valid bool
+	}{
+		{name: "disabled", value: "", valid: true},
+		{name: "IPv4 loopback", value: "127.0.0.1:9464", valid: true},
+		{name: "IPv6 loopback", value: "[::1]:9464", valid: true},
+		{name: "hostname", value: "localhost:9464"},
+		{name: "IPv4 wildcard", value: "0.0.0.0:9464"},
+		{name: "IPv6 wildcard", value: "[::]:9464"},
+		{name: "alternate loopback", value: "127.0.0.2:9464"},
+		{name: "missing host", value: ":9464"},
+		{name: "missing port", value: "127.0.0.1"},
+		{name: "zero port", value: "127.0.0.1:0"},
+		{name: "out of range port", value: "127.0.0.1:65536"},
+		{name: "whitespace padded", value: " 127.0.0.1:9464"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			values := deploymentConfigEnvironment()
+			if test.value != "" {
+				values["SITH_HUB_METRICS_LISTEN_ADDR"] = test.value
+			}
+			config, err := loadDeploymentConfig(func(name string) (string, bool) { value, ok := values[name]; return value, ok })
+			if test.valid {
+				if err != nil || config.metricsListenAddress != test.value {
+					t.Fatalf("config/error = %#v/%v", config, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("loadDeploymentConfig accepted unsafe loopback metrics listener")
+			}
+		})
+	}
+	values := deploymentConfigEnvironment()
+	values["SITH_HUB_METRICS_LISTEN_ADDR"] = ""
+	config, err := loadDeploymentConfig(func(name string) (string, bool) { value, ok := values[name]; return value, ok })
+	if err != nil || config.metricsListenAddress != "" {
+		t.Fatalf("explicitly empty metrics configuration/error = %#v/%v", config, err)
+	}
+}
+
+func deploymentConfigEnvironment() map[string]string {
+	return map[string]string{
+		"SITH_HUB_LISTEN_ADDR":             "127.0.0.1:8443",
+		"SITH_HUB_DATABASE_URL":            "postgres://sith@db/sith?sslmode=require",
+		"SITH_HUB_SESSION_ISSUER":          "https://issuer.sith.test",
+		"SITH_HUB_SESSION_AUDIENCE":        "https://hub.sith.test",
+		"SITH_HUB_SESSION_KEY_ID":          "session-2026-07",
+		"SITH_HUB_SESSION_PUBLIC_KEY_FILE": "/mnt/session/public.pem",
+		"SITH_HUB_SERVER_TLS_CERT_FILE":    "/mnt/server/tls.crt",
+		"SITH_HUB_SERVER_TLS_KEY_FILE":     "/mnt/server/tls.key",
+		"SITH_HUB_PROXY_ADDRESS":           "proxy.sith.test:8090",
+		"SITH_HUB_PROXY_SERVER_NAME":       "proxy.sith.test",
+		"SITH_HUB_PROXY_CA_FILE":           "/mnt/proxy/ca.crt",
+		"SITH_HUB_PROXY_CERT_FILE":         "/mnt/proxy/tls.crt",
+		"SITH_HUB_PROXY_KEY_FILE":          "/mnt/proxy/tls.key",
+		"SITH_HUB_KUBE_API_SERVER_NAME":    "kubernetes",
 	}
 }
 

@@ -112,7 +112,7 @@ func New(config Config) (*Metrics, error) {
 }
 
 // Handler returns an embeddable Prometheus exposition handler. It does not bind a port or make
-// outbound calls; a future hub composition root owns listener, TLS, and scrape authorization.
+// outbound calls; a composition root owns any listener and access boundary.
 func (metrics *Metrics) Handler() http.Handler {
 	if metrics == nil || metrics.gatherer == nil {
 		return http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {

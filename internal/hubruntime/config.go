@@ -20,6 +20,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	"github.com/ArdurAI/sith/internal/buildinfo"
 	"github.com/ArdurAI/sith/internal/hubauth"
 	"github.com/ArdurAI/sith/internal/hubdb"
 	"github.com/ArdurAI/sith/internal/hubfleet"
@@ -84,7 +85,15 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 	if err != nil {
 		return nil, fmt.Errorf("construct hub runtime: authentication observability configuration is invalid")
 	}
-	enforcer, err := pep.NewEnforcer(pep.Config{Hook: pep.AllowReadHook{}, Auditor: auditor, TraceObserver: tracer})
+	var metrics *observability.Metrics
+	if config.metricsListenAddress != "" {
+		info := buildinfo.Get()
+		metrics, err = observability.New(observability.Config{Version: info.Version, Commit: info.Commit})
+		if err != nil {
+			return nil, fmt.Errorf("construct hub runtime: metrics configuration is invalid")
+		}
+	}
+	enforcer, err := pep.NewEnforcer(pep.Config{Hook: pep.AllowReadHook{}, Auditor: auditor, Observer: metrics, TraceObserver: tracer})
 	if err != nil {
 		return nil, fmt.Errorf("construct hub runtime: policy configuration is invalid")
 	}
@@ -114,8 +123,8 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 	if err != nil {
 		return nil, fmt.Errorf("construct hub runtime: database is unavailable")
 	}
-	cleanup := database.Close
-	collector, err := hubfleet.NewCollector(hubfleet.CollectorConfig{Store: database, Transport: transport, PEP: enforcer, TraceObserver: tracer})
+	cleanup := func() { database.Close() }
+	collector, err := hubfleet.NewCollector(hubfleet.CollectorConfig{Store: database, Transport: transport, PEP: enforcer, Observer: metrics, TraceObserver: tracer})
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: collector configuration is invalid")
@@ -194,6 +203,28 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		cleanup()
 		return nil, err
 	}
+	var metricsServer *loopbackMetricsServer
+	if metrics != nil {
+		metricsListener, listenErr := net.Listen("tcp", config.metricsListenAddress)
+		if listenErr != nil {
+			_ = listener.Close()
+			cleanup()
+			return nil, fmt.Errorf("construct hub runtime: loopback metrics listener is unavailable")
+		}
+		metricsServer, err = newLoopbackMetricsServer(loopbackMetricsServerConfig{Listener: metricsListener, Handler: metrics.Handler()})
+		if err != nil {
+			_ = metricsListener.Close()
+			_ = listener.Close()
+			cleanup()
+			return nil, err
+		}
+	}
+	cleanup = func() {
+		if metricsServer != nil {
+			_ = metricsServer.Close()
+		}
+		database.Close()
+	}
 	return &Runtime{server: server, close: cleanup}, nil
 }
 
@@ -221,6 +252,7 @@ type deploymentConfig struct {
 	proxyCertFile        string
 	proxyKeyFile         string
 	kubeAPIServerName    string
+	metricsListenAddress string
 	browserOIDC          *browserOIDCDeploymentConfig
 }
 
@@ -263,6 +295,10 @@ func loadDeploymentConfig(lookup func(string) (string, bool)) (deploymentConfig,
 	}
 	if err := validateListenAddress(config.listenAddress); err != nil {
 		return deploymentConfig{}, fmt.Errorf("load hub configuration: listen address is invalid")
+	}
+	config.metricsListenAddress, err = optionalLoopbackMetricsListenAddress(lookup)
+	if err != nil {
+		return deploymentConfig{}, err
 	}
 	browserOIDC, err := loadBrowserOIDCDeploymentConfig(lookup)
 	if err != nil {
@@ -314,6 +350,18 @@ func requiredEnvironment(lookup func(string) (string, bool), name string) (strin
 	return value, nil
 }
 
+func optionalLoopbackMetricsListenAddress(lookup func(string) (string, bool)) (string, error) {
+	const name = "SITH_HUB_METRICS_LISTEN_ADDR"
+	value, present := lookup(name)
+	if !present || value == "" {
+		return "", nil
+	}
+	if strings.TrimSpace(value) != value || len(value) > 4096 || validateLoopbackMetricsListenAddress(value) != nil {
+		return "", fmt.Errorf("load hub configuration: loopback metrics listen address is invalid")
+	}
+	return value, nil
+}
+
 func validateListenAddress(address string) error {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil || host == "" {
@@ -322,6 +370,18 @@ func validateListenAddress(address string) error {
 	value, err := strconv.ParseUint(port, 10, 16)
 	if err != nil || value == 0 {
 		return fmt.Errorf("listen address must use a non-zero port")
+	}
+	return nil
+}
+
+func validateLoopbackMetricsListenAddress(address string) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || (host != "127.0.0.1" && host != "::1") {
+		return fmt.Errorf("metrics listen address must use an exact loopback IP and port")
+	}
+	value, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || value == 0 {
+		return fmt.Errorf("metrics listen address must use a non-zero port")
 	}
 	return nil
 }

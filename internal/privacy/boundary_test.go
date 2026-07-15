@@ -43,7 +43,10 @@ var approvedNetworkImports = map[string]map[string]bool{
 	"internal/hubruntime/config.go": {
 		"net": true, "net/http": true, "k8s.io/client-go/kubernetes": true, "k8s.io/client-go/rest": true,
 	},
-	"internal/hubruntime/runtime.go":    {"net": true, "net/http": true},
+	"internal/hubruntime/runtime.go": {"net": true, "net/http": true},
+	// The Hub-only operator metrics listener is opt-in, exact-loopback-only, and has one fixed
+	// read-only route. It is separately bound from tenant APIs and has no local-mode path.
+	"internal/hubruntime/metrics.go":    {"net": true, "net/http": true},
 	"internal/mcpserver/server.go":      {"net": true, "net/http": true, "net/url": true},
 	"internal/observability/metrics.go": {"net/http": true},
 	"internal/webui/api.go":             {"net/http": true},

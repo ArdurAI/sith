@@ -19,6 +19,10 @@ runtime:
     issuer: ""
     clientID: ""
     redirectURI: ""
+  # metrics is disabled unless listenAddress is the exact loopback address and non-zero port used
+  # by a same-Pod collector. The chart creates no Service, scrape annotation, or exporter.
+  metrics:
+    listenAddress: ""
   proxyAddress: ""
   proxyServerName: ""
   kubeAPIServerName: ""
