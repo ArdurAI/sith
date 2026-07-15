@@ -58,6 +58,7 @@ make build
 ./bin/sith edit configmap/api-settings --context kind-dev -n apps
 ./bin/sith ui                    # loopback-only embedded fleet IDE
 ./bin/sith ui --kubeconfig-dir "$HOME/kubeconfigs" # import a folder of kubeconfig files for this UI session
+./bin/sith desktop               # native macOS window for the same local fleet IDE
 ./bin/sith serve --mcp           # loopback-only MCP read server
 ./bin/sith serve --mcp --require-token
 ```
@@ -359,6 +360,16 @@ editing stays in memory behind its explicit disclosure action. Non-Secret edit f
 diff. Port-forward accepts loopback addresses only (`localhost`, `127.0.0.1`, or `::1`). Streaming
 can hold API connections for its lifetime, but it creates no cloud resources or persistent local
 cache.
+
+On macOS, `sith desktop` runs the same embedded fleet IDE in a native Wails v2 window. It uses an
+in-process WebView origin (`wails://wails`), so it does not open a TCP listener. The **Import folder**
+control appears only in that window and opens a native directory chooser; it passes the selection to
+the identical bounded, in-memory kubeconfig importer used by `sith ui --kubeconfig-dir`. The UI
+receives success, cancellation, or a sanitized failure category—never the selected absolute path or
+kubeconfig content. Build
+an ad-hoc-signed Apple Silicon development bundle with `make desktop-build`; public releases remain
+blocked on Developer ID signing, notarization, stapling, and E9 release provenance, so this is not yet
+a distributed replacement for Lens.
 
 Each active lens holds one Kubernetes watch per reachable context after its initial list. A
 two-minute safety rediscovery recovers contexts that were offline at launch; it is not the primary

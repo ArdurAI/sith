@@ -1,6 +1,7 @@
 "use strict";
 
 const csrfToken = document.querySelector('meta[name="sith-csrf-token"]').content;
+const desktopHydrationFailure = "live cache refresh stopped; re-import the folder or restart Sith";
 const state = {
   meta: null,
   snapshot: null,
@@ -18,7 +19,7 @@ const dom = Object.fromEntries([
   "query-mode", "context-list", "board-heading", "board-kicker", "result-count", "fleet-rows",
   "empty-state", "coverage-line", "inspector-empty", "inspector-content", "inspector-kind",
   "inspector-name", "inspector-address", "inspector-facts", "operation-grid", "refresh-button",
-  "forwards-button", "forward-count", "toast-region", "action-dialog", "dialog-title",
+  "forwards-button", "forward-count", "import-folder-button", "toast-region", "action-dialog", "dialog-title",
   "dialog-kicker", "dialog-body", "dialog-actions", "dialog-close", "loading-template",
 ].map((id) => [id, document.getElementById(id)]));
 
@@ -85,7 +86,9 @@ function renderSnapshot() {
   const snapshot = state.snapshot;
   const coverage = snapshot.coverage || {};
   dom["coverage-count"].textContent = `${coverage.reachable || 0} of ${coverage.requested || 0} contexts answering`;
-  dom["coverage-detail"].textContent = snapshot.state === "offline" ? "Offline — last-known fleet remains visible." : coverageText(coverage);
+  const coverageDetail = snapshot.state === "offline" ? "Offline — last-known fleet remains visible." : coverageText(coverage);
+  const safeDesktopFailure = snapshot.last_error === desktopHydrationFailure ? snapshot.last_error : "";
+  dom["coverage-detail"].textContent = safeDesktopFailure ? `${coverageDetail} · ${safeDesktopFailure}` : coverageDetail;
   dom["coverage-line"].textContent = coverageText(coverage);
   dom["board-heading"].textContent = state.correlate || state.query ? "Fleet results" : `${state.lens}s`;
   dom["board-kicker"].textContent = state.correlate ? "Correlation answer" : state.query ? "Filtered cache" : "Aggregated lens";
@@ -417,6 +420,15 @@ dom["query-mode"].addEventListener("click", () => {
 });
 dom["refresh-button"].addEventListener("click", async () => { try { await api("/api/v1/sync", {method: "POST", body: "{}"}); toast("Fleet refresh scheduled."); } catch (error) { toast(error.message, "error"); } });
 dom["forwards-button"].addEventListener("click", showForwards);
+const directoryPicker = window.go?.cli?.DesktopBridge?.ChooseKubeconfigDirectory;
+if (typeof directoryPicker === "function") {
+  dom["import-folder-button"].hidden = false;
+  dom["import-folder-button"].addEventListener("click", async () => {
+    try {
+      if (await directoryPicker()) window.location.reload();
+    } catch (error) { toast(error.message || "Unable to import folder.", "error"); }
+  });
+}
 dom["dialog-close"].addEventListener("click", () => dom["action-dialog"].close());
 dom["action-dialog"].addEventListener("close", () => { state.logAbort?.abort(); state.logAbort = null; });
 document.addEventListener("keydown", (event) => {
