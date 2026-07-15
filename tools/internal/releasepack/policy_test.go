@@ -28,6 +28,7 @@ func TestReleasePolicyIsFailClosed(t *testing.T) {
 		"cosign sign-blob --yes --bundle=dist/sith.rb.sigstore.json dist/sith.rb",
 		"HUB_IMAGE: ghcr.io/ardurai/sith-hub",
 		"tags: ${{ env.HUB_IMAGE }}:${{ github.ref_name }}",
+		"org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}",
 		"cosign sign --yes \"$image\"",
 		`gh release edit "$GITHUB_REF_NAME" --draft=false --latest`,
 	} {
@@ -75,6 +76,30 @@ func TestReleasePolicyIsFailClosed(t *testing.T) {
 				t.Errorf("%s does not enforce %q", name, want)
 			}
 		}
+	}
+	distributionStep := releaseWorkflowStep(releaseJob, "Verify public hub image distribution")
+	for _, want := range []string{
+		"HUB_DIGEST: ${{ steps.hub_image.outputs.digest }}",
+		"set -euo pipefail",
+		"docker logout ghcr.io",
+		`docker manifest inspect "${HUB_IMAGE}@${HUB_DIGEST}"`,
+	} {
+		if !strings.Contains(distributionStep, want) {
+			t.Errorf("hub public distribution step does not enforce %q", want)
+		}
+	}
+	logoutIndex := strings.Index(distributionStep, "docker logout ghcr.io")
+	inspectIndex := strings.Index(distributionStep, `docker manifest inspect "${HUB_IMAGE}@${HUB_DIGEST}"`)
+	if logoutIndex < 0 || inspectIndex < 0 || logoutIndex >= inspectIndex {
+		t.Error("hub public distribution step must log out of ghcr.io before inspecting the manifest anonymously")
+	}
+	for _, name := range []string{"Attest hub image build provenance", "Attest hub image SBOM"} {
+		if strings.Index(releaseJob, "- name: "+name) >= strings.Index(releaseJob, "- name: Verify public hub image distribution") {
+			t.Errorf("%s must precede public hub digest verification", name)
+		}
+	}
+	if strings.Index(releaseJob, "- name: Verify public hub image distribution") >= strings.Index(releaseJob, "- name: Attach attestations and Homebrew formula") {
+		t.Error("public hub digest verification must precede release attachment")
 	}
 	for _, forbidden := range []string{"pull_request_target:", "workflow_run:", "HOMEBREW_TAP_TOKEN", "PERSONAL_AUTH_TOKEN"} {
 		if strings.Contains(release, forbidden) {
