@@ -39,6 +39,14 @@
             "redirectURI": {"type": "string"}
           }
         },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["listenAddress"],
+          "properties": {
+            "listenAddress": {"type": "string", "pattern": "^(|127\\.0\\.0\\.1:[1-9][0-9]{0,4}|\\[::1\\]:[1-9][0-9]{0,4})$"}
+          }
+        },
         "proxyAddress": {"type": "string", "minLength": 1},
         "proxyServerName": {"type": "string", "minLength": 1},
         "kubeAPIServerName": {"type": "string", "minLength": 1}

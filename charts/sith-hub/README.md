@@ -26,6 +26,15 @@ The chart pins workload hardening (UID/GID 65532, read-only root filesystem, Run
 
 `runtime.browserOIDC` is disabled only when all three of `issuer`, `clientID`, and `redirectURI` are empty. Setting any one enables a fail-closed validation requiring all three. The configured client ID is the exact ID-token audience; the callback must be the same HTTPS URL registered at the issuer and supplied to the Hub. In that mode the Hub mounts `session-private.pem`, checks that it matches `session-public.pem`, completes authorization-code + PKCE (`S256`) server-side, and returns a short-lived `__Host-` `Secure`, `HttpOnly`, strict-same-site session cookie. The chart never renders any of this secret material. The Hub needs narrowly allowlisted egress only to the configured issuer's discovery, JWKS, and token endpoints; the operator's browser navigates to the issuer authorization endpoint.
 
+`runtime.metrics.listenAddress` is opt-in and must be exactly `127.0.0.1:<port>` or
+`[::1]:<port>`, with a non-zero port. When set, the chart provides only the corresponding
+container-port metadata and `SITH_HUB_METRICS_LISTEN_ADDR`; it creates no Service port, ingress,
+scrape annotation, exporter, or automatic sidecar. The Hub serves only `GET /metrics` there from
+its isolated low-cardinality registry. A same-Pod collector can reach it over `localhost` because
+containers in a Pod share a network namespace; that is deliberately a local operational trade-off,
+not a public or tenant-visible metrics endpoint. See the [Kubernetes Pod networking
+documentation](https://kubernetes.io/docs/concepts/workloads/pods/#how-pods-manage-multiple-containers).
+
 Validate supplied values before applying anything:
 
 ```bash
