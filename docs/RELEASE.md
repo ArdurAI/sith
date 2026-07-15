@@ -6,7 +6,9 @@ builds four archives with GoReleaser, emits an SPDX 2.3 SBOM for each archive wi
 archives, SBOMs, and checksum manifest with keyless Cosign, and creates GitHub SLSA provenance plus
 one SBOM attestation per platform. It also publishes the tag's multi-architecture hub image by its
 manifest digest, signs it with keyless Cosign, and creates separate provenance and SPDX SBOM
-attestations for that digest. The draft becomes public only after every step succeeds.
+attestations for that digest. The workflow then removes its registry credentials and proves that the
+exact digest is anonymously pullable; the release draft becomes public only after every step
+succeeds.
 
 The workflow follows the primary guidance for [GitHub artifact attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations),
 [GoReleaser reproducible Go builds](https://goreleaser.com/customization/builds/builders/go/#reproducible-builds),
@@ -48,8 +50,12 @@ case "$image" in ghcr.io/ardurai/sith-hub@sha256:*) ;; *) exit 1 ;; esac
 ```
 
 Verify the keyless image signature against the exact tag workflow identity, then verify GitHub
-provenance and the SPDX SBOM attestation. These commands require registry access; the later air-gap
-workflow consumes mirrored, pre-verified material rather than weakening this verification boundary.
+provenance and the SPDX SBOM attestation. Before the first Hub-image release, an organization
+package admin must make the `sith-hub` Container package public in its GitHub Package settings;
+GitHub makes that choice irreversible. A completed Hub-image release is then anonymously pullable
+by its release-bound digest only after these trust records are created and the workflow's anonymous
+pull check passes. The later air-gap workflow consumes mirrored, pre-verified material rather than
+weakening this verification boundary.
 
 ```bash
 identity="https://github.com/ArdurAI/sith/.github/workflows/release.yml@refs/tags/${tag}"

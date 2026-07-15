@@ -150,6 +150,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ env.HUB_IMAGE }}:${{ github.ref_name }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           provenance: false
           sbom: false
 
@@ -196,6 +198,15 @@ jobs:
           subject-digest: ${{ steps.hub_image.outputs.digest }}
           sbom-path: dist/sith_${{ env.VERSION }}_hub.spdx.json
           push-to-registry: true
+
+      - name: Verify public hub image distribution
+        env:
+          HUB_DIGEST: ${{ steps.hub_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test -n "$HUB_DIGEST"
+          docker logout ghcr.io >/dev/null 2>&1 || true
+          docker manifest inspect "${HUB_IMAGE}@${HUB_DIGEST}" >/dev/null
 
       - name: Generate SLSA build provenance
         id: provenance

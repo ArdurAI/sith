@@ -270,8 +270,10 @@ The no-network setting applies only to those isolated image checks. A deployed h
 allowlisted egress to its configured runtime dependencies, including its database and, when
 enabled, the pinned OIDC discovery and JWKS endpoints.
 
-Hub OCI images are published only by a completed, signed release tag. The release attaches the
-exact immutable digest as `sith_<version>_hub.image`; follow the
+Hub OCI images are published only by a completed, signed release tag. An organization package admin
+must make the `sith-hub` Container package public once before the first Hub release; each completed
+release then proves anonymous access to its release-bound digest and attaches it as
+`sith_<version>_hub.image`; follow the
 [release verification guide](docs/RELEASE.md#verify-a-hub-oci-image) before supplying it to the
 fail-closed [`charts/sith-hub`](charts/sith-hub) chart. The chart requires an explicit
 `repository@sha256:...` image reference and refuses tags, especially `latest`; it invokes `sith hub
