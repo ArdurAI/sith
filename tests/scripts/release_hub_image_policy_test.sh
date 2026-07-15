@@ -21,15 +21,6 @@ assert_contains() {
   printf '[release-hub-image] PASS: %s\n' "$description"
 }
 
-workflow_step() {
-  local name="$1"
-  awk -v name="$name" '
-    $0 == "      - name: " name { inside = 1 }
-    inside && $0 ~ /^      - name: / && $0 != "      - name: " name { exit }
-    inside { print }
-  ' "$workflow"
-}
-
 workflow_job() {
   local name="$1"
   awk -v name="$name" '
@@ -61,6 +52,15 @@ assert_text_contains() {
 }
 
 release_job="$(workflow_job 'release')"
+release_job_step() {
+  local name="$1"
+  awk -v name="$name" '
+    $0 == "      - name: " name { inside = 1 }
+    inside && $0 ~ /^      - name: / && $0 != "      - name: " name { exit }
+    inside { print }
+  ' <<<"$release_job"
+}
+
 assert_contains "$workflow_contents" 'HUB_IMAGE: ghcr.io/ardurai/sith-hub' 'uses one fixed GHCR hub image name'
 assert_text_contains "$release_job" 'packages: write' 'grants package publication permission to the release job'
 for assertion in \
@@ -78,7 +78,7 @@ for assertion in \
   assert_contains "$release_job" "$needle" "$description"
 done
 
-publish_step="$(workflow_step 'Publish immutable multi-platform hub image')"
+publish_step="$(release_job_step 'Publish immutable multi-platform hub image')"
 platforms="$(awk '/^[[:space:]]+platforms:/{ print $2 }' <<<"$publish_step")"
 if [[ "$platforms" != 'linux/amd64,linux/arm64' ]]; then
   printf '[release-hub-image] FAIL: publish step platforms = %q, want linux/amd64,linux/arm64\n' "$platforms" >&2
@@ -87,21 +87,44 @@ fi
 printf '[release-hub-image] PASS: publishes exactly the two supported Linux platforms\n'
 assert_contains "$publish_step" 'push: true' 'publishes the release image before release publication'
 assert_contains "$publish_step" 'tags: ${{ env.HUB_IMAGE }}:${{ github.ref_name }}' 'uses the exact release tag without a latest tag'
+assert_contains "$publish_step" 'org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}' 'links the image package to its source repository'
 assert_contains "$publish_step" 'provenance: false' 'uses the explicit GitHub provenance attestation path'
 assert_contains "$publish_step" 'sbom: false' 'uses the explicit SPDX SBOM attestation path'
 
-signing_step="$(workflow_step 'Sign and verify published hub image')"
+signing_step="$(release_job_step 'Sign and verify published hub image')"
 assert_text_contains "$signing_step" 'HUB_DIGEST: ${{ steps.hub_image.outputs.digest }}' 'derives the signing digest from the pushed manifest'
 assert_text_contains "$signing_step" 'image="${HUB_IMAGE}@${HUB_DIGEST}"' 'constructs the signed image from the pushed manifest digest'
 assert_text_contains "$signing_step" 'cosign sign --yes "$image"' 'keylessly signs that manifest digest'
 
 for attestation in 'Attest hub image build provenance' 'Attest hub image SBOM'; do
-  attestation_step="$(workflow_step "$attestation")"
+  attestation_step="$(release_job_step "$attestation")"
   assert_text_contains "$attestation_step" 'subject-name: ${{ env.HUB_IMAGE }}' "$attestation uses the tag-free image name"
   assert_text_contains "$attestation_step" 'subject-digest: ${{ steps.hub_image.outputs.digest }}' "$attestation uses the pushed manifest digest"
 done
 
-guard_step="$(workflow_step 'Guard hub image tag against overwrite')"
+distribution_step="$(release_job_step 'Verify public hub image distribution')"
+assert_text_contains "$distribution_step" 'HUB_DIGEST: ${{ steps.hub_image.outputs.digest }}' 'checks public access to the pushed manifest digest'
+assert_text_contains "$distribution_step" 'set -euo pipefail' 'fails closed when the anonymous distribution check errors'
+assert_text_contains "$distribution_step" 'docker logout ghcr.io' 'removes registry credentials before public access verification'
+assert_text_contains "$distribution_step" 'docker manifest inspect "${HUB_IMAGE}@${HUB_DIGEST}"' 'fails closed unless the immutable hub digest is anonymously pullable'
+logout_line="$(grep -n -F 'docker logout ghcr.io' <<<"$distribution_step" | head -n 1 | cut -d: -f1)"
+inspect_line="$(grep -n -F 'docker manifest inspect "${HUB_IMAGE}@${HUB_DIGEST}"' <<<"$distribution_step" | head -n 1 | cut -d: -f1)"
+if [[ -z "$logout_line" || -z "$inspect_line" || "$logout_line" -ge "$inspect_line" ]]; then
+  printf '[release-hub-image] FAIL: must log out of ghcr.io before the anonymous manifest inspection\n' >&2
+  exit 1
+fi
+printf '[release-hub-image] PASS: logs out of ghcr.io before the anonymous manifest inspection\n'
+hub_provenance_line="$(grep -n -F '      - name: Attest hub image build provenance' <<<"$release_job" | head -n 1 | cut -d: -f1)"
+hub_sbom_line="$(grep -n -F '      - name: Attest hub image SBOM' <<<"$release_job" | head -n 1 | cut -d: -f1)"
+distribution_line="$(grep -n -F '      - name: Verify public hub image distribution' <<<"$release_job" | head -n 1 | cut -d: -f1)"
+attach_line="$(grep -n -F '      - name: Attach attestations and Homebrew formula' <<<"$release_job" | head -n 1 | cut -d: -f1)"
+if [[ -z "$hub_provenance_line" || -z "$hub_sbom_line" || -z "$distribution_line" || -z "$attach_line" || "$hub_provenance_line" -ge "$distribution_line" || "$hub_sbom_line" -ge "$distribution_line" || "$distribution_line" -ge "$attach_line" ]]; then
+  printf '[release-hub-image] FAIL: public digest verification must follow both image attestations and precede release attachment\n' >&2
+  exit 1
+fi
+printf '[release-hub-image] PASS: public digest verification follows image attestations before release attachment\n'
+
+guard_step="$(release_job_step 'Guard hub image tag against overwrite')"
 assert_text_contains "$guard_step" 'docker manifest inspect "$HUB_TAG"' 'checks the exact release tag before publication'
 assert_text_contains "$guard_step" 'could not establish whether the hub image tag exists' 'fails closed on registry inspection errors'
 guard_line="$(grep -n -F '      - name: Guard hub image tag against overwrite' "$workflow" | head -n 1 | cut -d: -f1)"
