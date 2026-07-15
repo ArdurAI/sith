@@ -13,35 +13,86 @@ type LocalHandler interface {
 	ServeHTTP(http.ResponseWriter, *http.Request)
 }
 
-// InProcessHandler routes one request at a time to the active local UI session.
-// Replace waits for an in-flight request before the caller closes the old session.
+// InProcessHandler routes requests to the active local UI session. A replaced
+// session remains leased only by requests that selected it before the swap.
 type InProcessHandler struct {
-	mu      sync.RWMutex
-	current LocalHandler
+	mu      sync.Mutex
+	current *inProcessSession
+}
+
+type inProcessSession struct {
+	handler LocalHandler
+	active  uint64
+	retired bool
+	drained chan struct{}
 }
 
 // NewInProcessHandler constructs a handler whose active UI session can be
 // replaced without starting a network listener.
 func NewInProcessHandler(initial LocalHandler) *InProcessHandler {
-	return &InProcessHandler{current: initial}
+	handler := &InProcessHandler{}
+	if initial != nil {
+		handler.current = newInProcessSession(initial)
+	}
+	return handler
 }
 
 func (handler *InProcessHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
-	handler.mu.RLock()
-	defer handler.mu.RUnlock()
-	if handler.current == nil {
+	session := handler.acquire()
+	if session == nil {
 		http.Error(response, "local desktop is shutting down", http.StatusServiceUnavailable)
 		return
 	}
-	handler.current.ServeHTTP(response, request)
+	defer handler.release(session)
+	session.handler.ServeHTTP(response, request)
 }
 
-// Replace waits for the active request, then atomically selects the next local
-// UI session. A nil handler makes future requests fail closed.
-func (handler *InProcessHandler) Replace(next LocalHandler) {
+// Replace atomically selects the next local UI session. It returns a channel
+// that closes once requests leased to the previous session have drained. A nil
+// handler makes future requests fail closed without blocking new requests on an
+// old, slow operation.
+func (handler *InProcessHandler) Replace(next LocalHandler) <-chan struct{} {
 	handler.mu.Lock()
-	handler.current = next
+	previous := handler.current
+	if next == nil {
+		handler.current = nil
+	} else {
+		handler.current = newInProcessSession(next)
+	}
+	if previous == nil {
+		handler.mu.Unlock()
+		return nil
+	}
+	previous.retired = true
+	if previous.active == 0 {
+		close(previous.drained)
+	}
+	drained := previous.drained
 	handler.mu.Unlock()
+	return drained
+}
+
+func newInProcessSession(next LocalHandler) *inProcessSession {
+	return &inProcessSession{handler: next, drained: make(chan struct{})}
+}
+
+func (handler *InProcessHandler) acquire() *inProcessSession {
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	if handler.current == nil {
+		return nil
+	}
+	handler.current.active++
+	return handler.current
+}
+
+func (handler *InProcessHandler) release(session *inProcessSession) {
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	session.active--
+	if session.retired && session.active == 0 {
+		close(session.drained)
+	}
 }
 
 // InProcessMiddleware adapts a local handler to Wails without using the

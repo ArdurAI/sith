@@ -3,14 +3,19 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/ArdurAI/sith/internal/connector"
+	"github.com/ArdurAI/sith/internal/fleet"
+	"github.com/ArdurAI/sith/internal/fleetcache"
 	"github.com/ArdurAI/sith/internal/localops"
 	"github.com/ArdurAI/sith/internal/webui"
 )
@@ -114,6 +119,9 @@ func TestDesktopFolderImportCannotReviveAClosedHost(t *testing.T) {
 	t.Cleanup(host.Close)
 	started := make(chan struct{})
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseSource := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseSource)
 	host.newSource = func(string) (connector.Reader, localops.Client, error) {
 		close(started)
 		<-release
@@ -123,13 +131,18 @@ func TestDesktopFolderImportCannotReviveAClosedHost(t *testing.T) {
 	go func() { result <- host.importDirectory(t.TempDir() + "/team-kubeconfigs") }()
 	select {
 	case <-started:
-	case <-t.Context().Done():
+	case <-time.After(time.Second):
 		t.Fatal("import did not reach source construction")
 	}
 	host.Close()
-	close(release)
-	if err := <-result; err == nil {
-		t.Fatal("closed desktop host accepted a replacement session")
+	releaseSource()
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("closed desktop host accepted a replacement session")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("closed desktop host did not finish the interrupted import")
 	}
 	if host.session != nil {
 		t.Fatal("closed desktop host retained a session")
@@ -148,5 +161,44 @@ func TestDesktopDirectorySourceRejectsUnsafeInputWithoutPathLeak(t *testing.T) {
 	unsafe := t.TempDir() + "/missing-kubeconfigs"
 	if _, _, err := desktopDirectorySource(unsafe); err == nil || strings.Contains(err.Error(), unsafe) {
 		t.Fatalf("desktopDirectorySource() error = %v, want safe rejection", err)
+	}
+}
+
+func TestDesktopDependenciesAllowAnExplicitDirectorySource(t *testing.T) {
+	t.Parallel()
+	if err := validateDesktopDependencies(nil, nil, t.TempDir()); err != nil {
+		t.Fatalf("validateDesktopDependencies() error = %v, want explicit directory accepted", err)
+	}
+	if err := validateDesktopDependencies(nil, nil, ""); err == nil {
+		t.Fatal("validateDesktopDependencies() error = nil, want missing default source rejected")
+	}
+}
+
+func TestDesktopHydrationFailureIsSanitizedInTheFleetCache(t *testing.T) {
+	t.Parallel()
+	store := fleetcache.New()
+	runDesktopHydration(context.Background(), store, func(context.Context) error {
+		return fmt.Errorf("watch /private/kubeconfigs/team.yaml failed")
+	})
+	snapshot := store.Query(fleet.LocalWorkspace, fleetcache.Query{})
+	if snapshot.LastError != desktopHydrationStopped || strings.Contains(snapshot.LastError, "/private/") {
+		t.Fatalf("hydration failure = %q, want sanitized category", snapshot.LastError)
+	}
+}
+
+func TestQuitDesktopOnCancellationAfterStartup(t *testing.T) {
+	t.Parallel()
+	parent, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	started := make(chan context.Context, 1)
+	stopped := make(chan struct{})
+	quit := make(chan struct{}, 1)
+	go quitDesktopOnCancellation(parent, started, stopped, func(context.Context) { quit <- struct{}{} })
+	started <- context.Background()
+	cancel()
+	select {
+	case <-quit:
+	case <-time.After(time.Second):
+		t.Fatal("desktop cancellation did not request native shutdown")
 	}
 }

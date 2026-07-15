@@ -19,9 +19,9 @@ Use Wails v2 as a thin macOS shell around the existing Go web UI handler.
   the exact `wails://wails` origin. It opens no TCP listener.
 - The existing API handler, strict Host/Origin checks, per-process CSRF capability,
   CSP, cache, hydrator, and local operation client remain the only implementation.
-- The sole native binding opens a directory chooser. It returns only success or
-  cancellation to the UI; the selected path and kubeconfig contents never cross
-  the UI bridge, persist, or enter diagnostics.
+- The sole native binding opens a directory chooser. It returns success,
+  cancellation, or a sanitized failure category to the UI; the selected path
+  and kubeconfig contents never cross the UI bridge, persist, or enter diagnostics.
 - A successful selection builds a new bounded importer session before atomically
   replacing the current in-memory session. A failing selection leaves the current
   session intact.

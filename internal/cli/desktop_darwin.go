@@ -7,6 +7,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -62,24 +63,51 @@ func runDesktop(ctx context.Context, reader connector.Reader, local localops.Cli
 		return err
 	}
 	bridge := &DesktopBridge{host: host}
+	started := make(chan context.Context, 1)
+	stopped := make(chan struct{})
+	var stopOnce sync.Once
+	stop := func() { stopOnce.Do(func() { close(stopped) }) }
+	go quitDesktopOnCancellation(ctx, started, stopped, runtime.Quit)
 	err = wails.Run(&options.App{
-		Title:                    "Sith — Fleet IDE",
-		Width:                    1440,
-		Height:                   900,
-		MinWidth:                 960,
-		MinHeight:                640,
-		BackgroundColour:         &options.RGBA{R: 16, G: 24, B: 32, A: 255},
-		OnStartup:                func(appContext context.Context) { bridge.ctx = appContext },
-		OnShutdown:               func(context.Context) { host.Close() },
+		Title:            "Sith — Fleet IDE",
+		Width:            1440,
+		Height:           900,
+		MinWidth:         960,
+		MinHeight:        640,
+		BackgroundColour: &options.RGBA{R: 16, G: 24, B: 32, A: 255},
+		OnStartup: func(appContext context.Context) {
+			bridge.ctx = appContext
+			select {
+			case started <- appContext:
+			case <-stopped:
+			}
+		},
+		OnShutdown: func(context.Context) {
+			stop()
+			host.Close()
+		},
 		Bind:                     []interface{}{bridge},
 		EnableDefaultContextMenu: false,
 		AssetServer: &assetserver.Options{
 			Middleware: webui.InProcessMiddleware(host.Handler()),
 		},
 	})
+	stop()
+	host.Close()
 	if err != nil {
-		host.Close()
 		return fmt.Errorf("start local fleet desktop: %w", err)
 	}
 	return nil
+}
+
+func quitDesktopOnCancellation(parent context.Context, started <-chan context.Context, stopped <-chan struct{}, quit func(context.Context)) {
+	select {
+	case <-parent.Done():
+		select {
+		case appContext := <-started:
+			quit(appContext)
+		case <-stopped:
+		}
+	case <-stopped:
+	}
 }

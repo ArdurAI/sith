@@ -365,7 +365,8 @@ On macOS, `sith desktop` runs the same embedded fleet IDE in a native Wails v2 w
 in-process WebView origin (`wails://wails`), so it does not open a TCP listener. The **Import folder**
 control appears only in that window and opens a native directory chooser; it passes the selection to
 the identical bounded, in-memory kubeconfig importer used by `sith ui --kubeconfig-dir`. The UI
-receives only success or cancellation, never the selected absolute path or kubeconfig content. Build
+receives success, cancellation, or a sanitized failure category—never the selected absolute path or
+kubeconfig content. Build
 an ad-hoc-signed Apple Silicon development bundle with `make desktop-build`; public releases remain
 blocked on Developer ID signing, notarization, stapling, and E9 release provenance, so this is not yet
 a distributed replacement for Lens.

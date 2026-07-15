@@ -20,7 +20,7 @@ func (handler blockingLocalHandler) ServeHTTP(response http.ResponseWriter, _ *h
 	response.WriteHeader(http.StatusNoContent)
 }
 
-func TestInProcessHandlerWaitsForRequestsBeforeReplacement(t *testing.T) {
+func TestInProcessHandlerReplacesWithoutBlockingNewRequests(t *testing.T) {
 	t.Parallel()
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -35,15 +35,18 @@ func TestInProcessHandlerWaitsForRequestsBeforeReplacement(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("initial in-process request did not start")
 	}
-	replaced := make(chan struct{})
-	go func() {
-		handler.Replace(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-		close(replaced)
-	}()
+	drained := handler.Replace(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusNoContent)
+	}))
 	select {
-	case <-replaced:
-		t.Fatal("replacement completed while the previous request was in flight")
+	case <-drained:
+		t.Fatal("previous session drained while its request was in flight")
 	case <-time.After(20 * time.Millisecond):
+	}
+	fresh := httptest.NewRecorder()
+	handler.ServeHTTP(fresh, httptest.NewRequest(http.MethodGet, "wails://wails/", nil))
+	if fresh.Code != http.StatusNoContent {
+		t.Fatalf("replacement handler status = %d, want %d", fresh.Code, http.StatusNoContent)
 	}
 	close(release)
 	select {
@@ -52,8 +55,8 @@ func TestInProcessHandlerWaitsForRequestsBeforeReplacement(t *testing.T) {
 		t.Fatal("initial in-process request did not finish")
 	}
 	select {
-	case <-replaced:
+	case <-drained:
 	case <-time.After(time.Second):
-		t.Fatal("replacement did not finish after the prior request completed")
+		t.Fatal("previous session did not drain after its request completed")
 	}
 }

@@ -11,8 +11,10 @@ KIND     ?= kind
 HELM     ?= helm
 GORELEASER ?= goreleaser
 WAILS      ?= wails
+WAILS_VERSION ?= v2.12.0
 CODESIGN   ?= codesign
 PLISTBUDDY ?= /usr/libexec/PlistBuddy
+LIPO       ?= lipo
 DOCKER      ?= docker
 KUBECTL     ?= kubectl
 OCM_SCRATCH_ROOT ?= $(shell python3 -c 'import os; print(os.path.join(os.path.realpath(os.environ.get("TMPDIR", "/tmp")), "sith-m0-{}".format(os.getuid()), "lab"))')
@@ -41,12 +43,13 @@ build: ## Build the sith binary into bin/
 	go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/$(BINARY) $(CMD)
 
 desktop-build: ## Build the ad-hoc-signed macOS arm64 Sith.app development bundle
-	@command -v "$(WAILS)" >/dev/null || { echo "wails v2 is required" >&2; exit 1; }
-	@"$(WAILS)" version | grep -q 'v2\.' || { echo "Wails v2 is required" >&2; exit 1; }
-	cd cmd/sith-desktop && "$(WAILS)" build -clean -s -trimpath -platform darwin/arm64
+	@command -v "$(WAILS)" >/dev/null || { echo "Wails $(WAILS_VERSION) is required" >&2; exit 1; }
+	@"$(WAILS)" version | grep -q '$(WAILS_VERSION)' || { echo "Wails $(WAILS_VERSION) is required" >&2; exit 1; }
+	cd cmd/sith-desktop && "$(WAILS)" build -clean -m -nosyncgomod -s -trimpath -platform darwin/arm64
 	@set -euo pipefail; \
 		app='cmd/sith-desktop/build/bin/Sith.app'; \
 		test -d "$$app"; \
+		"$(LIPO)" -archs "$$app/Contents/MacOS/Sith" | grep -qx 'arm64'; \
 		"$(PLISTBUDDY)" -c 'Set :CFBundleIdentifier com.ardurai.sith' "$$app/Contents/Info.plist"; \
 		"$(CODESIGN)" --force --sign - "$$app"; \
 		"$(CODESIGN)" --verify --strict "$$app"; \

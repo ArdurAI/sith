@@ -129,6 +129,9 @@ func TestDesktopFolderBridgeIsOptInAndDoesNotExposePaths(t *testing.T) {
 		!strings.Contains(string(script), "if (await directoryPicker()) window.location.reload()") {
 		t.Fatal("desktop bridge is not opt-in or does not reload after a successful source swap")
 	}
+	if !strings.Contains(string(script), `snapshot.last_error === desktopHydrationFailure`) {
+		t.Fatal("desktop UI does not allowlist a sanitized hydration failure")
+	}
 	if strings.Contains(string(script), "selectedDirectory") || strings.Contains(string(script), "kubeconfigDir") {
 		t.Fatal("desktop bridge must not retain a selected local path in the UI")
 	}

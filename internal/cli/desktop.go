@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -29,8 +30,8 @@ func newDesktopCommand(reader connector.Reader, local localops.Client) *cobra.Co
 		Short: "Open the native local fleet IDE on macOS",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			if reader == nil || local == nil {
-				return fmt.Errorf("local fleet desktop requires a Kubernetes reader and local operations client")
+			if err := validateDesktopDependencies(reader, local, options.kubeconfigDir); err != nil {
+				return err
 			}
 			return runDesktop(command.Context(), reader, local, options.kubeconfigDir)
 		},
@@ -66,8 +67,18 @@ func newDesktopSession(parent context.Context, reader connector.Reader, local lo
 		cancel()
 		return nil, err
 	}
-	go func() { _ = hydrator.Run(ctx) }()
+	go runDesktopHydration(ctx, store, hydrator.Run)
 	return &desktopSession{cancel: cancel, application: application, handler: handler}, nil
+}
+
+const desktopHydrationStopped = "live cache refresh stopped; re-import the folder or restart Sith"
+
+func runDesktopHydration(ctx context.Context, store *fleetcache.Store, run func(context.Context) error) {
+	if err := run(ctx); err != nil && ctx.Err() == nil {
+		// The cache/API exposes only a closed operational category. Raw watch
+		// errors can carry cluster-specific details and do not cross this boundary.
+		store.EndSync(errors.New(desktopHydrationStopped))
+	}
 }
 
 func (session *desktopSession) close() {
@@ -115,6 +126,16 @@ func desktopDirectorySource(directory string) (connector.Reader, localops.Client
 	return adapter, adapter, nil
 }
 
+func validateDesktopDependencies(reader connector.Reader, local localops.Client, directory string) error {
+	if strings.TrimSpace(directory) != "" {
+		return nil
+	}
+	if reader == nil || local == nil {
+		return fmt.Errorf("local fleet desktop requires a Kubernetes reader and local operations client")
+	}
+	return nil
+}
+
 func (host *desktopHost) Handler() webui.LocalHandler {
 	return host.handler
 }
@@ -138,11 +159,19 @@ func (host *desktopHost) importDirectory(directory string) error {
 		return fmt.Errorf("open selected kubeconfig directory")
 	}
 	previous := host.session
-	host.handler.Replace(next.handler)
+	drained := host.handler.Replace(next.handler)
 	host.session = next
 	host.mu.Unlock()
-	previous.close()
+	go closeDesktopSessionAfter(drained, previous)
 	return nil
+}
+
+func closeDesktopSessionAfter(drained <-chan struct{}, session *desktopSession) {
+	if drained == nil || session == nil {
+		return
+	}
+	<-drained
+	session.close()
 }
 
 func (host *desktopHost) Close() {

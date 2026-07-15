@@ -1,6 +1,7 @@
 "use strict";
 
 const csrfToken = document.querySelector('meta[name="sith-csrf-token"]').content;
+const desktopHydrationFailure = "live cache refresh stopped; re-import the folder or restart Sith";
 const state = {
   meta: null,
   snapshot: null,
@@ -85,7 +86,9 @@ function renderSnapshot() {
   const snapshot = state.snapshot;
   const coverage = snapshot.coverage || {};
   dom["coverage-count"].textContent = `${coverage.reachable || 0} of ${coverage.requested || 0} contexts answering`;
-  dom["coverage-detail"].textContent = snapshot.state === "offline" ? "Offline — last-known fleet remains visible." : coverageText(coverage);
+  const coverageDetail = snapshot.state === "offline" ? "Offline — last-known fleet remains visible." : coverageText(coverage);
+  const safeDesktopFailure = snapshot.last_error === desktopHydrationFailure ? snapshot.last_error : "";
+  dom["coverage-detail"].textContent = safeDesktopFailure ? `${coverageDetail} · ${safeDesktopFailure}` : coverageDetail;
   dom["coverage-line"].textContent = coverageText(coverage);
   dom["board-heading"].textContent = state.correlate || state.query ? "Fleet results" : `${state.lens}s`;
   dom["board-kicker"].textContent = state.correlate ? "Correlation answer" : state.query ? "Filtered cache" : "Aggregated lens";
