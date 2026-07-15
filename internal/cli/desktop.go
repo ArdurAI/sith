@@ -81,6 +81,20 @@ func runDesktopHydration(ctx context.Context, store *fleetcache.Store, run func(
 	}
 }
 
+// quitDesktopOnCancellation defers native shutdown until Wails has supplied
+// its application context, while allowing normal application shutdown to win.
+func quitDesktopOnCancellation(parent context.Context, started <-chan context.Context, stopped <-chan struct{}, quit func(context.Context)) {
+	select {
+	case <-parent.Done():
+		select {
+		case appContext := <-started:
+			quit(appContext)
+		case <-stopped:
+		}
+	case <-stopped:
+	}
+}
+
 func (session *desktopSession) close() {
 	if session == nil {
 		return

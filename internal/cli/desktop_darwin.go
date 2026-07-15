@@ -99,15 +99,3 @@ func runDesktop(ctx context.Context, reader connector.Reader, local localops.Cli
 	}
 	return nil
 }
-
-func quitDesktopOnCancellation(parent context.Context, started <-chan context.Context, stopped <-chan struct{}, quit func(context.Context)) {
-	select {
-	case <-parent.Done():
-		select {
-		case appContext := <-started:
-			quit(appContext)
-		case <-stopped:
-		}
-	case <-stopped:
-	}
-}

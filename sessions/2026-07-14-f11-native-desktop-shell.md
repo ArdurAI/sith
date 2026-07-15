@@ -91,9 +91,14 @@ leak across the UI bridge.
 - The local CodeRabbit pass found an unbounded wait in the close/import test;
   it is corrected with one-second bounds and idempotent source-release cleanup,
   then verified by focused race tests and the final full CI run.
+- Hosted Linux CI then caught the cancellation-helper test compiling against a
+  macOS-only definition. The helper is now shared while Wails startup remains
+  Darwin-only; focused race suites and the final `make ci` pass after that
+  correction.
 
 ## [C] Checkpoint
 
 - Initial signed/DCO/GSTACK implementation checkpoint: `78af530`.
-- Review-fix implementation, fresh peer pass, signed/DCO checkpoint, hosted CI,
-  merge, and exact post-merge CI remain to be recorded.
+- Review-fix implementation checkpoint: `b99820e`.
+- Linux-CI portability correction, fresh peer pass, signed/DCO checkpoint,
+  hosted CI, merge, and exact post-merge CI remain to be recorded.
