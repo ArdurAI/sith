@@ -126,6 +126,41 @@ func TestLoadDeploymentConfigRequiresEverySecurityInput(t *testing.T) {
 	}
 }
 
+func TestLoadDeploymentConfigRequiresCompleteBrowserOIDCInputs(t *testing.T) {
+	values := map[string]string{
+		"SITH_HUB_LISTEN_ADDR":             "127.0.0.1:8443",
+		"SITH_HUB_DATABASE_URL":            "postgres://sith@db/sith?sslmode=require",
+		"SITH_HUB_SESSION_ISSUER":          "https://issuer.sith.test",
+		"SITH_HUB_SESSION_AUDIENCE":        "https://hub.sith.test",
+		"SITH_HUB_SESSION_KEY_ID":          "session-2026-07",
+		"SITH_HUB_SESSION_PUBLIC_KEY_FILE": "/mnt/session/public.pem",
+		"SITH_HUB_SERVER_TLS_CERT_FILE":    "/mnt/server/tls.crt",
+		"SITH_HUB_SERVER_TLS_KEY_FILE":     "/mnt/server/tls.key",
+		"SITH_HUB_PROXY_ADDRESS":           "proxy.sith.test:8090",
+		"SITH_HUB_PROXY_SERVER_NAME":       "proxy.sith.test",
+		"SITH_HUB_PROXY_CA_FILE":           "/mnt/proxy/ca.crt",
+		"SITH_HUB_PROXY_CERT_FILE":         "/mnt/proxy/tls.crt",
+		"SITH_HUB_PROXY_KEY_FILE":          "/mnt/proxy/tls.key",
+		"SITH_HUB_KUBE_API_SERVER_NAME":    "kubernetes",
+	}
+	lookup := func(name string) (string, bool) { value, ok := values[name]; return value, ok }
+	config, err := loadDeploymentConfig(lookup)
+	if err != nil || config.browserOIDC != nil {
+		t.Fatalf("default browser OIDC config/error = %#v/%v", config.browserOIDC, err)
+	}
+	values["SITH_HUB_BROWSER_OIDC_ISSUER"] = "https://idp.sith.test"
+	if _, err := loadDeploymentConfig(lookup); err == nil {
+		t.Fatal("partial browser OIDC configuration accepted")
+	}
+	values["SITH_HUB_BROWSER_OIDC_CLIENT_ID"] = "sith-browser"
+	values["SITH_HUB_BROWSER_OIDC_REDIRECT_URI"] = "https://hub.sith.test/v1/console/oidc/callback"
+	values["SITH_HUB_SESSION_PRIVATE_KEY_FILE"] = "/mnt/session/private.pem"
+	config, err = loadDeploymentConfig(lookup)
+	if err != nil || config.browserOIDC == nil || config.browserOIDC.clientID != "sith-browser" || config.browserOIDC.sessionPrivateKeyFile != "/mnt/session/private.pem" {
+		t.Fatalf("browser OIDC config/error = %#v/%v", config.browserOIDC, err)
+	}
+}
+
 func TestReadMountedFileRequiresReadOnlyRegularFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mounted.pem")
 	if err := os.WriteFile(path, []byte("mounted material"), 0o600); err != nil {
@@ -144,6 +179,34 @@ func TestReadMountedFileRequiresReadOnlyRegularFile(t *testing.T) {
 	clear(contents)
 	if _, err := readMountedFile("test directory", filepath.Dir(path), 1024); err == nil {
 		t.Fatal("readMountedFile accepted a directory")
+	}
+}
+
+func TestLoadSessionPrivateKeyRequiresReadOnlyPKCS8Ed25519(t *testing.T) {
+	privateKey := ed25519.NewKeyFromSeed([]byte("01234567890123456789012345678901"))
+	der, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "session-private.pem")
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadSessionPrivateKey(path)
+	if err != nil || string(loaded) != string(privateKey) {
+		t.Fatalf("private key/error = %x/%v", loaded, err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: der}), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadSessionPrivateKey(path); err == nil {
+		t.Fatal("non-PKCS8 private key accepted")
 	}
 }
 

@@ -72,6 +72,11 @@ func TestHelmHubChartContract(t *testing.T) {
 	}
 	heavyObjects := assertHelmHubRender(t, heavyRendered, "heavy")
 	assertProfileOnlyChangesResources(t, lightObjects, heavyObjects)
+	browserRendered, err := runHelm(ctx, t, helm, root, "template", "sith-hub", chart, "--namespace", "sith-system", "--values", writeHelmValues(t, browserOIDCHubValues()))
+	if err != nil {
+		t.Fatalf("helm template browser OIDC profile: %v\n%s", err, browserRendered)
+	}
+	assertBrowserOIDCDeployment(t, requiredHelmObject(t, assertHelmHubRender(t, browserRendered, "light"), "Deployment"))
 
 	for name, invalid := range map[string]string{
 		"mutable tag":                  strings.Replace(validHubValues(), validHubImage, "registry.example.invalid/sith/hub:latest", 1),
@@ -80,6 +85,7 @@ func TestHelmHubChartContract(t *testing.T) {
 		"unknown profile":              strings.Replace(validHubValues(), "profile: light", "profile: unbounded", 1),
 		"unexpected image pull secret": validHubValues() + "\nimagePullSecrets:\n  password: must-not-render\n",
 		"unexpected resources":         validHubValues() + "\nresources:\n  requests:\n    cpu: 999\n",
+		"partial browser OIDC":         strings.Replace(validHubValues(), `    issuer: ""`, "    issuer: https://idp.sith.example", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if output, err := runHelm(ctx, t, helm, root, "template", "sith-hub", chart, "--namespace", "sith-system", "--values", writeHelmValues(t, invalid)); err == nil {
@@ -114,6 +120,10 @@ runtime:
   sessionIssuer: https://issuer.sith.example
   sessionAudience: https://hub.sith.example
   sessionKeyID: session-2026-07
+  browserOIDC:
+    issuer: ""
+    clientID: ""
+    redirectURI: ""
   proxyAddress: cluster-proxy.open-cluster-management.svc:8090
   proxyServerName: cluster-proxy.open-cluster-management.svc
   kubeAPIServerName: kubernetes
@@ -121,6 +131,16 @@ migration:
   existingSecret: sith-migration
   applicationRole: sith_app
 `, profile, validHubImage)
+}
+
+func browserOIDCHubValues() string {
+	return strings.Replace(validHubValues(), `  browserOIDC:
+    issuer: ""
+    clientID: ""
+    redirectURI: ""`, `  browserOIDC:
+    issuer: https://idp.sith.example
+    clientID: sith-browser
+    redirectURI: https://hub.sith.example/v1/console/oidc/callback`, 1)
 }
 
 func writeHelmValues(t *testing.T, contents string) string {
@@ -225,7 +245,7 @@ func assertHubDeployment(t *testing.T, deployment *unstructured.Unstructured, pr
 	assertHelmContainerSecurity(t, container)
 	assertHelmProfileResources(t, container, profile)
 	environment := helmEnvironment(t, container)
-	if len(environment) != 14 || environment["SITH_HUB_DATABASE_URL"] != "secret:sith-runtime/database-url" {
+	if (len(environment) != 14 && len(environment) != 18) || environment["SITH_HUB_DATABASE_URL"] != "secret:sith-runtime/database-url" {
 		t.Fatalf("hub environment = %#v", environment)
 	}
 	for _, name := range []string{"SITH_HUB_SESSION_PUBLIC_KEY_FILE", "SITH_HUB_SERVER_TLS_CERT_FILE", "SITH_HUB_SERVER_TLS_KEY_FILE", "SITH_HUB_PROXY_CA_FILE", "SITH_HUB_PROXY_CERT_FILE", "SITH_HUB_PROXY_KEY_FILE"} {
@@ -250,6 +270,37 @@ func assertHubDeployment(t *testing.T, deployment *unstructured.Unstructured, pr
 		t.Fatalf("hub service account = %#v", podSpec["serviceAccountName"])
 	}
 	return serviceAccountName, nestedHelmMap(t, deployment.Object, "spec", "template", "metadata", "labels")
+}
+
+func assertBrowserOIDCDeployment(t *testing.T, deployment *unstructured.Unstructured) {
+	t.Helper()
+	podSpec := nestedHelmMap(t, deployment.Object, "spec", "template", "spec")
+	container := onlyHelmContainer(t, podSpec)
+	environment := helmEnvironment(t, container)
+	if len(environment) != 18 || environment["SITH_HUB_BROWSER_OIDC_ISSUER"] != "https://idp.sith.example" ||
+		environment["SITH_HUB_BROWSER_OIDC_CLIENT_ID"] != "sith-browser" || environment["SITH_HUB_BROWSER_OIDC_REDIRECT_URI"] != "https://hub.sith.example/v1/console/oidc/callback" ||
+		environment["SITH_HUB_SESSION_PRIVATE_KEY_FILE"] != "/var/run/sith/runtime/session-private.pem" {
+		t.Fatalf("browser OIDC environment = %#v", environment)
+	}
+	volumes, found, err := unstructured.NestedSlice(podSpec, "volumes")
+	if err != nil || !found || len(volumes) != 1 {
+		t.Fatalf("browser OIDC volumes = %#v / %v", volumes, err)
+	}
+	volume, ok := volumes[0].(map[string]any)
+	if !ok {
+		t.Fatalf("browser OIDC volume = %#v", volumes[0])
+	}
+	items, found, err := unstructured.NestedSlice(nestedHelmMap(t, volume, "secret"), "items")
+	if err != nil || !found {
+		t.Fatalf("browser OIDC secret items = %#v / %v", volume, err)
+	}
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if ok && entry["key"] == "session-private.pem" && entry["path"] == "session-private.pem" {
+			return
+		}
+	}
+	t.Fatalf("browser OIDC session-private.pem mount missing: %#v", items)
 }
 
 func assertHubService(t *testing.T, service *unstructured.Unstructured, wantSelector map[string]any) {

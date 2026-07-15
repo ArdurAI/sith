@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -32,6 +34,7 @@ const (
 	maxMountedKeyBytes         = 64 * 1024
 	maxMountedCABundleBytes    = 256 * 1024
 	maxMountedPublicKeyBytes   = 16 * 1024
+	maxMountedPrivateKeyBytes  = 16 * 1024
 )
 
 // Runtime owns the configured application database while the hub server runs.
@@ -127,12 +130,58 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: CVE search configuration is invalid")
 	}
-	handler, err := hubserver.NewFleetHandler(hubserver.FleetHandlerConfig{
+	fleetHandler, err := hubserver.NewFleetHandler(hubserver.FleetHandlerConfig{
 		Verifier: verifier, AuthObserver: authObserver, Collector: collector, Reader: database, ImageSearcher: imageSearcher, CVESearcher: cveSearcher, CVEIdentifierSearcher: cveSearcher, PEP: enforcer,
 	})
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: HTTP handler configuration is invalid")
+	}
+	handler := fleetHandler
+	if config.browserOIDC != nil {
+		privateKey, err := loadSessionPrivateKey(config.browserOIDC.sessionPrivateKeyFile)
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+		defer clear(privateKey)
+		if !publicKey.Equal(privateKey.Public()) {
+			cleanup()
+			return nil, fmt.Errorf("construct hub runtime: session signing key does not match the configured public key")
+		}
+		sessionIssuer, err := hubauth.NewSessionIssuer(hubauth.SessionIssuerConfig{
+			Issuer: config.sessionIssuer, Audience: config.sessionAudience, KeyID: config.sessionKeyID, PrivateKey: privateKey,
+		})
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("construct hub runtime: browser session issuer configuration is invalid")
+		}
+		oidcService, err := hubauth.NewOIDCService(hubauth.OIDCServiceConfig{
+			Providers: []hubauth.OIDCProviderConfig{{Issuer: config.browserOIDC.issuer, Audience: config.browserOIDC.clientID}},
+			Store:     database, Issuer: sessionIssuer,
+		})
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("construct hub runtime: browser OIDC configuration is invalid")
+		}
+		limiter, err := hubserver.NewAttemptLimiter(hubserver.AttemptLimiterConfig{Attempts: 20, Window: time.Minute, MaxKeys: 4096})
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("construct hub runtime: browser OIDC rate limiting is invalid")
+		}
+		browserHandler, err := hubserver.NewBrowserOIDCHandler(hubserver.BrowserOIDCHandlerConfig{
+			Service: oidcService, ProviderIssuer: config.browserOIDC.issuer, ClientID: config.browserOIDC.clientID,
+			RedirectURI: config.browserOIDC.redirectURI, Limiter: limiter,
+		})
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("construct hub runtime: browser OIDC handler configuration is invalid")
+		}
+		mux := http.NewServeMux()
+		mux.Handle("GET /v1/workspaces/{workspace}/console/login", http.HandlerFunc(browserHandler.Login))
+		mux.Handle("GET "+browserHandler.CallbackPath(), http.HandlerFunc(browserHandler.Callback))
+		mux.Handle("/", fleetHandler)
+		handler = mux
 	}
 	listener, err := net.Listen("tcp", config.listenAddress)
 	if err != nil {
@@ -172,6 +221,14 @@ type deploymentConfig struct {
 	proxyCertFile        string
 	proxyKeyFile         string
 	kubeAPIServerName    string
+	browserOIDC          *browserOIDCDeploymentConfig
+}
+
+type browserOIDCDeploymentConfig struct {
+	issuer                string
+	clientID              string
+	redirectURI           string
+	sessionPrivateKeyFile string
 }
 
 func loadDeploymentConfig(lookup func(string) (string, bool)) (deploymentConfig, error) {
@@ -206,6 +263,45 @@ func loadDeploymentConfig(lookup func(string) (string, bool)) (deploymentConfig,
 	}
 	if err := validateListenAddress(config.listenAddress); err != nil {
 		return deploymentConfig{}, fmt.Errorf("load hub configuration: listen address is invalid")
+	}
+	browserOIDC, err := loadBrowserOIDCDeploymentConfig(lookup)
+	if err != nil {
+		return deploymentConfig{}, err
+	}
+	config.browserOIDC = browserOIDC
+	return config, nil
+}
+
+func loadBrowserOIDCDeploymentConfig(lookup func(string) (string, bool)) (*browserOIDCDeploymentConfig, error) {
+	config := &browserOIDCDeploymentConfig{}
+	fields := []struct {
+		name   string
+		target *string
+	}{
+		{"SITH_HUB_BROWSER_OIDC_ISSUER", &config.issuer},
+		{"SITH_HUB_BROWSER_OIDC_CLIENT_ID", &config.clientID},
+		{"SITH_HUB_BROWSER_OIDC_REDIRECT_URI", &config.redirectURI},
+		{"SITH_HUB_SESSION_PRIVATE_KEY_FILE", &config.sessionPrivateKeyFile},
+	}
+	configured := 0
+	for _, field := range fields {
+		value, present := lookup(field.name)
+		if present || value != "" {
+			configured++
+		}
+	}
+	if configured == 0 {
+		return nil, nil
+	}
+	if configured != len(fields) {
+		return nil, fmt.Errorf("load hub configuration: browser OIDC inputs must be set together")
+	}
+	for _, field := range fields {
+		value, err := requiredEnvironment(lookup, field.name)
+		if err != nil {
+			return nil, err
+		}
+		*field.target = value
 	}
 	return config, nil
 }
@@ -294,6 +390,27 @@ func loadSessionPublicKey(path string) (ed25519.PublicKey, error) {
 		return nil, fmt.Errorf("load hub configuration: session public key is not Ed25519")
 	}
 	return append(ed25519.PublicKey(nil), key...), nil
+}
+
+func loadSessionPrivateKey(path string) (ed25519.PrivateKey, error) {
+	encoded, err := readMountedFile("session private key", path, maxMountedPrivateKeyBytes)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(encoded)
+	block, rest := pem.Decode(encoded)
+	if block == nil || block.Type != "PRIVATE KEY" || len(strings.TrimSpace(string(rest))) != 0 {
+		return nil, fmt.Errorf("load hub configuration: session private key is invalid")
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("load hub configuration: session private key is invalid")
+	}
+	key, ok := parsed.(ed25519.PrivateKey)
+	if !ok || len(key) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("load hub configuration: session private key is not Ed25519")
+	}
+	return append(ed25519.PrivateKey(nil), key...), nil
 }
 
 func readMountedFile(label, path string, maxBytes int) ([]byte, error) {

@@ -93,9 +93,11 @@ handler includes a bounded per-process attempt limiter; a replicated hub must ad
 a shared limit at its ingress or gateway. Deployments must provide the HMAC pepper and Ed25519
 private key through a secret manager, keep both out of logs and configuration repositories, and
 rotate them under an explicit operational procedure. These are E1 library and HTTP boundaries.
-The P1 `sith hub` runtime now mounts only the session-authenticated fleet read/refresh surface
-below; API-key, OIDC, and cloud-proof exchange handlers remain intentionally unmounted until their
-ingress and operator lifecycle are composed.
+The P1 `sith hub` runtime mounts the session-authenticated fleet read/refresh surface below.
+API-key, raw OIDC-token, and cloud-proof exchange handlers remain intentionally unmounted until
+their ingress and operator lifecycle are composed. The separately configured browser OIDC flow is
+not a raw-token exchange: it completes authorization-code + PKCE server-side and only establishes
+an HttpOnly browser session for the future console boundary.
 
 Pinned OIDC federation uses the same exchange model. Each endpoint is fixed to one requested
 workspace, and each provider configuration allowlists an exact HTTPS issuer, audience, token type,
@@ -115,6 +117,21 @@ This follows [OpenID Connect Discovery 1.0](https://openid.net/specs/openid-conn
 [RFC 7517](https://www.rfc-editor.org/rfc/rfc7517.html), and the
 [JWT BCP, RFC 8725](https://www.rfc-editor.org/rfc/rfc8725.html). Discovery and refresh add small
 outbound request and availability dependencies but create no cloud resources by themselves.
+
+When all browser-OIDC deployment inputs are configured, the Hub additionally exposes a fixed
+`GET /v1/workspaces/{workspace}/console/login` start route and the exact configured callback path.
+It uses one issuer-pinned public client with Authorization Code + PKCE `S256`; the verifier, code,
+upstream ID token, and minted Sith JWT remain server-side. A bounded, single-use, process-local
+transaction binds the exact workspace, state, nonce, redirect URI, issuer, client ID, and verifier.
+The callback consumes that transaction before redeeming the code, resolves the current membership
+through forced RLS, and returns only a short-lived `__Host-sith-session` cookie (`Secure`,
+`HttpOnly`, `Path=/`, no `Domain`, `SameSite=Strict`). Its short-lived `__Host-sith-oidc-tx`
+transaction cookie is `SameSite=Lax` only so a top-level IdP callback can return; it contains an
+opaque random binding, not a credential. Restart, expiry, replay, malformed/duplicate provider
+JSON, failed PKCE, wrong state/nonce/issuer/audience, or an unavailable provider fails closed. No
+login artifact, token, or proof is persisted or logged. The cookie is deliberately not accepted by
+the bearer fleet API or any generic authentication middleware; a later same-origin read-only
+console adapter needs its own CSRF design.
 
 Cloud-IAM identity starts from the same fail-closed exchange boundary. The foundation accepts only
 a verifier-normalized provider, explicit realm, immutable subject, audience, and bounded lifetime;
@@ -193,6 +210,16 @@ present and valid:
   `SITH_HUB_PROXY_CERT_FILE`, `SITH_HUB_PROXY_KEY_FILE`, and `SITH_HUB_KUBE_API_SERVER_NAME` for
   the direct ClusterProxy mTLS path.
 
+Browser OIDC is disabled only when all four of these optional inputs are absent. Setting any one
+requires all four before startup: `SITH_HUB_BROWSER_OIDC_ISSUER`,
+`SITH_HUB_BROWSER_OIDC_CLIENT_ID`, `SITH_HUB_BROWSER_OIDC_REDIRECT_URI`, and
+`SITH_HUB_SESSION_PRIVATE_KEY_FILE`. The client ID is the exact accepted ID-token audience; the
+redirect URI must be the exact HTTPS callback registered with the issuer. The private PKCS#8
+Ed25519 key must be a read-only deployment mount and match the configured public key. This uses a
+public OIDC client with PKCE, never a frontend client secret or refresh token. The pinned provider
+must be reachable through the existing no-proxy, TLS 1.2+, public-network-only discovery/JWKS
+transport; deployments must allow only that issuer's required endpoints.
+
 Every referenced key, certificate, or CA file must be a read-only regular file from a deployment
 mount. The runtime obtains its Kubernetes identity only with in-cluster configuration; it has no
 kubeconfig fallback and uses that identity through the fixed `sith-reader` Secret reader. It serves
@@ -200,7 +227,7 @@ only `POST /v1/workspaces/{workspace}/fleet:refresh`,
 `GET /v1/workspaces/{workspace}/fleet`, and
 `GET /v1/workspaces/{workspace}/fleet/images/{sha256:<64-lowercase-hex>}`, and
 `GET /v1/workspaces/{workspace}/fleet/images/{sha256:<64-lowercase-hex>}/cves`, and
-`GET /v1/workspaces/{workspace}/fleet/cves/{CVE-YYYY-N...}`. Every route requires an
+`GET /v1/workspaces/{workspace}/fleet/cves/{CVE-YYYY-N...}`. Those fleet routes require an
 exact signed Sith session, derives the workspace scope from its signed memberships, carries that
 scope through the PEP and RLS seams, accepts no query parameters, and returns only normalized
 coverage/fleet data under `Cache-Control: no-store`.
