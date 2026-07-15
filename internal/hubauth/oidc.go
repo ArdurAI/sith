@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rsa"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -21,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/golang-jwt/jwt/v5"
 
@@ -30,6 +32,10 @@ import (
 const (
 	maxUpstreamTokenBytes = 16 * 1024
 	maxOIDCJSONBytes      = 256 * 1024
+	maxOIDCClientIDBytes  = 256
+	maxOIDCCodeBytes      = 2048
+	maxOIDCCodeVerifier   = 128
+	oidcBrowserValueBytes = 32
 	defaultOIDCTimeout    = 5 * time.Second
 	defaultOIDCCacheTTL   = 15 * time.Minute
 	maximumOIDCCacheTTL   = time.Hour
@@ -45,6 +51,8 @@ var (
 	ErrInvalidOIDCToken = errors.New("invalid OIDC token")
 	// ErrOIDCBindingNotFound lets stores report a miss without exposing it through Exchange.
 	ErrOIDCBindingNotFound = errors.New("OIDC binding not found")
+	// ErrInvalidOIDCBrowserLogin deliberately hides provider and token-exchange details.
+	ErrInvalidOIDCBrowserLogin = errors.New("invalid OIDC browser login")
 )
 
 // OIDCProviderConfig pins one upstream token profile.
@@ -74,6 +82,26 @@ type OIDCServiceConfig struct {
 	Now       func() time.Time
 }
 
+// OIDCBrowserAuthorizationRequest carries one server-generated authorization-code request.
+// State, nonce, and code challenge are opaque values; the service accepts only the S256 shape.
+type OIDCBrowserAuthorizationRequest struct {
+	Issuer        string
+	ClientID      string
+	RedirectURI   string
+	State         string
+	Nonce         string
+	CodeChallenge string
+}
+
+// OIDCBrowserCodeExchange carries one server-side authorization-code redemption.
+type OIDCBrowserCodeExchange struct {
+	Issuer       string
+	ClientID     string
+	RedirectURI  string
+	Code         string
+	CodeVerifier string
+}
+
 // OIDCService validates upstream identities and exchanges them for Sith sessions.
 type OIDCService struct {
 	providers map[string]*oidcProvider
@@ -99,6 +127,7 @@ type oidcKeyCache struct {
 
 type oidcClaims struct {
 	AuthorizedParty string `json:"azp,omitempty"`
+	Nonce           string `json:"nonce,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -109,8 +138,14 @@ type oidcHeader struct {
 }
 
 type oidcDiscovery struct {
-	Issuer  string `json:"issuer"`
-	JWKSURL string `json:"jwks_uri"`
+	Issuer                string `json:"issuer"`
+	JWKSURL               string `json:"jwks_uri"`
+	AuthorizationEndpoint string `json:"authorization_endpoint"`
+	TokenEndpoint         string `json:"token_endpoint"`
+}
+
+type oidcTokenResponse struct {
+	IDToken string `json:"id_token"`
 }
 
 type oidcJWKSet struct {
@@ -217,6 +252,30 @@ func (service *OIDCService) BindIdentity(ctx context.Context, admin tenancy.Scop
 
 // Exchange validates a pinned upstream token and resolves one workspace binding server-side.
 func (service *OIDCService) Exchange(ctx context.Context, workspaceID tenancy.WorkspaceID, rawToken string) (IssuedSession, error) {
+	return service.exchange(ctx, workspaceID, rawToken, "", true, false)
+}
+
+// ExchangeWithNonce validates a pinned ID token and requires the exact transaction nonce.
+// Browser callers use it only after a successful, server-side authorization-code exchange. Unlike
+// the raw exchange profile, this accepts a standards-compliant ID token without an nbf claim.
+func (service *OIDCService) ExchangeWithNonce(
+	ctx context.Context,
+	workspaceID tenancy.WorkspaceID,
+	rawToken, expectedNonce string,
+) (IssuedSession, error) {
+	if !validOIDCBrowserValue(expectedNonce) {
+		return IssuedSession{}, ErrInvalidOIDCToken
+	}
+	return service.exchange(ctx, workspaceID, rawToken, expectedNonce, false, true)
+}
+
+func (service *OIDCService) exchange(
+	ctx context.Context,
+	workspaceID tenancy.WorkspaceID,
+	rawToken, expectedNonce string,
+	requireNotBefore bool,
+	requireExactAudience bool,
+) (IssuedSession, error) {
 	if service == nil || ctx == nil || ctx.Err() != nil || tenancy.ValidateWorkspaceID(workspaceID) != nil ||
 		rawToken == "" || len(rawToken) > maxUpstreamTokenBytes {
 		return IssuedSession{}, ErrInvalidOIDCToken
@@ -250,15 +309,21 @@ func (service *OIDCService) Exchange(ctx context.Context, workspaceID tenancy.Wo
 		}
 		return key, nil
 	})
-	if err != nil || token == nil || !token.Valid || claims.IssuedAt == nil || claims.NotBefore == nil ||
+	if err != nil || token == nil || !token.Valid || claims.IssuedAt == nil || (requireNotBefore && claims.NotBefore == nil) ||
 		claims.ExpiresAt == nil || validateOIDCSubject(claims.Subject) != nil {
 		return IssuedSession{}, ErrInvalidOIDCToken
 	}
 	lifetime := claims.ExpiresAt.Sub(claims.IssuedAt.Time)
-	if lifetime <= 0 || lifetime > provider.config.MaxTokenLifetime || claims.NotBefore.Before(claims.IssuedAt.Add(-time.Minute)) {
+	if lifetime <= 0 || lifetime > provider.config.MaxTokenLifetime ||
+		(claims.NotBefore != nil && claims.NotBefore.Before(claims.IssuedAt.Add(-time.Minute))) {
 		return IssuedSession{}, ErrInvalidOIDCToken
 	}
-	if len(claims.Audience) != 1 && claims.AuthorizedParty != provider.config.Audience {
+	if (requireExactAudience && (len(claims.Audience) != 1 || claims.Audience[0] != provider.config.Audience)) ||
+		(!requireExactAudience && len(claims.Audience) != 1 && claims.AuthorizedParty != provider.config.Audience) ||
+		(claims.AuthorizedParty != "" && claims.AuthorizedParty != provider.config.Audience) {
+		return IssuedSession{}, ErrInvalidOIDCToken
+	}
+	if expectedNonce != "" && subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(expectedNonce)) != 1 {
 		return IssuedSession{}, ErrInvalidOIDCToken
 	}
 	membership, err := service.store.LookupOIDCMembership(ctx, workspaceID, provider.config.Issuer, claims.Subject)
@@ -274,6 +339,158 @@ func (service *OIDCService) Exchange(ctx context.Context, workspaceID tenancy.Wo
 		return IssuedSession{}, fmt.Errorf("exchange OIDC identity: issue session: %w", err)
 	}
 	return session, nil
+}
+
+// BrowserAuthorizationURL creates one pinned OIDC authorization-code request with PKCE S256.
+func (service *OIDCService) BrowserAuthorizationURL(
+	ctx context.Context,
+	request OIDCBrowserAuthorizationRequest,
+) (string, error) {
+	provider, err := service.browserProvider(request.Issuer)
+	if err != nil || validateOIDCBrowserAuthorizationRequest(request) != nil || ctx == nil || ctx.Err() != nil {
+		return "", ErrInvalidOIDCBrowserLogin
+	}
+	discovery, err := service.fetchProviderDiscovery(ctx, provider)
+	if err != nil {
+		return "", ErrInvalidOIDCBrowserLogin
+	}
+	endpoint, err := parsePinnedOIDCBrowserEndpoint(discovery.AuthorizationEndpoint, provider, service.allowPrivateTest)
+	if err != nil {
+		return "", ErrInvalidOIDCBrowserLogin
+	}
+	query := endpoint.Query()
+	query.Set("response_type", "code")
+	query.Set("client_id", request.ClientID)
+	query.Set("redirect_uri", request.RedirectURI)
+	query.Set("scope", "openid")
+	query.Set("state", request.State)
+	query.Set("nonce", request.Nonce)
+	query.Set("code_challenge", request.CodeChallenge)
+	query.Set("code_challenge_method", "S256")
+	endpoint.RawQuery = query.Encode()
+	return endpoint.String(), nil
+}
+
+// ExchangeAuthorizationCode redeems one PKCE-bound authorization code without exposing its ID token.
+func (service *OIDCService) ExchangeAuthorizationCode(
+	ctx context.Context,
+	request OIDCBrowserCodeExchange,
+) (string, error) {
+	provider, err := service.browserProvider(request.Issuer)
+	if err != nil || validateOIDCBrowserCodeExchange(request) != nil || ctx == nil || ctx.Err() != nil {
+		return "", ErrInvalidOIDCBrowserLogin
+	}
+	discovery, err := service.fetchProviderDiscovery(ctx, provider)
+	if err != nil {
+		return "", ErrInvalidOIDCBrowserLogin
+	}
+	endpoint, err := parsePinnedOIDCBrowserEndpoint(discovery.TokenEndpoint, provider, service.allowPrivateTest)
+	if err != nil {
+		return "", ErrInvalidOIDCBrowserLogin
+	}
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("client_id", request.ClientID)
+	form.Set("redirect_uri", request.RedirectURI)
+	form.Set("code", request.Code)
+	form.Set("code_verifier", request.CodeVerifier)
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", ErrInvalidOIDCBrowserLogin
+	}
+	httpRequest.Header.Set("Accept", "application/json")
+	httpRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	client := *service.client
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := client.Do(httpRequest)
+	if err != nil {
+		return "", ErrInvalidOIDCBrowserLogin
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK || !isOIDCJSON(response.Header.Get("Content-Type")) {
+		return "", ErrInvalidOIDCBrowserLogin
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxOIDCJSONBytes+1))
+	if err != nil || len(body) > maxOIDCJSONBytes || rejectDuplicateJSON(body) != nil {
+		return "", ErrInvalidOIDCBrowserLogin
+	}
+	var tokenResponse oidcTokenResponse
+	if json.Unmarshal(body, &tokenResponse) != nil || tokenResponse.IDToken == "" || len(tokenResponse.IDToken) > maxUpstreamTokenBytes {
+		return "", ErrInvalidOIDCBrowserLogin
+	}
+	return tokenResponse.IDToken, nil
+}
+
+func (service *OIDCService) browserProvider(issuer string) (*oidcProvider, error) {
+	if service == nil || issuer == "" || strings.TrimSpace(issuer) != issuer {
+		return nil, ErrInvalidOIDCBrowserLogin
+	}
+	provider := service.providers[issuer]
+	if provider == nil {
+		return nil, ErrInvalidOIDCBrowserLogin
+	}
+	return provider, nil
+}
+
+func validateOIDCBrowserAuthorizationRequest(request OIDCBrowserAuthorizationRequest) error {
+	if validateOIDCBrowserClient(request.ClientID) != nil || validateOIDCBrowserRedirectURI(request.RedirectURI) != nil ||
+		!validOIDCBrowserValue(request.State) || !validOIDCBrowserValue(request.Nonce) || !validOIDCBrowserValue(request.CodeChallenge) {
+		return ErrInvalidOIDCBrowserLogin
+	}
+	return nil
+}
+
+func validateOIDCBrowserCodeExchange(request OIDCBrowserCodeExchange) error {
+	if validateOIDCBrowserClient(request.ClientID) != nil || validateOIDCBrowserRedirectURI(request.RedirectURI) != nil ||
+		!validOIDCCode(request.Code) || !validOIDCCodeVerifier(request.CodeVerifier) {
+		return ErrInvalidOIDCBrowserLogin
+	}
+	return nil
+}
+
+func validateOIDCBrowserClient(clientID string) error {
+	if clientID == "" || len(clientID) > maxOIDCClientIDBytes || strings.TrimSpace(clientID) != clientID || strings.IndexFunc(clientID, unicode.IsControl) >= 0 {
+		return ErrInvalidOIDCBrowserLogin
+	}
+	return nil
+}
+
+func validateOIDCBrowserRedirectURI(rawURI string) error {
+	parsed, err := url.Parse(rawURI)
+	if err != nil || len(rawURI) > 2048 || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path == "" || parsed.EscapedPath() != parsed.Path {
+		return ErrInvalidOIDCBrowserLogin
+	}
+	return nil
+}
+
+func validOIDCBrowserValue(value string) bool {
+	if len(value) != base64.RawURLEncoding.EncodedLen(oidcBrowserValueBytes) {
+		return false
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	return err == nil && len(decoded) == oidcBrowserValueBytes && base64.RawURLEncoding.EncodeToString(decoded) == value
+}
+
+func validOIDCCode(code string) bool {
+	return code != "" && len(code) <= maxOIDCCodeBytes && strings.TrimSpace(code) == code && strings.IndexFunc(code, unicode.IsControl) < 0
+}
+
+func validOIDCCodeVerifier(verifier string) bool {
+	if len(verifier) < 43 || len(verifier) > maxOIDCCodeVerifier {
+		return false
+	}
+	for _, value := range verifier {
+		if !validPKCEVerifierRune(value) {
+			return false
+		}
+	}
+	return true
+}
+
+func validPKCEVerifierRune(value rune) bool {
+	return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z') || (value >= '0' && value <= '9') ||
+		value == '-' || value == '.' || value == '_' || value == '~'
 }
 
 func validateOIDCProvider(config *OIDCProviderConfig, allowPrivateForTest bool) (*url.URL, error) {
@@ -456,19 +673,30 @@ func (service *OIDCService) providerKeyWithFetcher(
 }
 
 func (service *OIDCService) fetchProviderKeys(ctx context.Context, provider *oidcProvider) (map[string]any, error) {
-	discoveryURL, _ := url.Parse(strings.TrimSuffix(provider.config.Issuer, "/") + "/.well-known/openid-configuration")
-	var discovery oidcDiscovery
-	if err := service.getOIDCJSON(ctx, discoveryURL, &discovery); err != nil {
+	discovery, err := service.fetchProviderDiscovery(ctx, provider)
+	if err != nil {
 		return nil, err
-	}
-	if discovery.Issuer != provider.config.Issuer {
-		return nil, fmt.Errorf("OIDC discovery issuer mismatch")
 	}
 	jwksURL, err := url.Parse(discovery.JWKSURL)
 	if err != nil || validateOIDCURL(jwksURL, service.allowPrivateTest) != nil || !sameOrigin(provider.url, jwksURL) {
 		return nil, fmt.Errorf("OIDC JWKS URL escaped pinned issuer origin")
 	}
 	return service.fetchJWKSKeys(ctx, provider, jwksURL)
+}
+
+func (service *OIDCService) fetchProviderDiscovery(ctx context.Context, provider *oidcProvider) (oidcDiscovery, error) {
+	if service == nil || provider == nil || ctx == nil || ctx.Err() != nil {
+		return oidcDiscovery{}, fmt.Errorf("OIDC discovery is unavailable")
+	}
+	discoveryURL, _ := url.Parse(strings.TrimSuffix(provider.config.Issuer, "/") + "/.well-known/openid-configuration")
+	var discovery oidcDiscovery
+	if err := service.getOIDCJSON(ctx, discoveryURL, &discovery); err != nil {
+		return oidcDiscovery{}, err
+	}
+	if discovery.Issuer != provider.config.Issuer {
+		return oidcDiscovery{}, fmt.Errorf("OIDC discovery issuer mismatch")
+	}
+	return discovery, nil
 }
 
 func (service *OIDCService) fetchJWKSKeys(ctx context.Context, provider *oidcProvider, jwksURL *url.URL) (map[string]any, error) {
@@ -508,8 +736,7 @@ func (service *OIDCService) getOIDCJSON(ctx context.Context, endpoint *url.URL, 
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("fetch OIDC metadata: unexpected HTTP status")
 	}
-	contentType := strings.ToLower(strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]))
-	if contentType != "application/json" && !strings.HasSuffix(contentType, "+json") {
+	if !isOIDCJSON(response.Header.Get("Content-Type")) {
 		return fmt.Errorf("fetch OIDC metadata: response is not JSON")
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxOIDCJSONBytes+1))
@@ -520,6 +747,11 @@ func (service *OIDCService) getOIDCJSON(ctx context.Context, endpoint *url.URL, 
 		return fmt.Errorf("fetch OIDC metadata: decode response: %w", err)
 	}
 	return nil
+}
+
+func isOIDCJSON(contentType string) bool {
+	contentType = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	return contentType == "application/json" || strings.HasSuffix(contentType, "+json")
 }
 
 func parseOIDCJWK(jwk oidcJWK) (any, error) {
@@ -601,6 +833,15 @@ func parsePinnedOIDCJWKSURL(rawURL string, allowPrivateForTest bool) (*url.URL, 
 	if err != nil || validateOIDCURL(parsed, allowPrivateForTest) != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil ||
 		strings.HasSuffix(rawURL, "/") {
 		return nil, fmt.Errorf("OIDC JWKS URL is invalid")
+	}
+	return parsed, nil
+}
+
+func parsePinnedOIDCBrowserEndpoint(rawURL string, provider *oidcProvider, allowPrivateForTest bool) (*url.URL, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || provider == nil || validateOIDCURL(parsed, allowPrivateForTest) != nil || parsed.RawQuery != "" ||
+		parsed.Fragment != "" || parsed.User != nil || parsed.Path == "" || parsed.EscapedPath() != parsed.Path || !sameOrigin(provider.url, parsed) {
+		return nil, fmt.Errorf("OIDC browser endpoint is invalid")
 	}
 	return parsed, nil
 }

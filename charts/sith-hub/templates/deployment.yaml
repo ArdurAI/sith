@@ -1,3 +1,8 @@
+{{- $browserOIDC := .Values.runtime.browserOIDC }}
+{{- $browserEnabled := and $browserOIDC.issuer $browserOIDC.clientID $browserOIDC.redirectURI }}
+{{- if and (or $browserOIDC.issuer $browserOIDC.clientID $browserOIDC.redirectURI) (not $browserEnabled) }}
+{{- fail "runtime.browserOIDC.issuer, runtime.browserOIDC.clientID, and runtime.browserOIDC.redirectURI must be set together" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,6 +55,16 @@ spec:
               value: {{ required "runtime.sessionKeyID is required" .Values.runtime.sessionKeyID | quote }}
             - name: SITH_HUB_SESSION_PUBLIC_KEY_FILE
               value: /var/run/sith/runtime/session-public.pem
+            {{- if $browserEnabled }}
+            - name: SITH_HUB_BROWSER_OIDC_ISSUER
+              value: {{ $browserOIDC.issuer | quote }}
+            - name: SITH_HUB_BROWSER_OIDC_CLIENT_ID
+              value: {{ $browserOIDC.clientID | quote }}
+            - name: SITH_HUB_BROWSER_OIDC_REDIRECT_URI
+              value: {{ $browserOIDC.redirectURI | quote }}
+            - name: SITH_HUB_SESSION_PRIVATE_KEY_FILE
+              value: /var/run/sith/runtime/session-private.pem
+            {{- end }}
             - name: SITH_HUB_SERVER_TLS_CERT_FILE
               value: /var/run/sith/runtime/server-tls.crt
             - name: SITH_HUB_SERVER_TLS_KEY_FILE
@@ -96,6 +111,10 @@ spec:
             items:
               - key: session-public.pem
                 path: session-public.pem
+              {{- if $browserEnabled }}
+              - key: session-private.pem
+                path: session-private.pem
+              {{- end }}
               - key: server-tls.crt
                 path: server-tls.crt
               - key: server-tls.key

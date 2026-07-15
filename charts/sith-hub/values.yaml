@@ -13,6 +13,12 @@ runtime:
   sessionIssuer: ""
   sessionAudience: ""
   sessionKeyID: ""
+  # browserOIDC is optional. When all values are set, the Hub enables a pinned public OIDC client
+  # and requires session-private.pem in runtime.existingSecret to issue the final HttpOnly cookie.
+  browserOIDC:
+    issuer: ""
+    clientID: ""
+    redirectURI: ""
   proxyAddress: ""
   proxyServerName: ""
   kubeAPIServerName: ""
