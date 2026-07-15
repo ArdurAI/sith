@@ -17,6 +17,7 @@ env:
   GORELEASER_VERSION: "v2.17.0"
   SYFT_VERSION: "v1.46.0"
   COSIGN_VERSION: "v3.0.6"
+  HUB_IMAGE: ghcr.io/ardurai/sith-hub
 
 jobs:
   release:
@@ -26,6 +27,7 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+      packages: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -97,6 +99,104 @@ jobs:
       - name: Sign Homebrew formula
         run: cosign sign-blob --yes --bundle=dist/sith.rb.sigstore.json dist/sith.rb
 
+      - name: Stage immutable hub image context
+        env:
+          IMAGE_CONTEXT: ${{ runner.temp }}/sith-hub-image
+        run: |
+          set -euo pipefail
+          install -d "$IMAGE_CONTEXT/bin/linux/amd64" "$IMAGE_CONTEXT/bin/linux/arm64"
+          tar -xzf "dist/sith_${VERSION}_linux_amd64.tar.gz" -C "$IMAGE_CONTEXT/bin/linux/amd64" sith
+          tar -xzf "dist/sith_${VERSION}_linux_arm64.tar.gz" -C "$IMAGE_CONTEXT/bin/linux/arm64" sith
+          install -m 0644 Containerfile "$IMAGE_CONTEXT/Containerfile"
+          test -x "$IMAGE_CONTEXT/bin/linux/amd64/sith"
+          test -x "$IMAGE_CONTEXT/bin/linux/arm64/sith"
+
+      - name: Set up QEMU for hub image platforms
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Buildx for hub image platforms
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Authenticate to the GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Guard hub image tag against overwrite
+        env:
+          HUB_TAG: ${{ env.HUB_IMAGE }}:${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if inspection="$(docker manifest inspect "$HUB_TAG" 2>&1)"; then
+            echo "::error::hub image tag already exists; immutable release tags cannot be overwritten"
+            exit 1
+          fi
+          case "$inspection" in
+            *"manifest unknown"*|*"no such manifest"*) ;;
+            *)
+              echo "::error::could not establish whether the hub image tag exists"
+              exit 1
+              ;;
+          esac
+
+      - name: Publish immutable multi-platform hub image
+        id: hub_image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ runner.temp }}/sith-hub-image
+          file: ${{ runner.temp }}/sith-hub-image/Containerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.HUB_IMAGE }}:${{ github.ref_name }}
+          provenance: false
+          sbom: false
+
+      - name: Sign and verify published hub image
+        env:
+          HUB_DIGEST: ${{ steps.hub_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test -n "$HUB_DIGEST"
+          image="${HUB_IMAGE}@${HUB_DIGEST}"
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
+          cosign sign --yes "$image"
+          cosign verify \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$image" >/dev/null
+          printf '%s\n' "$image" > "dist/sith_${VERSION}_hub.image"
+          cosign sign-blob --yes \
+            --bundle="dist/sith_${VERSION}_hub.image.sigstore.json" \
+            "dist/sith_${VERSION}_hub.image"
+
+      - name: Generate hub image SPDX SBOM
+        env:
+          HUB_DIGEST: ${{ steps.hub_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test -n "$HUB_DIGEST"
+          syft "${HUB_IMAGE}@${HUB_DIGEST}" \
+            --output "spdx-json=dist/sith_${VERSION}_hub.spdx.json"
+
+      - name: Attest hub image build provenance
+        id: hub_provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-name: ${{ env.HUB_IMAGE }}
+          subject-digest: ${{ steps.hub_image.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest hub image SBOM
+        id: hub_sbom
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-name: ${{ env.HUB_IMAGE }}
+          subject-digest: ${{ steps.hub_image.outputs.digest }}
+          sbom-path: dist/sith_${{ env.VERSION }}_hub.spdx.json
+          push-to-registry: true
+
       - name: Generate SLSA build provenance
         id: provenance
         uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
@@ -139,6 +239,8 @@ jobs:
           SBOM_DARWIN_ARM64_BUNDLE: ${{ steps.sbom_darwin_arm64.outputs.bundle-path }}
           SBOM_LINUX_AMD64_BUNDLE: ${{ steps.sbom_linux_amd64.outputs.bundle-path }}
           SBOM_LINUX_ARM64_BUNDLE: ${{ steps.sbom_linux_arm64.outputs.bundle-path }}
+          HUB_PROVENANCE_BUNDLE: ${{ steps.hub_provenance.outputs.bundle-path }}
+          HUB_SBOM_BUNDLE: ${{ steps.hub_sbom.outputs.bundle-path }}
         run: |
           set -euo pipefail
           install -m 0644 "$PROVENANCE_BUNDLE" "dist/sith_${VERSION}_provenance.sigstore.json"
@@ -146,9 +248,16 @@ jobs:
           install -m 0644 "$SBOM_DARWIN_ARM64_BUNDLE" "dist/sith_${VERSION}_darwin_arm64.sbom.sigstore.json"
           install -m 0644 "$SBOM_LINUX_AMD64_BUNDLE" "dist/sith_${VERSION}_linux_amd64.sbom.sigstore.json"
           install -m 0644 "$SBOM_LINUX_ARM64_BUNDLE" "dist/sith_${VERSION}_linux_arm64.sbom.sigstore.json"
+          install -m 0644 "$HUB_PROVENANCE_BUNDLE" "dist/sith_${VERSION}_hub.provenance.sigstore.json"
+          install -m 0644 "$HUB_SBOM_BUNDLE" "dist/sith_${VERSION}_hub.sbom.sigstore.json"
           gh release upload "$GITHUB_REF_NAME" \
             dist/sith.rb \
             dist/sith.rb.sigstore.json \
+            "dist/sith_${VERSION}_hub.image" \
+            "dist/sith_${VERSION}_hub.image.sigstore.json" \
+            "dist/sith_${VERSION}_hub.spdx.json" \
+            "dist/sith_${VERSION}_hub.provenance.sigstore.json" \
+            "dist/sith_${VERSION}_hub.sbom.sigstore.json" \
             "dist/sith_${VERSION}_provenance.sigstore.json" \
             "dist/sith_${VERSION}_darwin_amd64.sbom.sigstore.json" \
             "dist/sith_${VERSION}_darwin_arm64.sbom.sigstore.json" \

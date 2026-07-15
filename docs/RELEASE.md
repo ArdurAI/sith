@@ -4,7 +4,9 @@ Sith releases are immutable, tag-driven builds from `main`. Stable releases use 
 the beta channel uses `vMAJOR.MINOR.PATCH-beta.N` and never replaces the latest stable release. The release job creates a draft,
 builds four archives with GoReleaser, emits an SPDX 2.3 SBOM for each archive with Syft, signs the
 archives, SBOMs, and checksum manifest with keyless Cosign, and creates GitHub SLSA provenance plus
-one SBOM attestation per platform. The draft becomes public only after every step succeeds.
+one SBOM attestation per platform. It also publishes the tag's multi-architecture hub image by its
+manifest digest, signs it with keyless Cosign, and creates separate provenance and SPDX SBOM
+attestations for that digest. The draft becomes public only after every step succeeds.
 
 The workflow follows the primary guidance for [GitHub artifact attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations),
 [GoReleaser reproducible Go builds](https://goreleaser.com/customization/builds/builders/go/#reproducible-builds),
@@ -28,6 +30,45 @@ The tap formula is generated from the release checksum manifest; it does not car
 URLs or hashes. The release workflow signs the formula itself. The tap's own repository automation
 verifies that signature and the signed checksum manifest before importing the formula, so the Sith
 release token never needs cross-repository write access.
+
+## Verify a hub OCI image
+
+Hub images are published only by a signed Sith release tag and must be consumed by immutable
+manifest digest. A release includes a signed `sith_<version>_hub.image` file whose only line is the
+digest address; do not substitute the convenient version tag or add `latest` to a Helm value.
+
+```bash
+tag=vX.Y.Z                 # use a tag released after hub-image publication is enabled
+version=${tag#v}
+gh release download "$tag" --repo ArdurAI/sith \
+  --pattern "sith_${version}_hub.image" \
+  --dir "sith-$version"
+image=$(cat "sith-$version/sith_${version}_hub.image")
+case "$image" in ghcr.io/ardurai/sith-hub@sha256:*) ;; *) exit 1 ;; esac
+```
+
+Verify the keyless image signature against the exact tag workflow identity, then verify GitHub
+provenance and the SPDX SBOM attestation. These commands require registry access; the later air-gap
+workflow consumes mirrored, pre-verified material rather than weakening this verification boundary.
+
+```bash
+identity="https://github.com/ArdurAI/sith/.github/workflows/release.yml@refs/tags/${tag}"
+cosign verify \
+  --certificate-identity "$identity" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  "$image"
+gh attestation verify "oci://$image" \
+  --repo ArdurAI/sith \
+  --signer-workflow ArdurAI/sith/.github/workflows/release.yml
+gh attestation verify "oci://$image" \
+  --repo ArdurAI/sith \
+  --signer-workflow ArdurAI/sith/.github/workflows/release.yml \
+  --predicate-type https://spdx.dev/Document/v2.3
+```
+
+The existing Helm chart remains fail-closed: it accepts this digest and names of pre-materialized
+runtime and migration Secrets only. It neither creates secret data nor supplies a KMS provider,
+database, ingress, or mutable image reference.
 
 ## Verify a release
 
@@ -98,14 +139,15 @@ No network is an isolated image-check constraint, not the operational hub policy
 must allow only narrowly scoped egress to configured runtime dependencies, including the database
 and, where enabled, the pinned OIDC discovery and JWKS endpoints.
 
-No OCI image is published by this repository yet. Consumers must not infer a mutable image tag
-from a release archive. The [`charts/sith-hub`](../charts/sith-hub) chart accepts only an explicit
-immutable `repository@sha256:...` reference, and its defaults intentionally fail until an operator
-provides that reference and existing Secret names. Image publishing/signing/attestation will be
-added as a separate release-boundary change before any public deployment guidance. Its fixed
-`light` and `heavy` profiles alter only the reviewed resource envelope; both preserve the same
-digest, Secret-reference, migration, RBAC, and workload-hardening contract. This first F9.3a
-slice is not a claim of the parent feature's future in-chart database, HA, or cloud-KMS topology.
+Hub OCI images are published only as a release-boundary artifact, never by a pull request or local
+build. Consumers must not infer a mutable image tag from a release archive. The
+[`charts/sith-hub`](../charts/sith-hub) chart accepts only an explicit immutable
+`repository@sha256:...` reference, and its defaults intentionally fail until an operator provides
+that reference and existing Secret names. Older releases can lack the hub-image assets; use the
+digest address attached to a release that includes them. Its fixed `light` and `heavy` profiles
+alter only the reviewed resource envelope; both preserve the same digest, Secret-reference,
+migration, RBAC, and workload-hardening contract. This first F9.3a slice is not a claim of the
+parent feature's future in-chart database, HA, or cloud-KMS topology.
 
 ## Maintainer release procedure
 
@@ -190,6 +232,6 @@ Homebrew token is stored in Sith.
 ## Cost and operational notes
 
 The incremental cost is GitHub-hosted runner time for four cross-builds, two snapshot builds on
-each PR, Syft scans, and five attestations on a tag. Fulcio and Rekor use Sigstore's public-good
+each PR, Syft scans, and seven attestations on a tag. Fulcio and Rekor use Sigstore's public-good
 service for this public repository. Releases create no runtime cloud service, NAT egress path, or
 persistent signing infrastructure.
