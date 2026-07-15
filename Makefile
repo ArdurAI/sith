@@ -63,6 +63,7 @@ test-scripts: ## Run focused safety tests for operator-facing shell harnesses
 	bash tests/scripts/release_tag_identity_guide_test.sh
 	bash tests/scripts/release_tag_policy_test.sh
 	bash tests/scripts/release_pr_gate_policy_test.sh
+	bash tests/scripts/release_hub_image_policy_test.sh
 
 perf: ## Enforce the warm-cache TUI p95 latency budget without race overhead
 	go test -count=1 -run '^TestWarmViewP95UnderOneHundredMilliseconds$$' ./internal/tui
@@ -142,7 +143,7 @@ run: build ## Build then run sith version
 
 ci: fmt-check vet lint vuln test test-scripts perf e2e build ## Run the full CI gate locally
 
-release-check: ## Build and verify the reproducible multi-platform release snapshot twice
+release-check: ## Build, verify, and package the reproducible multi-platform release snapshot twice
 	@command -v "$(GORELEASER)" >/dev/null || { echo "goreleaser is required" >&2; exit 1; }
 	@command -v syft >/dev/null || { echo "syft is required" >&2; exit 1; }
 	@set -e; tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
@@ -155,6 +156,7 @@ release-check: ## Build and verify the reproducible multi-platform release snaps
 		"$(GORELEASER)" release --snapshot --clean --skip=sign; \
 		go run ./tools/releasecheck verify --dist dist; \
 		go run ./tools/releasecheck formula --dist dist --output dist/sith.rb; \
+		DOCKER_BIN="$(DOCKER)" hack/verify-release-hub-image.sh --dist dist; \
 		go run ./tools/releasecheck digests --dist dist > "$$tmp/second.sha256"; \
 		diff -u "$$tmp/first.sha256" "$$tmp/second.sha256"
 

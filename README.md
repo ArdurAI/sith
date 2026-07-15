@@ -270,14 +270,17 @@ The no-network setting applies only to those isolated image checks. A deployed h
 allowlisted egress to its configured runtime dependencies, including its database and, when
 enabled, the pinned OIDC discovery and JWKS endpoints.
 
-This is not a published image reference. The fail-closed [`charts/sith-hub`](charts/sith-hub)
-chart requires an explicit immutable `repository@sha256:...` image reference and refuses tags,
-especially `latest`; it invokes `sith hub migrate` in a separate short-lived Job before the
-non-owner hub Deployment starts. Its defaults intentionally cannot install until a release-bound
-hub image and operator-provided Secret references exist; it never renders secret material. The
+Hub OCI images are published only by a completed, signed release tag. The release attaches the
+exact immutable digest as `sith_<version>_hub.image`; follow the
+[release verification guide](docs/RELEASE.md#verify-a-hub-oci-image) before supplying it to the
+fail-closed [`charts/sith-hub`](charts/sith-hub) chart. The chart requires an explicit
+`repository@sha256:...` image reference and refuses tags, especially `latest`; it invokes `sith hub
+migrate` in a separate short-lived Job before the non-owner hub Deployment starts. Its defaults
+intentionally cannot install until an operator provides that digest and the existing Secret
+references; it never renders secret material. Older releases can lack this image artifact. The
 chart permits only fixed `light` and `heavy` resource profiles, which retain identical security,
-credential, and RBAC controls. This first F9.3a profile slice does not claim a public image,
-in-chart database, or HA; those parent-F9.3 topology and custody capabilities need later evidence.
+credential, and RBAC controls. This first F9.3a profile slice does not claim in-chart database or
+HA topology; those parent-F9.3 capabilities need later evidence.
 
 `sith serve --mcp` exposes `fleet.inventory`, `fleet.health`, `fleet.correlate`, and
 `fleet.cve-search` over MCP Streamable HTTP. All four tools are cache-only and carry
