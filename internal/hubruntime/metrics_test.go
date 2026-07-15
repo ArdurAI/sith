@@ -3,6 +3,7 @@
 package hubruntime
 
 import (
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -74,6 +75,17 @@ func TestLoopbackMetricsServerServesOnlyFixedMetricsRouteAndStops(t *testing.T) 
 	if connection, dialErr := net.DialTimeout("tcp", listener.Addr().String(), time.Second); dialErr == nil {
 		_ = connection.Close()
 		t.Fatal("loopback metrics listener remained reachable after Close")
+	}
+}
+
+func TestOptionalLoopbackMetricsServerDoesNotBindWhenDisabled(t *testing.T) {
+	var calls int
+	metricsServer, err := newOptionalLoopbackMetricsServer("", http.NotFoundHandler(), func(string, string) (net.Listener, error) {
+		calls++
+		return nil, errors.New("disabled metrics listener was called")
+	})
+	if err != nil || metricsServer != nil || calls != 0 {
+		t.Fatalf("server/error/calls = %#v/%v/%d", metricsServer, err, calls)
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	"github.com/ArdurAI/sith/internal/auditdelivery"
 	"github.com/ArdurAI/sith/internal/buildinfo"
 	"github.com/ArdurAI/sith/internal/hubauth"
 	"github.com/ArdurAI/sith/internal/hubdb"
@@ -81,17 +82,10 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 	if err != nil {
 		return nil, fmt.Errorf("construct hub runtime: trace configuration is invalid")
 	}
-	authObserver, err := observability.NewSlogAuthObserver(logger)
+	info := buildinfo.Get()
+	metrics, err := observability.New(observability.Config{Version: info.Version, Commit: info.Commit})
 	if err != nil {
-		return nil, fmt.Errorf("construct hub runtime: authentication observability configuration is invalid")
-	}
-	var metrics *observability.Metrics
-	if config.metricsListenAddress != "" {
-		info := buildinfo.Get()
-		metrics, err = observability.New(observability.Config{Version: info.Version, Commit: info.Commit})
-		if err != nil {
-			return nil, fmt.Errorf("construct hub runtime: metrics configuration is invalid")
-		}
+		return nil, fmt.Errorf("construct hub runtime: metrics configuration is invalid")
 	}
 	enforcer, err := pep.NewEnforcer(pep.Config{Hook: pep.AllowReadHook{}, Auditor: auditor, Observer: metrics, TraceObserver: tracer})
 	if err != nil {
@@ -124,6 +118,15 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		return nil, fmt.Errorf("construct hub runtime: database is unavailable")
 	}
 	cleanup := func() { database.Close() }
+	authObserver, err := auditdelivery.NewProcessObserver(auditdelivery.Config{Drops: metrics})
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("construct hub runtime: process authentication audit delivery is unavailable")
+	}
+	cleanup = func() {
+		_ = authObserver.Close()
+		database.Close()
+	}
 	collector, err := hubfleet.NewCollector(hubfleet.CollectorConfig{Store: database, Transport: transport, PEP: enforcer, Observer: metrics, TraceObserver: tracer})
 	if err != nil {
 		cleanup()
@@ -203,23 +206,14 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		cleanup()
 		return nil, err
 	}
-	var metricsServer *loopbackMetricsServer
-	if metrics != nil {
-		metricsListener, listenErr := net.Listen("tcp", config.metricsListenAddress)
-		if listenErr != nil {
-			_ = listener.Close()
-			cleanup()
-			return nil, fmt.Errorf("construct hub runtime: loopback metrics listener is unavailable")
-		}
-		metricsServer, err = newLoopbackMetricsServer(loopbackMetricsServerConfig{Listener: metricsListener, Handler: metrics.Handler()})
-		if err != nil {
-			_ = metricsListener.Close()
-			_ = listener.Close()
-			cleanup()
-			return nil, err
-		}
+	metricsServer, err := newOptionalLoopbackMetricsServer(config.metricsListenAddress, metrics.Handler(), net.Listen)
+	if err != nil {
+		_ = listener.Close()
+		cleanup()
+		return nil, err
 	}
 	cleanup = func() {
+		_ = authObserver.Close()
 		if metricsServer != nil {
 			_ = metricsServer.Close()
 		}

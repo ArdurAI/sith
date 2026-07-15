@@ -35,11 +35,12 @@ type Config struct {
 // All label normalization occurs before a metric is created, so caller-controlled values cannot
 // increase cardinality or cross the privacy boundary.
 type Metrics struct {
-	gatherer         prometheus.Gatherer
-	policyDecisions  *prometheus.CounterVec
-	policyDuration   *prometheus.HistogramVec
-	snapshotAttempts *prometheus.CounterVec
-	snapshotDuration *prometheus.HistogramVec
+	gatherer          prometheus.Gatherer
+	policyDecisions   *prometheus.CounterVec
+	policyDuration    *prometheus.HistogramVec
+	snapshotAttempts  *prometheus.CounterVec
+	snapshotDuration  *prometheus.HistogramVec
+	authDeliveryDrops prometheus.Counter
 }
 
 var (
@@ -76,6 +77,10 @@ func New(config Config) (*Metrics, error) {
 			Namespace: "sith", Subsystem: "federation", Name: "spoke_snapshot_duration_seconds",
 			Help: "Duration of completed Sith federated spoke snapshot attempts by closed outcome.",
 		}, []string{"outcome"}),
+		authDeliveryDrops: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "sith", Subsystem: "auth", Name: "refusal_delivery_drops_total",
+			Help: "Total dropped bounded local authentication-refusal delivery records.",
+		}),
 	}
 	buildInfo := prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: "sith", Name: "build_info", Help: "Sith build metadata with safe release identifiers only.",
@@ -86,7 +91,7 @@ func New(config Config) (*Metrics, error) {
 	})
 	buildInfo.Set(1)
 
-	registered := make([]prometheus.Collector, 0, 7)
+	registered := make([]prometheus.Collector, 0, 8)
 	for _, collector := range []struct {
 		name      string
 		collector prometheus.Collector
@@ -98,6 +103,7 @@ func New(config Config) (*Metrics, error) {
 		{name: "policy duration", collector: metrics.policyDuration},
 		{name: "snapshot attempts", collector: metrics.snapshotAttempts},
 		{name: "snapshot duration", collector: metrics.snapshotDuration},
+		{name: "authentication-refusal delivery drops", collector: metrics.authDeliveryDrops},
 	} {
 		if err := registry.Register(collector.collector); err != nil {
 			for index := len(registered) - 1; index >= 0; index-- {
@@ -142,6 +148,15 @@ func (metrics *Metrics) ObserveSpokeSnapshot(outcome hubfleet.SnapshotOutcome, d
 	outcomeLabel := normalizedSnapshotOutcome(outcome)
 	metrics.snapshotAttempts.WithLabelValues(outcomeLabel).Inc()
 	metrics.snapshotDuration.WithLabelValues(outcomeLabel).Observe(normalizedDuration(duration))
+}
+
+// ObserveAuthRefusalDeliveryDrop records one bounded process-local delivery drop. It carries no
+// labels because authentication happens before any principal, workspace, or trusted correlation.
+func (metrics *Metrics) ObserveAuthRefusalDeliveryDrop() {
+	if metrics == nil || metrics.authDeliveryDrops == nil {
+		return
+	}
+	metrics.authDeliveryDrops.Inc()
 }
 
 func normalizedVersion(value string) string {

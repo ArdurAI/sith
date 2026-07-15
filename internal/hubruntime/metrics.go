@@ -14,6 +14,8 @@ import (
 
 const loopbackMetricsPath = "/metrics"
 
+type listenerFactory func(network, address string) (net.Listener, error)
+
 // loopbackMetricsServer owns the Hub's optional local-only metrics listener. The listener is
 // deliberately separate from the tenant-authenticated TLS Hub API and serves only fixed metrics.
 type loopbackMetricsServer struct {
@@ -28,6 +30,27 @@ type loopbackMetricsServerConfig struct {
 	Listener        net.Listener
 	Handler         http.Handler
 	ShutdownTimeout time.Duration
+}
+
+// newOptionalLoopbackMetricsServer starts the strictly opt-in loopback endpoint. The registry may
+// exist for internal self-observation while this listener remains disabled.
+func newOptionalLoopbackMetricsServer(listenAddress string, handler http.Handler, listen listenerFactory) (*loopbackMetricsServer, error) {
+	if listenAddress == "" {
+		return nil, nil
+	}
+	if listen == nil {
+		return nil, fmt.Errorf("construct loopback metrics server: listener factory is required")
+	}
+	listener, err := listen("tcp", listenAddress)
+	if err != nil {
+		return nil, fmt.Errorf("construct hub runtime: loopback metrics listener is unavailable")
+	}
+	metricsServer, err := newLoopbackMetricsServer(loopbackMetricsServerConfig{Listener: listener, Handler: handler})
+	if err != nil {
+		_ = listener.Close()
+		return nil, err
+	}
+	return metricsServer, nil
 }
 
 func newLoopbackMetricsServer(config loopbackMetricsServerConfig) (*loopbackMetricsServer, error) {

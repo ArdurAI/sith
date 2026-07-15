@@ -229,6 +229,18 @@ hostname, wildcard, or cluster-routable address. A same-Pod collector may scrape
 workspace principal. This trade-off intentionally requires the operator to supply their own
 collector and does not provide cross-Pod or remote scraping.
 
+Every Hub starts one restricted local child for the already-sanitized authentication-refusal
+event. The request path writes only a two-byte closed record to a bounded Unix datagram socket;
+when the socket is full or the child has died, the event is dropped immediately and increments the
+unlabeled `sith_auth_refusal_delivery_drops_total` self-observation counter. Sith supplies the
+child only that descriptor and stderr; it validates each fixed record and writes the single
+structured warning there. It shares the container's mounts, UID, and network namespace, so this
+is a bounded delivery and shutdown boundary rather than a filesystem or network sandbox. A blocked
+stderr can therefore block only the child, which the Hub kills and reaps on shutdown. This adds no
+listener, Service, exporter, queue, persistence, remote telemetry, request metadata, credential
+data, or raw payload retention. The drop counter is scrapeable only when the same optional loopback
+metrics endpoint above is enabled.
+
 Every referenced key, certificate, or CA file must be a read-only regular file from a deployment
 mount. The runtime obtains its Kubernetes identity only with in-cluster configuration; it has no
 kubeconfig fallback and uses that identity through the fixed `sith-reader` Secret reader. It serves
@@ -252,8 +264,10 @@ network egress, queue, trace store, persistence, or action-intent protocol.
 Before a signed scope exists, the authentication gate emits one local WARN record for every
 refusal with only the fixed `hub-auth` surface and `refused` outcome. It deliberately does not
 distinguish credential failure modes or carry a trace/correlation ID, token, header, path, client
-address, workspace, principal, or verifier error. The record is a passive alerting signal, not an
-audit record, rate limiter, telemetry export, or additional authentication decision.
+address, workspace, principal, or verifier error. Because it precedes any signed scope or action
+intent, this signal is outside the later E6 intent-correlated audit ledger contract. The record is a
+passive alerting signal, not an audit record, rate limiter, telemetry export, or additional
+authentication decision.
 
 The image route answers one exact, immutable runtime digest question across registered spokes. The
 direct reader accepts only canonical digests normalized from ordinary
