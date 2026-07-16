@@ -129,6 +129,11 @@ always-green slices, each leaving the binary more useful than the last:
 | — | Local advisory Investigation Brain (R1–R6, reachable lenses) | #48 |
 | P | Packaging & supply chain (parallel; does not gate 1–6) | #27 |
 
+> **Local fan-out hardening evidence (2026-07-16).** #181 contains client-go operations that
+> outlive cancellation; #185 paginates Kubernetes resource lists within a deterministic
+> fleet-wide materialization budget and reports incomplete scopes explicitly. #190 tracks the
+> remaining generic server-table response bound so that path is not misrepresented as complete.
+
 **Exit criteria.**
 - First run to a populated cross-cluster answer in **< 10 minutes**, offline.
 - A correlation query returns a correct answer over **≥ 2 kubeconfig contexts**.

@@ -34,6 +34,14 @@ func TestCoverageAssessment(t *testing.T) {
 			},
 		},
 		{
+			name: "truncated reachable scope is incomplete",
+			in:   Coverage{Requested: 2, Reachable: 2, Truncated: []string{"spoke-b"}},
+			want: CoverageAssessment{
+				Gaps:      []CoverageGap{CoverageGapTruncated},
+				Truncated: []string{"spoke-b"},
+			},
+		},
+		{
 			name: "unreachable scope is incomplete",
 			in:   Coverage{Requested: 2, Reachable: 1, Unreachable: []string{"spoke-b"}},
 			want: CoverageAssessment{
@@ -80,6 +88,26 @@ func TestCoverageAssessment(t *testing.T) {
 			},
 		},
 		{
+			name: "more truncated names than reachable scopes is inconsistent",
+			in:   Coverage{Requested: 2, Reachable: 1, Unreachable: []string{"spoke-b"}, Truncated: []string{"spoke-a", "spoke-c"}},
+			want: CoverageAssessment{
+				Gaps:         []CoverageGap{CoverageGapInconsistent, CoverageGapUnreachable, CoverageGapTruncated},
+				Unreachable:  []string{"spoke-b"},
+				Truncated:    []string{"spoke-a", "spoke-c"},
+				Inconsistent: true,
+			},
+		},
+		{
+			name: "unreachable scope cannot also be truncated",
+			in:   Coverage{Requested: 2, Reachable: 1, Unreachable: []string{"spoke-b"}, Truncated: []string{"spoke-b"}},
+			want: CoverageAssessment{
+				Gaps:         []CoverageGap{CoverageGapInconsistent, CoverageGapUnreachable, CoverageGapTruncated},
+				Unreachable:  []string{"spoke-b"},
+				Truncated:    []string{"spoke-b"},
+				Inconsistent: true,
+			},
+		},
+		{
 			name: "duplicate and blank scope names are inconsistent",
 			in:   Coverage{Requested: 2, Reachable: 0, Unreachable: []string{"spoke-b", "spoke-b"}, Stale: []string{" "}},
 			want: CoverageAssessment{
@@ -97,7 +125,8 @@ func TestCoverageAssessment(t *testing.T) {
 
 			got := test.in.Assessment()
 			if got.Complete != test.want.Complete || got.Unaccounted != test.want.Unaccounted || got.Inconsistent != test.want.Inconsistent ||
-				!slices.Equal(got.Gaps, test.want.Gaps) || !slices.Equal(got.Unreachable, test.want.Unreachable) || !slices.Equal(got.Stale, test.want.Stale) {
+				!slices.Equal(got.Gaps, test.want.Gaps) || !slices.Equal(got.Unreachable, test.want.Unreachable) ||
+				!slices.Equal(got.Stale, test.want.Stale) || !slices.Equal(got.Truncated, test.want.Truncated) {
 				t.Fatalf("Assessment() = %#v, want %#v", got, test.want)
 			}
 			if complete := test.in.Complete(); complete != test.want.Complete {
@@ -110,12 +139,16 @@ func TestCoverageAssessment(t *testing.T) {
 func TestCoverageAssessmentDoesNotAliasInputSlices(t *testing.T) {
 	t.Parallel()
 
-	coverage := Coverage{Requested: 2, Reachable: 1, Unreachable: []string{"spoke-b"}, Stale: []string{"spoke-b"}}
+	coverage := Coverage{
+		Requested: 2, Reachable: 1, Unreachable: []string{"spoke-b"}, Stale: []string{"spoke-b"}, Truncated: []string{"spoke-a"},
+	}
 	assessment := coverage.Assessment()
 	assessment.Unreachable[0] = "mutated"
 	assessment.Stale[0] = "mutated"
+	assessment.Truncated[0] = "mutated"
 
-	if !slices.Equal(coverage.Unreachable, []string{"spoke-b"}) || !slices.Equal(coverage.Stale, []string{"spoke-b"}) {
+	if !slices.Equal(coverage.Unreachable, []string{"spoke-b"}) || !slices.Equal(coverage.Stale, []string{"spoke-b"}) ||
+		!slices.Equal(coverage.Truncated, []string{"spoke-a"}) {
 		t.Fatalf("Assessment() aliased Coverage input: %#v", coverage)
 	}
 }

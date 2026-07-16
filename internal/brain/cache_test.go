@@ -33,6 +33,16 @@ func TestFromCacheProjectsLiveFactsAndHonestCoverage(t *testing.T) {
 	}
 }
 
+func TestFromCacheExplainsTruncatedLiveCoverage(t *testing.T) {
+	t.Parallel()
+	input := FromCache(fleet.LocalWorkspace, fleetcache.Snapshot{
+		Coverage: fleet.Coverage{Requested: 2, Reachable: 2, Truncated: []string{"beta"}},
+	})
+	if got := input.Coverage[fleet.LensLive]; !got.Available || got.Reason != "one or more kubeconfig contexts returned truncated evidence" {
+		t.Fatalf("live coverage = %#v, want available but explicitly truncated", got)
+	}
+}
+
 func TestFromCacheProjectsOnlyOneProvenRepoDigest(t *testing.T) {
 	t.Parallel()
 

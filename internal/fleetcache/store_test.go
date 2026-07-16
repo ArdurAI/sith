@@ -76,6 +76,50 @@ func TestStorePreservesLastKnownRowsAndSurfacesCoverage(t *testing.T) {
 	}
 }
 
+func TestStorePreservesRowsOutsideTruncatedPrefix(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	store := newStore(func() time.Time { return now }, time.Minute)
+	store.SetDiscovery(fleet.LocalWorkspace, connector.Discovery{Scopes: []connector.Scope{{Name: "alpha", Reachable: true, ObservedAt: now}}})
+	if err := store.Replace("Pod", fleet.QueryResult{
+		Facts: []fleet.Fact{
+			podFact(t, "alpha", "api-0", "Running", "registry/api:v1", now),
+			podFact(t, "alpha", "worker-0", "Running", "registry/worker:v1", now),
+		},
+		Coverage: fleet.Coverage{Requested: 1, Reachable: 1},
+	}); err != nil {
+		t.Fatalf("Replace(initial) error = %v", err)
+	}
+	now = now.Add(time.Second)
+	if err := store.Replace("Pod", fleet.QueryResult{
+		Facts:    []fleet.Fact{podFact(t, "alpha", "api-0", "Running", "registry/api:v2", now)},
+		Coverage: fleet.Coverage{Requested: 1, Reachable: 1, Truncated: []string{"alpha"}},
+	}); err != nil {
+		t.Fatalf("Replace(truncated) error = %v", err)
+	}
+
+	snapshot := store.Query(fleet.LocalWorkspace, Query{Kind: "Pod"})
+	if snapshot.State != StateDegraded || len(snapshot.Records) != 2 || snapshot.Records[0].Name != "api-0" || snapshot.Records[1].Name != "worker-0" ||
+		!slices.Equal(snapshot.Coverage.Truncated, []string{"alpha"}) || snapshot.Coverage.Complete() {
+		t.Fatalf("truncated snapshot = %#v, want prefix update plus preserved last-known row", snapshot)
+	}
+
+	now = now.Add(time.Second)
+	if err := store.ApplyWatchEvent(connector.WatchEvent{
+		Type: connector.WatchSnapshot, Scope: "alpha", Kind: "Pod", ObservedAt: now,
+		Facts: []fleet.Fact{
+			podFact(t, "alpha", "api-0", "Running", "registry/api:v3", now),
+			podFact(t, "alpha", "worker-0", "Running", "registry/worker:v2", now),
+		},
+	}); err != nil {
+		t.Fatalf("ApplyWatchEvent(snapshot) error = %v", err)
+	}
+	snapshot = store.Query(fleet.LocalWorkspace, Query{Kind: "Pod"})
+	if snapshot.State != StateWarm || len(snapshot.Records) != 2 || len(snapshot.Coverage.Truncated) != 0 || !snapshot.Coverage.Complete() {
+		t.Fatalf("complete watch snapshot = %#v, want truncation cleared and warm coverage", snapshot)
+	}
+}
+
 func TestStoreSearchGrammarRunsOnlyOnNormalizedCache(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.July, 10, 20, 0, 0, 0, time.UTC)
