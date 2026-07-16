@@ -125,6 +125,78 @@ func TestBrowserOIDCHandlerKeepsTokensOutOfBrowserPayloads(t *testing.T) {
 	}
 }
 
+func TestBrowserOIDCHandlerCountsEachRequestOnceAtRateLimit(t *testing.T) {
+	now := time.Date(2026, 7, 16, 15, 0, 0, 0, time.UTC)
+	limiter, err := NewAttemptLimiter(AttemptLimiterConfig{
+		Attempts: 20, Window: time.Minute, MaxKeys: 1, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := &browserOIDCServiceStub{
+		rawToken: "upstream.id.token",
+		session: hubauth.IssuedSession{
+			AccessToken: "sith.signed.session", TokenType: "Bearer", ExpiresAt: now.Add(15 * time.Minute),
+		},
+	}
+	handler, err := NewBrowserOIDCHandler(BrowserOIDCHandlerConfig{
+		Service: stub, ProviderIssuer: "https://issuer.sith.test", ClientID: "sith-browser",
+		RedirectURI: "https://hub.sith.test/v1/console/oidc/callback", Limiter: limiter,
+		Now:    func() time.Time { return now },
+		Random: bytes.NewReader(bytes.Repeat([]byte{0x01}, 10*4*browserOIDCRandomBytes)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for flow := 1; flow <= 10; flow++ {
+		login := httptest.NewRequest(http.MethodGet, "https://hub.sith.test/v1/workspaces/workspace-a/console/login", nil)
+		login.RemoteAddr = "192.0.2.20:8443"
+		loginResponse := httptest.NewRecorder()
+		handler.Login(loginResponse, login)
+		if loginResponse.Code != http.StatusFound {
+			t.Fatalf("flow %d login status = %d", flow, loginResponse.Code)
+		}
+		if attempts := browserOIDCAttemptCount(limiter, "192.0.2.20"); attempts != 2*flow-1 {
+			t.Fatalf("flow %d login attempt count = %d, want %d", flow, attempts, 2*flow-1)
+		}
+		transactionCookie := requiredBrowserCookie(t, loginResponse.Result().Cookies(), browserOIDCTransactionCookie)
+		callback := httptest.NewRequest(
+			http.MethodGet,
+			"https://hub.sith.test/v1/console/oidc/callback?code=provider-code&state="+url.QueryEscape(stub.authorization.State),
+			nil,
+		)
+		callback.RemoteAddr = login.RemoteAddr
+		callback.AddCookie(transactionCookie)
+		callbackResponse := httptest.NewRecorder()
+		handler.Callback(callbackResponse, callback)
+		if callbackResponse.Code != http.StatusNoContent {
+			t.Fatalf("flow %d callback status = %d", flow, callbackResponse.Code)
+		}
+		if attempts := browserOIDCAttemptCount(limiter, "192.0.2.20"); attempts != 2*flow {
+			t.Fatalf("flow %d callback attempt count = %d, want %d", flow, attempts, 2*flow)
+		}
+	}
+
+	rejected := httptest.NewRequest(http.MethodGet, "https://hub.sith.test/v1/workspaces/workspace-a/console/login", nil)
+	rejected.RemoteAddr = "192.0.2.20:8443"
+	rejectedResponse := httptest.NewRecorder()
+	handler.Login(rejectedResponse, rejected)
+	if rejectedResponse.Code != http.StatusTooManyRequests || len(handler.transactions) != 0 ||
+		stub.authorizeCalls != 10 || stub.exchangeCalls != 10 || stub.sessionCalls != 10 {
+		t.Fatalf(
+			"rejected status/transactions/calls = %d/%d/%d/%d/%d",
+			rejectedResponse.Code, len(handler.transactions), stub.authorizeCalls, stub.exchangeCalls, stub.sessionCalls,
+		)
+	}
+}
+
+func browserOIDCAttemptCount(limiter *AttemptLimiter, key string) int {
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	return limiter.entries[key].count
+}
+
 func TestBrowserOIDCHandlerFailsClosedAndDoesNotAuthenticateBearerRoutes(t *testing.T) {
 	now := time.Date(2026, 7, 15, 14, 0, 0, 0, time.UTC)
 	stub := &browserOIDCServiceStub{rawToken: "upstream.id.token", session: hubauth.IssuedSession{AccessToken: "sith.signed.session", TokenType: "Bearer", ExpiresAt: now.Add(time.Minute)}}
