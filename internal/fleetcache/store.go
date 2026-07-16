@@ -43,6 +43,11 @@ type Snapshot struct {
 	Diagnostics []connector.Diagnostic `json:"diagnostics,omitempty"`
 }
 
+type scopeMetadataKey struct {
+	workspace string
+	scope     string
+}
+
 // Store owns normalized last-known fleet state and never performs network I/O.
 type Store struct {
 	mu sync.RWMutex
@@ -50,7 +55,7 @@ type Store struct {
 	records         map[string]map[string]Record
 	coverage        map[string]fleet.Coverage
 	aliases         map[string]string
-	scopes          map[string]connector.Scope
+	scopes          map[scopeMetadataKey]connector.Scope
 	diagnostics     map[string][]connector.Diagnostic
 	scopeWorkspaces map[string]map[string]bool
 	warmed          map[string]bool
@@ -75,7 +80,7 @@ func newStore(now func() time.Time, freshFor time.Duration) *Store {
 		records:         make(map[string]map[string]Record),
 		coverage:        make(map[string]fleet.Coverage),
 		aliases:         make(map[string]string),
-		scopes:          make(map[string]connector.Scope),
+		scopes:          make(map[scopeMetadataKey]connector.Scope),
 		diagnostics:     make(map[string][]connector.Diagnostic),
 		scopeWorkspaces: make(map[string]map[string]bool),
 		warmed:          make(map[string]bool),
@@ -113,10 +118,12 @@ func (store *Store) SetDiscovery(workspace string, discovery connector.Discovery
 		return
 	}
 	for name, memberships := range store.scopeWorkspaces {
+		if memberships[workspace] {
+			delete(store.scopes, scopeMetadataKey{workspace: workspace, scope: name})
+		}
 		delete(memberships, workspace)
 		if len(memberships) == 0 {
 			delete(store.scopeWorkspaces, name)
-			delete(store.scopes, name)
 		}
 	}
 	known := make(map[string]connector.Scope, len(discovery.Scopes)+len(discovery.Unreachable))
@@ -129,7 +136,7 @@ func (store *Store) SetDiscovery(workspace string, discovery connector.Discovery
 		}
 	}
 	for name, scope := range known {
-		store.scopes[name] = scope
+		store.scopes[scopeMetadataKey{workspace: workspace, scope: name}] = scope
 		store.markScopeWorkspaceLocked(workspace, name)
 	}
 	store.diagnostics[workspace] = cloneDiagnostics(discovery.Diagnostics)
@@ -267,15 +274,22 @@ func (store *Store) ApplyWatchEvent(event connector.WatchEvent) error {
 }
 
 func (store *Store) markScopeReachableLocked(kind, scope string, observedAt time.Time) {
-	current := store.scopes[scope]
-	current.Name = scope
-	current.Reachable = true
-	if !observedAt.IsZero() {
-		current.ObservedAt = observedAt
+	memberships := store.scopeWorkspaces[scope]
+	if len(memberships) != 1 {
+		return
 	}
-	store.scopes[scope] = current
+	for workspace := range memberships {
+		key := scopeMetadataKey{workspace: workspace, scope: scope}
+		current := store.scopes[key]
+		current.Name = scope
+		current.Reachable = true
+		if !observedAt.IsZero() {
+			current.ObservedAt = observedAt
+		}
+		store.scopes[key] = current
+	}
 	coverage := store.coverage[kind]
-	coverage.Requested = max(coverage.Requested, len(store.scopes))
+	coverage.Requested = max(coverage.Requested, len(store.scopeWorkspaces))
 	coverage.Unreachable = removeString(coverage.Unreachable, scope)
 	coverage.Stale = removeString(coverage.Stale, scope)
 	coverage.Reachable = max(coverage.Requested-len(coverage.Unreachable), 0)
@@ -287,7 +301,7 @@ func (store *Store) markScopeReachableLocked(kind, scope string, observedAt time
 
 func (store *Store) markScopeUnreachableLocked(kind, scope string, watchErr error) {
 	coverage := store.coverage[kind]
-	coverage.Requested = max(coverage.Requested, len(store.scopes))
+	coverage.Requested = max(coverage.Requested, len(store.scopeWorkspaces))
 	coverage.Unreachable = appendUniqueSorted(coverage.Unreachable, scope)
 	coverage.Stale = appendUniqueSorted(coverage.Stale, scope)
 	coverage.Reachable = max(coverage.Requested-len(coverage.Unreachable), 0)
@@ -444,7 +458,7 @@ func (store *Store) coverageLocked(workspace string, query Query, records []Reco
 		}
 	}
 	for _, name := range targets {
-		scope, exists := store.scopes[name]
+		scope, exists := store.scopes[scopeMetadataKey{workspace: workspace, scope: name}]
 		if !exists || !store.scopeWorkspaces[name][workspace] || !scope.Reachable {
 			unreachable[name] = struct{}{}
 		}
@@ -520,7 +534,7 @@ func (store *Store) scopesLocked(workspace string, patterns []string) []connecto
 	names := store.targetScopesLocked(workspace, patterns)
 	result := make([]connector.Scope, 0, len(names))
 	for _, name := range names {
-		scope, exists := store.scopes[name]
+		scope, exists := store.scopes[scopeMetadataKey{workspace: workspace, scope: name}]
 		if !exists || !store.scopeWorkspaces[name][workspace] {
 			scope = connector.Scope{Name: name}
 		}
@@ -572,6 +586,10 @@ func (store *Store) markScopeWorkspaceLocked(workspace, scope string) {
 		store.scopeWorkspaces[scope] = make(map[string]bool)
 	}
 	store.scopeWorkspaces[scope][workspace] = true
+	key := scopeMetadataKey{workspace: workspace, scope: scope}
+	if _, exists := store.scopes[key]; !exists {
+		store.scopes[key] = connector.Scope{Name: scope}
+	}
 }
 
 func (store *Store) notifyLocked() {

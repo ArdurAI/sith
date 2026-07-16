@@ -3,6 +3,8 @@
 package fleetcache
 
 import (
+	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -51,6 +53,104 @@ func TestQueryScopedDerivesWorkspaceOnlyFromSignedScope(t *testing.T) {
 			guessed.Scopes[0].Reachable || !guessed.Scopes[0].ObservedAt.IsZero() || len(guessed.Scopes[0].Kinds) != 0 {
 			t.Fatalf("guessed scope %q exposed observed metadata: %#v", guessedName, guessed)
 		}
+	}
+}
+
+func TestQueryScopedIsolatesSameNamedScopeMetadataByWorkspace(t *testing.T) {
+	t.Parallel()
+
+	observedA := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	observedB := observedA.Add(time.Minute)
+	store := newStore(func() time.Time { return observedB }, time.Hour)
+	store.SetDiscovery("workspace-a", connector.Discovery{Scopes: []connector.Scope{{
+		Name: "shared", DisplayName: "A shared", Kinds: []string{"Pod"}, Reachable: true, ObservedAt: observedA,
+	}}})
+	store.SetDiscovery("workspace-b", connector.Discovery{Scopes: []connector.Scope{{
+		Name: "shared", DisplayName: "B shared", Kinds: []string{"Deployment"}, ObservedAt: observedB,
+	}}, Unreachable: []string{"shared"}})
+	principal, err := tenancy.NewPrincipal("user:alice", map[tenancy.WorkspaceID]tenancy.Role{
+		"workspace-a": tenancy.RoleReader,
+		"workspace-b": tenancy.RoleReader,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopeA, err := principal.Scope("workspace-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopeB, err := principal.Scope("workspace-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshotA, err := store.QueryScoped(scopeA, Query{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotB, err := store.QueryScoped(scopeB, Query{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshotA.Scopes) != 1 || snapshotA.Scopes[0].DisplayName != "A shared" ||
+		!snapshotA.Scopes[0].Reachable || snapshotA.Scopes[0].ObservedAt != observedA ||
+		!slices.Equal(snapshotA.Scopes[0].Kinds, []string{"Pod"}) {
+		t.Fatalf("workspace A scope = %#v, want independent reachable metadata", snapshotA.Scopes)
+	}
+	if len(snapshotB.Scopes) != 1 || snapshotB.Scopes[0].DisplayName != "B shared" ||
+		snapshotB.Scopes[0].Reachable || snapshotB.Scopes[0].ObservedAt != observedB ||
+		!slices.Equal(snapshotB.Scopes[0].Kinds, []string{"Deployment"}) {
+		t.Fatalf("workspace B scope = %#v, want independent unreachable metadata", snapshotB.Scopes)
+	}
+	if snapshotA.Coverage.Reachable != 1 || len(snapshotA.Coverage.Unreachable) != 0 ||
+		snapshotB.Coverage.Reachable != 0 || !slices.Equal(snapshotB.Coverage.Unreachable, []string{"shared"}) {
+		t.Fatalf("coverage A = %#v, B = %#v, want workspace-isolated fail-closed coverage", snapshotA.Coverage, snapshotB.Coverage)
+	}
+	factA := podFact(t, "shared", "api-a", "Running", "image:a", observedB)
+	factA.Workspace = "workspace-a"
+	if err := store.ApplyWatchEvent(connector.WatchEvent{
+		Type: connector.WatchError, Kind: "Pod", Scope: "shared", Err: errors.New("watch unavailable"),
+	}); err != nil {
+		t.Fatalf("ApplyWatchEvent(error) error = %v", err)
+	}
+	if err := store.ApplyWatchEvent(connector.WatchEvent{
+		Type: connector.WatchUpsert, Kind: "Pod", Scope: "shared", Fact: factA, ObservedAt: observedB.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("ApplyWatchEvent() error = %v", err)
+	}
+	snapshotA, err = store.QueryScoped(scopeA, Query{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotB, err = store.QueryScoped(scopeB, Query{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshotA.Scopes[0].ObservedAt != observedA || snapshotB.Scopes[0].ObservedAt != observedB || snapshotB.Scopes[0].Reachable {
+		t.Fatalf("ambiguous watch changed shared metadata: A = %#v, B = %#v", snapshotA.Scopes, snapshotB.Scopes)
+	}
+	if snapshotA.Coverage.Reachable != 0 || !slices.Equal(snapshotA.Coverage.Unreachable, []string{"shared"}) ||
+		snapshotB.Coverage.Reachable != 0 || !slices.Equal(snapshotB.Coverage.Unreachable, []string{"shared"}) ||
+		snapshotA.LastError == "" || snapshotB.LastError == "" {
+		t.Fatalf("ambiguous success cleared failure: A = %#v, B = %#v", snapshotA, snapshotB)
+	}
+
+	store.SetDiscovery("workspace-b", connector.Discovery{Scopes: []connector.Scope{{
+		Name: "cluster-b", DisplayName: "B replacement", Reachable: true, ObservedAt: observedB,
+	}}})
+	snapshotA, err = store.QueryScoped(scopeA, Query{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshotA.Scopes) != 1 || snapshotA.Scopes[0].DisplayName != "A shared" || !snapshotA.Scopes[0].Reachable {
+		t.Fatalf("workspace B refresh changed workspace A metadata: %#v", snapshotA.Scopes)
+	}
+	guessedB, err := store.QueryScoped(scopeB, Query{Scopes: []string{"shared"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(guessedB.Scopes) != 1 || guessedB.Scopes[0].Reachable || !guessedB.Scopes[0].ObservedAt.IsZero() || len(guessedB.Scopes[0].Kinds) != 0 {
+		t.Fatalf("removed workspace B scope exposed workspace A metadata: %#v", guessedB.Scopes)
 	}
 }
 
