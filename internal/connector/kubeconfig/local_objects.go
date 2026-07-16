@@ -37,7 +37,7 @@ func (adapter *Adapter) View(
 		return localops.ObjectView{}, err
 	}
 	resource := resourceInterface(client, spec, normalized.Namespace)
-	object, err := callWithTimeout(ctx, adapter.settings.requestTimeout, func(requestCtx context.Context) (*unstructured.Unstructured, error) {
+	object, err := callWithTimeout(ctx, adapter.gate, normalized.Context, adapter.settings.requestTimeout, func(requestCtx context.Context) (*unstructured.Unstructured, error) {
 		return resource.Get(requestCtx, normalized.Name, metav1.GetOptions{})
 	})
 	if err != nil {
@@ -74,7 +74,7 @@ func (adapter *Adapter) Describe(ctx context.Context, target localops.Target) (l
 	if selectorValue == "" {
 		selectorKey, selectorValue = "involvedObject.name", object.GetName()
 	}
-	events, err := callWithTimeout(ctx, adapter.settings.requestTimeout, func(requestCtx context.Context) (*unstructured.UnstructuredList, error) {
+	events, err := callWithTimeout(ctx, adapter.gate, normalized.Context, adapter.settings.requestTimeout, func(requestCtx context.Context) (*unstructured.UnstructuredList, error) {
 		return client.Resource(resourceSpecs["events"].gvr).Namespace(normalized.Namespace).List(
 			requestCtx,
 			metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector(selectorKey, selectorValue).String()},
@@ -109,7 +109,7 @@ func (adapter *Adapter) PreviewApply(
 		return localops.ApplyPreview{}, err
 	}
 	resource := resourceInterface(client, spec, normalized.Namespace)
-	current, err := callWithTimeout(ctx, adapter.settings.requestTimeout, func(requestCtx context.Context) (*unstructured.Unstructured, error) {
+	current, err := callWithTimeout(ctx, adapter.gate, normalized.Context, adapter.settings.requestTimeout, func(requestCtx context.Context) (*unstructured.Unstructured, error) {
 		return resource.Get(requestCtx, normalized.Name, metav1.GetOptions{})
 	})
 	if err != nil {
@@ -119,7 +119,7 @@ func (adapter *Adapter) PreviewApply(
 	if err != nil {
 		return localops.ApplyPreview{}, err
 	}
-	dryRun, err := updateLocalObject(ctx, adapter.settings.requestTimeout, resource, proposed, true)
+	dryRun, err := updateLocalObject(ctx, adapter.gate, normalized.Context, adapter.settings.requestTimeout, resource, proposed, true)
 	if err != nil {
 		return localops.ApplyPreview{}, err
 	}
@@ -145,7 +145,7 @@ func (adapter *Adapter) Apply(
 		return fleet.Evidence{}, err
 	}
 	resource := resourceInterface(client, spec, normalized.Namespace)
-	current, err := callWithTimeout(ctx, adapter.settings.requestTimeout, func(requestCtx context.Context) (*unstructured.Unstructured, error) {
+	current, err := callWithTimeout(ctx, adapter.gate, normalized.Context, adapter.settings.requestTimeout, func(requestCtx context.Context) (*unstructured.Unstructured, error) {
 		return resource.Get(requestCtx, normalized.Name, metav1.GetOptions{})
 	})
 	if err != nil {
@@ -155,10 +155,10 @@ func (adapter *Adapter) Apply(
 	if err != nil {
 		return fleet.Evidence{}, err
 	}
-	if _, err := updateLocalObject(ctx, adapter.settings.requestTimeout, resource, proposed.DeepCopy(), true); err != nil {
+	if _, err := updateLocalObject(ctx, adapter.gate, normalized.Context, adapter.settings.requestTimeout, resource, proposed.DeepCopy(), true); err != nil {
 		return fleet.Evidence{}, err
 	}
-	updated, err := updateLocalObject(ctx, adapter.settings.requestTimeout, resource, proposed, false)
+	updated, err := updateLocalObject(ctx, adapter.gate, normalized.Context, adapter.settings.requestTimeout, resource, proposed, false)
 	if err != nil {
 		return fleet.Evidence{}, err
 	}
@@ -300,6 +300,8 @@ func decodeEditedObject(
 
 func updateLocalObject(
 	ctx context.Context,
+	gate *operationGate,
+	scope string,
 	timeout time.Duration,
 	resource dynamic.ResourceInterface,
 	object *unstructured.Unstructured,
@@ -311,7 +313,7 @@ func updateLocalObject(
 	if dryRun {
 		options.DryRun = []string{metav1.DryRunAll}
 	}
-	updated, err := callWithTimeout(ctx, timeout, func(requestCtx context.Context) (*unstructured.Unstructured, error) {
+	updated, err := callWithTimeout(ctx, gate, scope, timeout, func(requestCtx context.Context) (*unstructured.Unstructured, error) {
 		return resource.Update(requestCtx, object, options)
 	})
 	if err != nil {
