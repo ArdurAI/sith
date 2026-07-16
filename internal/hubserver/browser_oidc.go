@@ -203,11 +203,6 @@ func (handler *BrowserOIDCHandler) Callback(response http.ResponseWriter, reques
 		browserOIDCFailure(response, http.StatusUnauthorized)
 		return
 	}
-	if !handler.limiter.Allow(browserOIDCClientAddress(request.RemoteAddr)) {
-		handler.clearTransactionCookie(response)
-		browserOIDCFailure(response, http.StatusTooManyRequests)
-		return
-	}
 	rawToken, err := handler.service.ExchangeAuthorizationCode(request.Context(), hubauth.OIDCBrowserCodeExchange{
 		Issuer: handler.providerIssuer, ClientID: handler.clientID, RedirectURI: handler.redirectURI,
 		Code: query.Get("code"), CodeVerifier: transaction.codeVerifier,
