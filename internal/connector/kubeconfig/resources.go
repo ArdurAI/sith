@@ -39,6 +39,14 @@ var ErrUnsupportedSelector = errors.New("query selector is unsupported")
 // ErrInvalidReference reports a resource address that is incomplete or inconsistent.
 var ErrInvalidReference = errors.New("resource reference is invalid")
 
+const queryListPageSize int64 = 250
+
+const (
+	// queryListItemBudget caps objects materialized across every context in one fleet query.
+	queryListItemBudget = 10_000
+	queryListPageBudget = 128
+)
+
 type resourceSpec struct {
 	kind       string
 	gvr        schema.GroupVersionResource
@@ -143,6 +151,7 @@ func (adapter *Adapter) Query(ctx context.Context, query fleet.Query) (fleet.Que
 
 	scopes, clients, configs, tables, lastSeen := adapter.stateSnapshot()
 	targets := targetScopeNames(query.Scopes, scopes)
+	itemBudgets := queryScopeItemBudgets(len(targets))
 	results := make([]scopeQueryResult, len(targets))
 	adapter.runBounded(len(targets), func(index int) {
 		name := targets[index]
@@ -164,6 +173,7 @@ func (adapter *Adapter) Query(ctx context.Context, query fleet.Query) (fleet.Que
 		result, err := callWithTimeout(ctx, adapter.gate, name, adapter.settings.requestTimeout, func(requestCtx context.Context) (scopeQueryResult, error) {
 			return adapter.queryScope(
 				requestCtx, name, clients[name], tables[name], scopeSpec, generic, labelSelector.String(), query,
+				itemBudgets[index],
 			), nil
 		})
 		if err != nil {
@@ -188,6 +198,9 @@ func (adapter *Adapter) Query(ctx context.Context, query fleet.Query) (fleet.Que
 		}
 		coverage.Reachable++
 		facts = append(facts, result.facts...)
+		if result.truncated {
+			coverage.Truncated = append(coverage.Truncated, result.name)
+		}
 		if !result.observedAt.IsZero() {
 			adapter.recordLastSeen(result.name, result.observedAt)
 		} else if isStale(now, lastSeen[result.name], adapter.settings.staleAfter) {
@@ -206,6 +219,7 @@ func (adapter *Adapter) Query(ctx context.Context, query fleet.Query) (fleet.Que
 	}
 	sort.Strings(coverage.Unreachable)
 	sort.Strings(coverage.Stale)
+	sort.Strings(coverage.Truncated)
 	return fleet.QueryResult{Facts: facts, Coverage: coverage}, nil
 }
 
@@ -213,6 +227,7 @@ type scopeQueryResult struct {
 	name       string
 	facts      []fleet.Fact
 	observedAt time.Time
+	truncated  bool
 	err        error
 }
 
@@ -225,6 +240,7 @@ func (adapter *Adapter) queryScope(
 	generic bool,
 	labelSelector string,
 	query fleet.Query,
+	itemBudget int,
 ) scopeQueryResult {
 	result := scopeQueryResult{name: name}
 	if client == nil {
@@ -238,15 +254,55 @@ func (adapter *Adapter) queryScope(
 		result.err = fmt.Errorf("%w: namespace cannot select cluster-scoped %s", ErrUnsupportedSelector, spec.kind)
 		return result
 	}
+	if itemBudget <= 0 {
+		result.truncated = true
+		return result
+	}
 
 	resource := resourceInterface(client, spec, query.Selector.Namespace)
-	list, err := resource.List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
-	if err != nil {
-		if spec.kind == "Rollout" && apierrors.IsNotFound(err) {
+	objects := make([]unstructured.Unstructured, 0, itemBudget)
+	continueToken := ""
+	for page := 0; page < queryListPageBudget; page++ {
+		remaining := itemBudget - len(objects)
+		if remaining <= 0 {
+			result.truncated = continueToken != ""
+			break
+		}
+		options := metav1.ListOptions{
+			LabelSelector: labelSelector,
+			Limit:         min(queryListPageSize, int64(remaining)),
+			Continue:      continueToken,
+		}
+		list, err := resource.List(ctx, options)
+		if err != nil {
+			if spec.kind == "Rollout" && apierrors.IsNotFound(err) {
+				return result
+			}
+			result.err = fmt.Errorf("list %s in %s: %w", spec.kind, name, err)
 			return result
 		}
-		result.err = fmt.Errorf("list %s in %s: %w", spec.kind, name, err)
-		return result
+		pageItems := list.Items
+		if len(pageItems) > remaining {
+			pageItems = pageItems[:remaining]
+			result.truncated = true
+		}
+		objects = append(objects, pageItems...)
+		next := list.GetContinue()
+		if next == "" {
+			break
+		}
+		if next == continueToken {
+			result.err = fmt.Errorf("list %s in %s: API server repeated a continuation token", spec.kind, name)
+			return result
+		}
+		continueToken = next
+		if len(objects) >= itemBudget {
+			result.truncated = true
+			break
+		}
+		if page == queryListPageBudget-1 {
+			result.truncated = true
+		}
 	}
 
 	result.observedAt = adapter.settings.now().UTC()
@@ -254,7 +310,7 @@ func (adapter *Adapter) queryScope(
 		result.facts = []fleet.Fact{}
 		return result
 	}
-	result.facts = make([]fleet.Fact, 0, len(list.Items))
+	result.facts = make([]fleet.Fact, 0, len(objects))
 	display := map[string][]fleet.DisplayField{}
 	if generic {
 		if table == nil {
@@ -268,7 +324,7 @@ func (adapter *Adapter) queryScope(
 			return result
 		}
 	}
-	for _, object := range list.Items {
+	for _, object := range objects {
 		if query.Selector.Name != "" && object.GetName() != query.Selector.Name {
 			continue
 		}
@@ -287,6 +343,21 @@ func (adapter *Adapter) queryScope(
 		result.facts = append(result.facts, fleet.Fact{Evidence: evidence, Workspace: fleet.LocalWorkspace})
 	}
 	return result
+}
+
+func queryScopeItemBudgets(scopeCount int) []int {
+	if scopeCount <= 0 {
+		return nil
+	}
+	budgets := make([]int, scopeCount)
+	perScope, remainder := queryListItemBudget/scopeCount, queryListItemBudget%scopeCount
+	for index := range budgets {
+		budgets[index] = perScope
+		if index < remainder {
+			budgets[index]++
+		}
+	}
+	return budgets
 }
 
 func evidenceFromObject(

@@ -125,6 +125,24 @@ func TestKindFleetFanout(t *testing.T) {
 			t.Errorf("query did not return a source-stamped namespace from %s", scope)
 		}
 	}
+	liveContextNames := []string{"kind-" + clusterNames[0], "kind-" + clusterNames[1]}
+	paged, err := adapter.Query(ctx, fleet.Query{
+		Kinds:    []fleet.FactKind{fleet.FactInventory},
+		Scopes:   liveContextNames,
+		Selector: fleet.Selector{ResourceKind: "Namespace"},
+		Limit:    2,
+	})
+	if err != nil {
+		t.Fatalf("query paginated namespaces across kind contexts: %v", err)
+	}
+	if len(paged.Facts) != 2 || paged.Coverage.Requested != 2 || paged.Coverage.Reachable != 2 ||
+		len(paged.Coverage.Truncated) != 0 || !paged.Coverage.Complete() {
+		t.Fatalf("paginated kind query = %#v, want a fleet-limited result from complete bounded scans", paged)
+	}
+	if paged.Facts[0].Ref.String() >= paged.Facts[1].Ref.String() ||
+		paged.Facts[0].Ref.Scope != liveContextNames[0] || paged.Facts[1].Ref.Scope != liveContextNames[0] {
+		t.Fatalf("paginated kind facts = %#v, want the first two globally sorted refs", paged.Facts)
+	}
 	assertRealKindEntityGraph(ctx, t, adapter, clusterNames)
 	exerciseReadFederationSnapshots(ctx, t, adapter, clusterNames)
 

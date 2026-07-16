@@ -171,9 +171,12 @@ func (store *Store) Replace(kind string, result fleet.QueryResult) error {
 		store.aliases[kindAlias(record.Kind)] = canonical
 		store.markScopeWorkspaceLocked(record.Workspace, record.Cluster)
 	}
-	unreachable := stringSet(result.Coverage.Unreachable)
+	preserve := stringSet(result.Coverage.Unreachable)
+	for _, scope := range result.Coverage.Truncated {
+		preserve[scope] = struct{}{}
+	}
 	for key, record := range store.records[canonical] {
-		if _, failed := unreachable[record.Cluster]; !failed {
+		if _, incomplete := preserve[record.Cluster]; !incomplete {
 			delete(store.records[canonical], key)
 		}
 	}
@@ -254,6 +257,9 @@ func (store *Store) ApplyWatchEvent(event connector.WatchEvent) error {
 			store.records[canonical][recordKey(record)] = record
 		}
 		store.markScopeReachableLocked(canonical, event.Scope, event.ObservedAt)
+		coverage := store.coverage[canonical]
+		coverage.Truncated = removeString(coverage.Truncated, event.Scope)
+		store.coverage[canonical] = coverage
 	case connector.WatchUpsert:
 		store.records[canonical][recordKey(normalized[0])] = normalized[0]
 		store.markScopeReachableLocked(canonical, event.Scope, event.ObservedAt)
@@ -436,6 +442,7 @@ func (store *Store) coverageLocked(workspace string, query Query, records []Reco
 	targets := store.targetScopesLocked(workspace, query.Scopes)
 	unreachable := make(map[string]struct{})
 	stale := make(map[string]struct{})
+	truncated := make(map[string]struct{})
 	kind := store.resolveKindLocked(query.Kind)
 	if kind != "" {
 		if !store.warmed[kind] {
@@ -447,6 +454,9 @@ func (store *Store) coverageLocked(workspace string, query Query, records []Reco
 		for _, name := range store.coverage[kind].Stale {
 			stale[name] = struct{}{}
 		}
+		for _, name := range store.coverage[kind].Truncated {
+			truncated[name] = struct{}{}
+		}
 	} else {
 		for _, coverage := range store.coverage {
 			for _, name := range coverage.Unreachable {
@@ -454,6 +464,9 @@ func (store *Store) coverageLocked(workspace string, query Query, records []Reco
 			}
 			for _, name := range coverage.Stale {
 				stale[name] = struct{}{}
+			}
+			for _, name := range coverage.Truncated {
+				truncated[name] = struct{}{}
 			}
 		}
 	}
@@ -480,6 +493,9 @@ func (store *Store) coverageLocked(workspace string, query Query, records []Reco
 		coverage.Reachable++
 		if _, aged := stale[name]; aged {
 			coverage.Stale = append(coverage.Stale, name)
+		}
+		if _, partial := truncated[name]; partial {
+			coverage.Truncated = append(coverage.Truncated, name)
 		}
 	}
 	return coverage
@@ -557,7 +573,7 @@ func (store *Store) stateLocked(coverage fleet.Coverage, recordCount int, pendin
 		return StateCold
 	case coverage.Reachable == 0 && (recordCount > 0 || store.lastError != ""):
 		return StateOffline
-	case len(coverage.Unreachable) > 0 || len(coverage.Stale) > 0 || store.lastError != "":
+	case len(coverage.Unreachable) > 0 || len(coverage.Stale) > 0 || len(coverage.Truncated) > 0 || store.lastError != "":
 		return StateDegraded
 	case store.syncing:
 		return StateWarming
@@ -651,6 +667,7 @@ func cloneRecord(record Record, includeEvidence bool) Record {
 func cloneCoverage(coverage fleet.Coverage) fleet.Coverage {
 	coverage.Unreachable = append([]string(nil), coverage.Unreachable...)
 	coverage.Stale = append([]string(nil), coverage.Stale...)
+	coverage.Truncated = append([]string(nil), coverage.Truncated...)
 	return coverage
 }
 

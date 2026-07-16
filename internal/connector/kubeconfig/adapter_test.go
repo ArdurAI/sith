@@ -384,6 +384,185 @@ func TestQueryAndReadReturnSourceStampedEvidenceWithPartialCoverage(t *testing.T
 	}
 }
 
+func TestQueryPaginatesWithinDeterministicMultiScopeBudget(t *testing.T) {
+	t.Parallel()
+	clients := map[string]*dynamicfake.FakeDynamicClient{
+		"https://alpha.invalid": fakeClient(),
+		"https://beta.invalid":  fakeClient(),
+	}
+	var alphaOptions, betaOptions []metav1.ListOptions
+	clients["https://alpha.invalid"].PrependReactor("list", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		options, ok := action.(interface{ GetListOptions() metav1.ListOptions })
+		if !ok {
+			return true, nil, errors.New("list action did not expose list options")
+		}
+		alphaOptions = append(alphaOptions, options.GetListOptions())
+		switch options.GetListOptions().Continue {
+		case "":
+			return true, podList("alpha-next", pod("zeta", "apps", "registry/zeta:v1", nil)), nil
+		case "alpha-next":
+			return true, podList("", pod("alpha", "apps", "registry/alpha:v1", nil)), nil
+		default:
+			return true, nil, fmt.Errorf("unexpected alpha continue token %q", options.GetListOptions().Continue)
+		}
+	})
+	clients["https://beta.invalid"].PrependReactor("list", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		options, ok := action.(interface{ GetListOptions() metav1.ListOptions })
+		if !ok {
+			return true, nil, errors.New("list action did not expose list options")
+		}
+		betaOptions = append(betaOptions, options.GetListOptions())
+		switch options.GetListOptions().Continue {
+		case "":
+			return true, podList("beta-next", pod("bravo", "apps", "registry/bravo:v1", nil)), nil
+		case "beta-next":
+			return true, podList("", pod("charlie", "apps", "registry/charlie:v1", nil)), nil
+		default:
+			return true, nil, fmt.Errorf("unexpected beta continue token %q", options.GetListOptions().Continue)
+		}
+	})
+
+	adapter, err := New(
+		WithLoadingRules(testLoadingRules(t, testConfig("beta", "alpha"))),
+		WithMaxConcurrency(2),
+		withProbe(func(_ context.Context, _ *rest.Config) error { return nil }),
+		withDynamicFactory(func(config *rest.Config) (dynamic.Interface, error) {
+			return clients[config.Host], nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	result, err := adapter.Query(context.Background(), fleet.Query{
+		Selector: fleet.Selector{ResourceKind: "Pod", Namespace: "apps"},
+		Limit:    3,
+	})
+	if err != nil {
+		t.Fatalf("Query() error = %v", err)
+	}
+	if len(alphaOptions) != 2 || alphaOptions[0].Limit != queryListPageSize || alphaOptions[0].Continue != "" ||
+		alphaOptions[1].Limit != queryListPageSize || alphaOptions[1].Continue != "alpha-next" {
+		t.Fatalf("alpha list options = %#v, want bounded pages with continuation", alphaOptions)
+	}
+	if len(betaOptions) != 2 || betaOptions[0].Limit != queryListPageSize || betaOptions[0].Continue != "" ||
+		betaOptions[1].Limit != queryListPageSize || betaOptions[1].Continue != "beta-next" {
+		t.Fatalf("beta list options = %#v, want bounded pages with continuation", betaOptions)
+	}
+	if result.Coverage.Requested != 2 || result.Coverage.Reachable != 2 ||
+		len(result.Coverage.Truncated) != 0 || !result.Coverage.Complete() {
+		t.Fatalf("Coverage = %#v, want complete paginated coverage", result.Coverage)
+	}
+	want := []string{"alpha/alpha", "alpha/zeta", "beta/bravo"}
+	got := make([]string, 0, len(result.Facts))
+	for _, fact := range result.Facts {
+		got = append(got, fact.Ref.Scope+"/"+fact.Ref.Name)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("facts = %v, want deterministic global order %v", got, want)
+	}
+}
+
+func TestQueryScopeReportsTruncationAtItemBudget(t *testing.T) {
+	t.Parallel()
+	client := fakeClient()
+	var options []metav1.ListOptions
+	client.PrependReactor("list", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		listOptions, ok := action.(interface{ GetListOptions() metav1.ListOptions })
+		if !ok {
+			return true, nil, errors.New("list action did not expose list options")
+		}
+		options = append(options, listOptions.GetListOptions())
+		return true, podList("next", pod("alpha", "apps", "registry/alpha:v1", nil), pod("bravo", "apps", "registry/bravo:v1", nil)), nil
+	})
+	adapter := &Adapter{settings: defaultOptions()}
+	result := adapter.queryScope(
+		context.Background(), "alpha", client, nil, resourceSpecs["pod"], false, "",
+		fleet.Query{Kinds: []fleet.FactKind{fleet.FactInventory}, Selector: fleet.Selector{ResourceKind: "Pod", Namespace: "apps"}},
+		2,
+	)
+	if result.err != nil {
+		t.Fatalf("queryScope() error = %v", result.err)
+	}
+	if len(options) != 1 || options[0].Limit != 2 || options[0].Continue != "" {
+		t.Fatalf("list options = %#v, want one page capped at the remaining item budget", options)
+	}
+	if len(result.facts) != 2 || !result.truncated {
+		t.Fatalf("queryScope() = %#v, want two facts and explicit truncation", result)
+	}
+}
+
+func TestQueryContinuationTimeoutDiscardsPartialPages(t *testing.T) {
+	t.Parallel()
+	client := fakeClient()
+	secondPage := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	client.PrependReactor("list", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		options, ok := action.(interface{ GetListOptions() metav1.ListOptions })
+		if !ok {
+			return true, nil, errors.New("list action did not expose list options")
+		}
+		if options.GetListOptions().Continue == "" {
+			return true, podList("next", pod("first", "apps", "registry/first:v1", nil)), nil
+		}
+		close(secondPage)
+		<-release
+		close(finished)
+		return true, podList("", pod("second", "apps", "registry/second:v1", nil)), nil
+	})
+	adapter, err := New(
+		WithLoadingRules(testLoadingRules(t, testConfig("alpha"))),
+		WithRequestTimeout(20*time.Millisecond),
+		withProbe(func(_ context.Context, _ *rest.Config) error { return nil }),
+		withDynamicFactory(func(_ *rest.Config) (dynamic.Interface, error) { return client, nil }),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	result, err := adapter.Query(context.Background(), fleet.Query{
+		Selector: fleet.Selector{ResourceKind: "Pod", Namespace: "apps"},
+		Limit:    2,
+	})
+	<-secondPage
+	close(release)
+	<-finished
+	if err != nil {
+		t.Fatalf("Query() error = %v", err)
+	}
+	if len(result.Facts) != 0 || result.Coverage.Reachable != 0 ||
+		!slices.Equal(result.Coverage.Unreachable, []string{"alpha"}) || len(result.Coverage.Truncated) != 0 {
+		t.Fatalf("Query() = %#v, want timed-out continuation to discard all partial facts", result)
+	}
+}
+
+func TestQueryScopeItemBudgets(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		scopes int
+		want   []int
+	}{
+		{name: "no scopes", want: nil},
+		{name: "sorted remainder", scopes: 3, want: []int{3334, 3333, 3333}},
+		{name: "even split", scopes: 2, want: []int{queryListItemBudget / 2, queryListItemBudget / 2}},
+		{name: "more scopes than budget", scopes: queryListItemBudget + 1, want: append(make([]int, queryListItemBudget), 0)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			for index := range min(test.scopes, queryListItemBudget) {
+				if test.name == "more scopes than budget" {
+					test.want[index] = 1
+				}
+			}
+			if got := queryScopeItemBudgets(test.scopes); !slices.Equal(got, test.want) {
+				t.Fatalf("queryScopeItemBudgets(%d) = %v, want %v", test.scopes, got, test.want)
+			}
+		})
+	}
+}
+
 func TestInvalidInputsFailBeforeDiscovery(t *testing.T) {
 	t.Parallel()
 	probeCalls := 0
@@ -826,6 +1005,17 @@ func fakeClient(objects ...runtime.Object) *dynamicfake.FakeDynamicClient {
 		{Version: "v1", Resource: "pods"}: "PodList",
 	}
 	return fakeClientWithKinds(listKinds, objects...)
+}
+
+func podList(continueToken string, objects ...*unstructured.Unstructured) *unstructured.UnstructuredList {
+	list := &unstructured.UnstructuredList{Items: make([]unstructured.Unstructured, 0, len(objects))}
+	list.SetAPIVersion("v1")
+	list.SetKind("PodList")
+	list.SetContinue(continueToken)
+	for _, object := range objects {
+		list.Items = append(list.Items, *object.DeepCopy())
+	}
+	return list
 }
 
 func fakeClientWithKinds(

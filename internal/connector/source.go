@@ -81,6 +81,7 @@ func (source readerSource) Fleet(ctx context.Context) (fleet.FleetResult, error)
 	}
 	coverage.Unreachable = sortedUnique(coverage.Unreachable)
 	coverage.Stale = sortedUnique(coverage.Stale)
+	coverage.Truncated = sortedUnique(coverage.Truncated)
 
 	return fleet.FleetResult{Clusters: clusters, Coverage: coverage}, nil
 }

@@ -132,5 +132,8 @@ func coverageReason(snapshot fleetcache.Snapshot) string {
 	if len(snapshot.Coverage.Unreachable) > 0 {
 		return "one or more kubeconfig contexts are unreachable"
 	}
+	if len(snapshot.Coverage.Truncated) > 0 {
+		return "one or more kubeconfig contexts returned truncated evidence"
+	}
 	return ""
 }
