@@ -3,6 +3,7 @@
 package brain
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -148,6 +149,81 @@ func TestEvaluateRanksFleetDigestCorrelationFirst(t *testing.T) {
 	if len(result.Verdicts) != 3 || !result.Verdicts[0].FleetWide || !slices.Equal(result.Verdicts[0].Clusters, []string{"alpha", "beta"}) {
 		t.Fatalf("verdicts = %#v, want fleet-wide correlation first", result.Verdicts)
 	}
+	digestCitations := citationsForPredicate(result.Verdicts[0].Citations, fleet.OTelContainerImageRepoDigests)
+	if len(digestCitations) != 2 || digestCitations[0].Ref.Scope != "alpha" || digestCitations[1].Ref.Scope != "beta" {
+		t.Fatalf("digest citations = %#v, want one fresh citation per correlated cluster", digestCitations)
+	}
+}
+
+func TestEvaluateRejectsStaleFleetDigestCorrelation(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	const repoDigest = "registry.example/payments@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	observations := make([]Observation, 0, 4)
+	for _, cluster := range []string{"alpha", "beta"} {
+		ref := testRef()
+		ref.Scope = cluster
+		digest := Observation{
+			Ref: ref, Lens: fleet.LensLive, Key: fleet.OTelContainerImageRepoDigests,
+			Value: repoDigest, ObservedAt: now, Source: "kubeconfig",
+		}
+		if cluster == "beta" {
+			digest.Stale = true
+		}
+		observations = append(observations,
+			Observation{Ref: ref, Lens: fleet.LensLive, Key: "pod.failure", Value: "CrashLoopBackOff", ObservedAt: now, Source: "kubeconfig"},
+			digest,
+		)
+	}
+
+	result, err := Evaluate(Investigation{Workspace: fleet.LocalWorkspace, Observations: observations, Coverage: covered(fleet.LensLive)})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	for _, verdict := range result.Verdicts {
+		if verdict.FleetWide {
+			t.Fatalf("stale digest yielded fleet-wide verdict %#v", verdict)
+		}
+	}
+}
+
+func TestEvaluateFleetDigestCorrelationDeduplicatesDeterministically(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	const repoDigest = "registry.example/payments@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	alpha, beta := testRef(), testRef()
+	alpha.Scope, beta.Scope = "alpha", "beta"
+	stale := Observation{Ref: alpha, Lens: fleet.LensLive, Key: fleet.OTelContainerImageRepoDigests, Value: repoDigest, ObservedAt: now.Add(-2 * time.Hour), Source: "cache", Stale: true}
+	older := Observation{Ref: alpha, Lens: fleet.LensLive, Key: fleet.OTelContainerImageRepoDigests, Value: repoDigest, ObservedAt: now.Add(-time.Hour), Source: "watch"}
+	freshest := Observation{Ref: alpha, Lens: fleet.LensLive, Key: fleet.OTelContainerImageRepoDigests, Value: repoDigest, ObservedAt: now, Source: "query"}
+	tiedSource := freshest
+	tiedSource.Ref.SourceKind = "z-source"
+	tiedSource.Ref.Attributes = map[string]string{"container": "sidecar"}
+	observations := []Observation{
+		{Ref: alpha, Lens: fleet.LensLive, Key: "pod.failure", Value: "CrashLoopBackOff", ObservedAt: now, Source: "query"},
+		stale, older, freshest, tiedSource,
+		{Ref: beta, Lens: fleet.LensLive, Key: "pod.failure", Value: "CrashLoopBackOff", ObservedAt: now, Source: "query"},
+		{Ref: beta, Lens: fleet.LensLive, Key: fleet.OTelContainerImageRepoDigests, Value: repoDigest, ObservedAt: now, Source: "query"},
+	}
+	reversed := append([]Observation(nil), observations...)
+	slices.Reverse(reversed)
+
+	first, err := Evaluate(Investigation{Workspace: fleet.LocalWorkspace, Observations: observations, Coverage: covered(fleet.LensLive)})
+	if err != nil {
+		t.Fatalf("Evaluate() first error = %v", err)
+	}
+	second, err := Evaluate(Investigation{Workspace: fleet.LocalWorkspace, Observations: reversed, Coverage: covered(fleet.LensLive)})
+	if err != nil {
+		t.Fatalf("Evaluate() reversed error = %v", err)
+	}
+	if len(first.Verdicts) == 0 || len(second.Verdicts) == 0 || !reflect.DeepEqual(first.Verdicts[0], second.Verdicts[0]) {
+		t.Fatalf("top verdict changed with duplicate input order:\nfirst:  %#v\nsecond: %#v", first.Verdicts, second.Verdicts)
+	}
+	digestCitations := citationsForPredicate(first.Verdicts[0].Citations, fleet.OTelContainerImageRepoDigests)
+	if len(digestCitations) != 2 || digestCitations[0].Ref.Scope != "alpha" || digestCitations[1].Ref.Scope != "beta" ||
+		digestCitations[0].ObservedAt != freshest.ObservedAt || digestCitations[0].Stale {
+		t.Fatalf("digest citations = %#v, want deduplicated freshest evidence", digestCitations)
+	}
 }
 
 func TestEvaluateRejectsUnprovenFleetImageCorrelation(t *testing.T) {
@@ -224,6 +300,16 @@ func TestAdvisoryBindsAndQuotesKubeconfigContext(t *testing.T) {
 
 func observe(at time.Time, lens fleet.Lens, key, value string) Observation {
 	return Observation{Ref: testRef(), Lens: lens, Key: key, Value: value, ObservedAt: at, Source: "fixture"}
+}
+
+func citationsForPredicate(citations []Citation, predicate string) []Citation {
+	result := make([]Citation, 0)
+	for _, citation := range citations {
+		if citation.Predicate == predicate {
+			result = append(result, citation)
+		}
+	}
+	return result
 }
 
 func testRef() fleet.ResourceRef {
