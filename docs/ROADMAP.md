@@ -137,6 +137,9 @@ always-green slices, each leaving the binary more useful than the last:
 > change notifications; missing or mixed-workspace replace/watch mutations fail closed, with
 > race, fuzz, and real two-cluster kind coverage proving identical resource identities remain
 > independent across workspaces.
+> #196 anchors kubeconfig directory traversal and file reads to `os.Root`, rejects root or file
+> identity replacement before parsing, refuses deferred local credential/plugin paths, and keeps
+> all race diagnostics relative and content-free.
 
 **Exit criteria.**
 - First run to a populated cross-cluster answer in **< 10 minutes**, offline.
