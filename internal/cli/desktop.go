@@ -13,6 +13,7 @@ import (
 
 	"github.com/ArdurAI/sith/internal/connector"
 	"github.com/ArdurAI/sith/internal/connector/kubeconfig"
+	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/fleetcache"
 	"github.com/ArdurAI/sith/internal/hydrate"
 	"github.com/ArdurAI/sith/internal/localops"
@@ -77,7 +78,7 @@ func runDesktopHydration(ctx context.Context, store *fleetcache.Store, run func(
 	if err := run(ctx); err != nil && ctx.Err() == nil {
 		// The cache/API exposes only a closed operational category. Raw watch
 		// errors can carry cluster-specific details and do not cross this boundary.
-		store.EndSync(errors.New(desktopHydrationStopped))
+		_ = store.EndSync(fleet.LocalWorkspace, errors.New(desktopHydrationStopped))
 	}
 }
 

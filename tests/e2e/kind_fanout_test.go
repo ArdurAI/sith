@@ -28,6 +28,7 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	"github.com/ArdurAI/sith/internal/brain"
+	"github.com/ArdurAI/sith/internal/connector"
 	"github.com/ArdurAI/sith/internal/connector/kubeconfig"
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/fleetcache"
@@ -125,6 +126,7 @@ func TestKindFleetFanout(t *testing.T) {
 			t.Errorf("query did not return a source-stamped namespace from %s", scope)
 		}
 	}
+	exerciseWorkspaceIsolatedFleetCache(ctx, t, adapter, "kind-"+clusterNames[0])
 	liveContextNames := []string{"kind-" + clusterNames[0], "kind-" + clusterNames[1]}
 	paged, err := adapter.Query(ctx, fleet.Query{
 		Kinds:    []fleet.FactKind{fleet.FactInventory},
@@ -322,6 +324,67 @@ func TestKindFleetFanout(t *testing.T) {
 	if degraded.Coverage.Reachable != 1 || !slices.Contains(degraded.Coverage.Unreachable, "kind-"+clusterNames[1]) ||
 		!slices.Contains(degraded.Coverage.Unreachable, deadContext) {
 		t.Fatalf("degraded coverage = %#v, want beta and dead context unreachable", degraded.Coverage)
+	}
+}
+
+func exerciseWorkspaceIsolatedFleetCache(
+	ctx context.Context,
+	t *testing.T,
+	adapter *kubeconfig.Adapter,
+	scope string,
+) {
+	t.Helper()
+	result, err := adapter.Query(ctx, fleet.Query{
+		Kinds:  []fleet.FactKind{fleet.FactInventory},
+		Scopes: []string{scope},
+		Selector: fleet.Selector{
+			ResourceKind: "Pod",
+			Name:         "sith-vuln-sample",
+			Namespace:    "default",
+		},
+	})
+	if err != nil || len(result.Facts) != 1 || !result.Coverage.Complete() {
+		t.Fatalf("query real pod for workspace isolation = %#v, error = %v", result, err)
+	}
+
+	store := fleetcache.New()
+	fact := result.Facts[0]
+	discovery := connector.Discovery{Scopes: []connector.Scope{{
+		Name: fact.Ref.Scope, Reachable: true, ObservedAt: fact.ObservedAt,
+	}}}
+	for _, workspace := range []string{"workspace-a", "workspace-b"} {
+		if err := store.SetDiscovery(workspace, discovery); err != nil {
+			t.Fatalf("set %s discovery: %v", workspace, err)
+		}
+		workspaceFact := fact
+		workspaceFact.Workspace = workspace
+		if err := store.Replace(workspace, "Pod", fleet.QueryResult{
+			Facts: []fleet.Fact{workspaceFact}, Coverage: fleet.Coverage{Requested: 1, Reachable: 1},
+		}); err != nil {
+			t.Fatalf("replace real fact in %s: %v", workspace, err)
+		}
+	}
+	if err := store.ApplyWatchEvent(connector.WatchEvent{
+		Type: connector.WatchError, Workspace: "workspace-a", Kind: "Pod", Scope: fact.Ref.Scope,
+		Err: fmt.Errorf("simulated workspace-a watch failure"),
+	}); err != nil {
+		t.Fatalf("apply workspace A watch failure: %v", err)
+	}
+	if err := store.ApplyWatchEvent(connector.WatchEvent{
+		Type: connector.WatchDelete, Workspace: "workspace-b", Kind: "Pod", Scope: fact.Ref.Scope,
+		Ref: fact.Ref, ObservedAt: fact.ObservedAt,
+	}); err != nil {
+		t.Fatalf("apply workspace B watch delete: %v", err)
+	}
+
+	snapshotA := store.Query("workspace-a", fleetcache.Query{Kind: "Pod"})
+	if len(snapshotA.Records) != 1 || snapshotA.Records[0].Workspace != "workspace-a" ||
+		snapshotA.LastError == "" || !slices.Equal(snapshotA.Coverage.Unreachable, []string{fact.Ref.Scope}) {
+		t.Fatalf("workspace A real-fact snapshot = %#v, want isolated degraded record", snapshotA)
+	}
+	snapshotB := store.Query("workspace-b", fleetcache.Query{Kind: "Pod"})
+	if len(snapshotB.Records) != 0 || snapshotB.LastError != "" || !snapshotB.Coverage.Complete() {
+		t.Fatalf("workspace B real-fact snapshot = %#v, want independent successful delete", snapshotB)
 	}
 }
 

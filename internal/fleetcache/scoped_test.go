@@ -24,10 +24,12 @@ func TestQueryScopedDerivesWorkspaceOnlyFromSignedScope(t *testing.T) {
 	factA.Workspace = "workspace-a"
 	factB := podFact(t, "cluster-b", "api-b", "Running", "image:b", now)
 	factB.Workspace = "workspace-b"
-	if err := store.Replace("Pod", fleet.QueryResult{
-		Facts: []fleet.Fact{factA, factB}, Coverage: fleet.Coverage{Requested: 2, Reachable: 2},
-	}); err != nil {
-		t.Fatal(err)
+	for workspace, fact := range map[string]fleet.Fact{"workspace-a": factA, "workspace-b": factB} {
+		if err := store.Replace(workspace, "Pod", fleet.QueryResult{
+			Facts: []fleet.Fact{fact}, Coverage: fleet.Coverage{Requested: 1, Reachable: 1},
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	principal, err := tenancy.NewPrincipal("user:alice", map[tenancy.WorkspaceID]tenancy.Role{"workspace-a": tenancy.RoleReader})
 	if err != nil {
@@ -109,12 +111,14 @@ func TestQueryScopedIsolatesSameNamedScopeMetadataByWorkspace(t *testing.T) {
 	factA := podFact(t, "shared", "api-a", "Running", "image:a", observedB)
 	factA.Workspace = "workspace-a"
 	if err := store.ApplyWatchEvent(connector.WatchEvent{
-		Type: connector.WatchError, Kind: "Pod", Scope: "shared", Err: errors.New("watch unavailable"),
+		Type: connector.WatchError, Workspace: "workspace-b",
+		Kind: "Pod", Scope: "shared", Err: errors.New("watch unavailable"),
 	}); err != nil {
 		t.Fatalf("ApplyWatchEvent(error) error = %v", err)
 	}
 	if err := store.ApplyWatchEvent(connector.WatchEvent{
-		Type: connector.WatchUpsert, Kind: "Pod", Scope: "shared", Fact: factA, ObservedAt: observedB.Add(time.Minute),
+		Type: connector.WatchUpsert, Workspace: "workspace-a",
+		Kind: "Pod", Scope: "shared", Fact: factA, ObservedAt: observedB.Add(time.Minute),
 	}); err != nil {
 		t.Fatalf("ApplyWatchEvent() error = %v", err)
 	}
@@ -126,13 +130,14 @@ func TestQueryScopedIsolatesSameNamedScopeMetadataByWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshotA.Scopes[0].ObservedAt != observedA || snapshotB.Scopes[0].ObservedAt != observedB || snapshotB.Scopes[0].Reachable {
-		t.Fatalf("ambiguous watch changed shared metadata: A = %#v, B = %#v", snapshotA.Scopes, snapshotB.Scopes)
+	if snapshotA.Scopes[0].ObservedAt != observedB.Add(time.Minute) || !snapshotA.Scopes[0].Reachable ||
+		snapshotB.Scopes[0].ObservedAt != observedB || snapshotB.Scopes[0].Reachable {
+		t.Fatalf("workspace-qualified watch changed the wrong shared metadata: A = %#v, B = %#v", snapshotA.Scopes, snapshotB.Scopes)
 	}
-	if snapshotA.Coverage.Reachable != 0 || !slices.Equal(snapshotA.Coverage.Unreachable, []string{"shared"}) ||
+	if snapshotA.Coverage.Reachable != 1 || len(snapshotA.Coverage.Unreachable) != 0 ||
 		snapshotB.Coverage.Reachable != 0 || !slices.Equal(snapshotB.Coverage.Unreachable, []string{"shared"}) ||
-		snapshotA.LastError == "" || snapshotB.LastError == "" {
-		t.Fatalf("ambiguous success cleared failure: A = %#v, B = %#v", snapshotA, snapshotB)
+		snapshotA.LastError != "" || snapshotB.LastError == "" {
+		t.Fatalf("workspace-qualified success crossed failure state: A = %#v, B = %#v", snapshotA, snapshotB)
 	}
 
 	store.SetDiscovery("workspace-b", connector.Discovery{Scopes: []connector.Scope{{
@@ -181,8 +186,10 @@ func FuzzQueryScopedNeverLeaksForeignWorkspace(f *testing.F) {
 		factA.Workspace = "workspace-a"
 		factB := podFact(t, "cluster-b", "api-b", "Running", "image:b", now)
 		factB.Workspace = "workspace-b"
-		if err := store.Replace("Pod", fleet.QueryResult{Facts: []fleet.Fact{factA, factB}}); err != nil {
-			t.Fatal(err)
+		for workspace, fact := range map[string]fleet.Fact{"workspace-a": factA, "workspace-b": factB} {
+			if err := store.Replace(workspace, "Pod", fleet.QueryResult{Facts: []fleet.Fact{fact}}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		principal, err := tenancy.NewPrincipal("user:alice", map[tenancy.WorkspaceID]tenancy.Role{"workspace-a": tenancy.RoleReader})
 		if err != nil {
