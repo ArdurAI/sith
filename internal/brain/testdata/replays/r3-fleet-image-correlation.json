@@ -22,6 +22,8 @@
     "clusters": ["alpha", "beta"],
     "cause_of": [],
     "citation_evidence": [
+      {"lens": "live", "predicate": "container.image.repo_digests", "observed": "registry.synthetic/payments@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+      {"lens": "live", "predicate": "container.image.repo_digests", "observed": "registry.synthetic/payments@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
       {"lens": "live", "predicate": "pod.failure", "observed": "CrashLoopBackOff"},
       {"lens": "live", "predicate": "pod.failure", "observed": "CrashLoopBackOff"}
     ],
