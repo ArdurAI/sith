@@ -209,6 +209,7 @@ func withTableFactory(factory tableFactory) Option {
 // Adapter discovers contexts and performs independent local client-go reads.
 type Adapter struct {
 	settings options
+	gate     *operationGate
 
 	mu         sync.RWMutex
 	discovered bool
@@ -270,6 +271,7 @@ func defaultOptions() options {
 func newAdapter(settings options) *Adapter {
 	return &Adapter{
 		settings:  settings,
+		gate:      newOperationGate(),
 		scopes:    make(map[string]connector.Scope),
 		clients:   make(map[string]dynamic.Interface),
 		watchers:  make(map[string]dynamic.Interface),
@@ -413,7 +415,7 @@ func (adapter *Adapter) probeContext(
 
 	probeConfig := rest.CopyConfig(restConfig)
 	probeConfig.Timeout = adapter.settings.probeTimeout
-	_, err = callWithTimeout(ctx, adapter.settings.probeTimeout, func(probeCtx context.Context) (struct{}, error) {
+	_, err = callWithTimeout(ctx, adapter.gate, name, adapter.settings.probeTimeout, func(probeCtx context.Context) (struct{}, error) {
 		return struct{}{}, adapter.settings.probe(probeCtx, probeConfig)
 	})
 	if err != nil {
@@ -470,17 +472,76 @@ type operationResult[T any] struct {
 	err   error
 }
 
+// operationGate bounds work that can outlive its caller because client-go transports do not all
+// honor context cancellation. Each kubeconfig context is isolated to two retained operations, so
+// repeated calls cannot accumulate while unrelated contexts continue independently.
+type operationGate struct {
+	mu      sync.Mutex
+	byScope map[string]int
+	changed chan struct{}
+}
+
+func newOperationGate() *operationGate {
+	return &operationGate{byScope: make(map[string]int), changed: make(chan struct{})}
+}
+
+func (gate *operationGate) acquire(ctx context.Context, scope string) error {
+	for {
+		gate.mu.Lock()
+		if err := ctx.Err(); err != nil {
+			gate.mu.Unlock()
+			return err
+		}
+		if gate.byScope[scope] < 2 {
+			gate.byScope[scope]++
+			gate.mu.Unlock()
+			return nil
+		}
+		changed := gate.changed
+		gate.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+func (gate *operationGate) release(scope string) {
+	gate.mu.Lock()
+	gate.byScope[scope]--
+	if gate.byScope[scope] == 0 {
+		delete(gate.byScope, scope)
+	}
+	close(gate.changed)
+	gate.changed = make(chan struct{})
+	gate.mu.Unlock()
+}
+
 func callWithTimeout[T any](
 	ctx context.Context,
+	gate *operationGate,
+	scope string,
 	timeout time.Duration,
 	operation func(context.Context) (T, error),
 ) (T, error) {
 	operationCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if err := gate.acquire(operationCtx, scope); err != nil {
+		var zero T
+		return zero, err
+	}
+	if err := operationCtx.Err(); err != nil {
+		gate.release(scope)
+		var zero T
+		return zero, err
+	}
 	result := make(chan operationResult[T], 1)
 	// client-go's exec authenticator uses exec.Command rather than CommandContext. Isolating the
 	// call keeps one auth helper that ignores cancellation from stalling the rest of the fleet.
 	go func() {
+		defer gate.release(scope)
 		value, err := operation(operationCtx)
 		result <- operationResult[T]{value: value, err: err}
 	}()

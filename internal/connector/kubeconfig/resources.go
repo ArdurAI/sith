@@ -101,7 +101,7 @@ func (adapter *Adapter) Read(ctx context.Context, ref fleet.ResourceRef) (fleet.
 	}
 
 	resource := resourceInterface(client, spec, ref.Namespace)
-	object, err := callWithTimeout(ctx, adapter.settings.requestTimeout, func(requestCtx context.Context) (*unstructured.Unstructured, error) {
+	object, err := callWithTimeout(ctx, adapter.gate, ref.Scope, adapter.settings.requestTimeout, func(requestCtx context.Context) (*unstructured.Unstructured, error) {
 		return resource.Get(requestCtx, ref.Name, metav1.GetOptions{})
 	})
 	if err != nil {
@@ -146,9 +146,24 @@ func (adapter *Adapter) Query(ctx context.Context, query fleet.Query) (fleet.Que
 	results := make([]scopeQueryResult, len(targets))
 	adapter.runBounded(len(targets), func(index int) {
 		name := targets[index]
-		result, err := callWithTimeout(ctx, adapter.settings.requestTimeout, func(requestCtx context.Context) (scopeQueryResult, error) {
+		if !scopes[name].Reachable || clients[name] == nil {
+			results[index] = scopeQueryResult{name: name, err: ErrUnreachableScope}
+			return
+		}
+		scopeSpec := spec
+		generic := query.Selector.ResourceKind != "" &&
+			(scopeSpec.gvr.Resource == "" || scopeSpec.kind == "ConfigMap" || scopeSpec.kind == "Secret")
+		if generic {
+			var err error
+			scopeSpec, err = adapter.resolveResource(ctx, name, configs[name], query.Selector.ResourceKind)
+			if err != nil {
+				results[index] = scopeQueryResult{name: name, err: err}
+				return
+			}
+		}
+		result, err := callWithTimeout(ctx, adapter.gate, name, adapter.settings.requestTimeout, func(requestCtx context.Context) (scopeQueryResult, error) {
 			return adapter.queryScope(
-				requestCtx, name, clients[name], configs[name], tables[name], spec, labelSelector.String(), query,
+				requestCtx, name, clients[name], tables[name], scopeSpec, generic, labelSelector.String(), query,
 			), nil
 		})
 		if err != nil {
@@ -205,9 +220,9 @@ func (adapter *Adapter) queryScope(
 	ctx context.Context,
 	name string,
 	client dynamic.Interface,
-	config *rest.Config,
 	table tablePrinter,
 	spec resourceSpec,
+	generic bool,
 	labelSelector string,
 	query fleet.Query,
 ) scopeQueryResult {
@@ -218,17 +233,6 @@ func (adapter *Adapter) queryScope(
 	}
 	if query.Selector.ResourceKind == "" {
 		return result
-	}
-	// ConfigMap and Secret are statically known for local YAML/edit operations, but remain generic
-	// fleet lenses so Kubernetes server print columns continue to drive their tabular presentation.
-	generic := spec.gvr.Resource == "" || spec.kind == "ConfigMap" || spec.kind == "Secret"
-	if generic {
-		var err error
-		spec, err = adapter.resolveResource(ctx, name, config, query.Selector.ResourceKind)
-		if err != nil {
-			result.err = err
-			return result
-		}
 	}
 	if !spec.namespaced && query.Selector.Namespace != "" {
 		result.err = fmt.Errorf("%w: namespace cannot select cluster-scoped %s", ErrUnsupportedSelector, spec.kind)
@@ -337,7 +341,7 @@ func (adapter *Adapter) resolveResource(
 	if config == nil {
 		return resourceSpec{}, fmt.Errorf("%w: no client config for %s", ErrUnreachableScope, scope)
 	}
-	resolved, err := callWithTimeout(ctx, adapter.settings.requestTimeout, func(resolveCtx context.Context) (resourceSpec, error) {
+	resolved, err := callWithTimeout(ctx, adapter.gate, scope, adapter.settings.requestTimeout, func(resolveCtx context.Context) (resourceSpec, error) {
 		return adapter.settings.resolve(resolveCtx, rest.CopyConfig(config), kind)
 	})
 	if err != nil {

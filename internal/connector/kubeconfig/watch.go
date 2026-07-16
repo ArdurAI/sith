@@ -94,7 +94,7 @@ func (adapter *Adapter) watchScope(
 			}
 		}
 		resource := resourceInterface(client, spec, "")
-		list, err := callWithTimeout(ctx, adapter.settings.requestTimeout, func(requestCtx context.Context) (*unstructured.UnstructuredList, error) {
+		list, err := callWithTimeout(ctx, adapter.gate, scope, adapter.settings.requestTimeout, func(requestCtx context.Context) (*unstructured.UnstructuredList, error) {
 			return resource.List(requestCtx, metav1.ListOptions{})
 		})
 		if err != nil {

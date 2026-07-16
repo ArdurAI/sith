@@ -234,6 +234,7 @@ func TestDiscoverIsIndependentAndPreservesLastSeen(t *testing.T) {
 func TestDiscoverTimesOutProbeThatIgnoresContext(t *testing.T) {
 	t.Parallel()
 	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
 	adapter, err := New(
 		WithLoadingRules(testLoadingRules(t, testConfig("blocked"))),
 		WithProbeTimeout(20*time.Millisecond),
@@ -247,7 +248,6 @@ func TestDiscoverTimesOutProbeThatIgnoresContext(t *testing.T) {
 	}
 	started := time.Now()
 	discovery, err := adapter.Discover(context.Background())
-	close(release)
 	if err != nil {
 		t.Fatalf("Discover() error = %v", err)
 	}
@@ -256,6 +256,52 @@ func TestDiscoverTimesOutProbeThatIgnoresContext(t *testing.T) {
 	}
 	if !slices.Equal(discovery.Unreachable, []string{"blocked"}) {
 		t.Fatalf("Unreachable = %v, want [blocked]", discovery.Unreachable)
+	}
+}
+
+func TestDiscoverBoundsProbeThatIgnoresContextWithoutStallingPeers(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	var blockedCalls atomic.Int32
+	var peerCalls atomic.Int32
+	adapter, err := New(
+		WithLoadingRules(testLoadingRules(t, testConfig("blocked-a", "blocked-b", "peer"))),
+		WithProbeTimeout(20*time.Millisecond),
+		WithMaxConcurrency(4),
+		withProbe(func(_ context.Context, config *rest.Config) error {
+			if config.Host == "https://peer.invalid" {
+				peerCalls.Add(1)
+				return nil
+			}
+			blockedCalls.Add(1)
+			<-release
+			return nil
+		}),
+		withDynamicFactory(func(_ *rest.Config) (dynamic.Interface, error) { return fakeClient(), nil }),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	for run := 1; run <= 3; run++ {
+		discovery, err := adapter.Discover(context.Background())
+		if err != nil {
+			t.Fatalf("Discover() run %d error = %v", run, err)
+		}
+		if !slices.Equal(discovery.Unreachable, []string{"blocked-a", "blocked-b"}) {
+			t.Fatalf("Discover() run %d unreachable = %v, want [blocked-a blocked-b]", run, discovery.Unreachable)
+		}
+		if len(discovery.Scopes) != 3 || !discovery.Scopes[2].Reachable {
+			t.Fatalf("Discover() run %d scopes = %#v, want reachable peer", run, discovery.Scopes)
+		}
+	}
+
+	if got := blockedCalls.Load(); got != 4 {
+		t.Fatalf("blocked probe calls = %d, want each blocked context bounded at 2", got)
+	}
+	if got := peerCalls.Load(); got != 3 {
+		t.Fatalf("peer probe calls = %d, want one healthy probe per discovery", got)
 	}
 }
 
@@ -545,6 +591,137 @@ func TestDefaultProbeExecCredentialMixedCloudIsolatedAndMemoryOnly(t *testing.T)
 	assertSandboxExcludesSecrets(t, sandbox, secretMaterial)
 }
 
+func TestDefaultProbeExecCredentialTimeoutIsContained(t *testing.T) {
+	if os.Getenv("SITH_EXEC_HELPER") == "1" {
+		runExecCredentialHelper()
+	}
+
+	sandbox := t.TempDir()
+	startPath := filepath.Join(sandbox, "helper-started")
+	releasePath := filepath.Join(sandbox, "release-helper")
+	t.Cleanup(func() { _ = os.WriteFile(releasePath, []byte("release"), 0o600) })
+	const tokenEnv = "SITH_EXEC_TEST_BLOCKED_TOKEN"
+	const token = "blocked-ephemeral-token-181"
+	t.Setenv(tokenEnv, token)
+
+	var blockedRequests atomic.Int32
+	blockedServer := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		blockedRequests.Add(1)
+		if request.URL.Path != "/version" {
+			http.NotFound(writer, request)
+			return
+		}
+		if request.Header.Get("Authorization") != "Bearer "+token {
+			http.Error(writer, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"gitVersion":"v1.36.1"}`))
+	}))
+	t.Cleanup(blockedServer.Close)
+
+	var peerRequests atomic.Int32
+	peerServer := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		peerRequests.Add(1)
+		if request.URL.Path != "/version" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"gitVersion":"v1.36.1"}`))
+	}))
+	t.Cleanup(peerServer.Close)
+
+	config := clientcmdapi.NewConfig()
+	for name, server := range map[string]*httptest.Server{"blocked": blockedServer, "peer": peerServer} {
+		config.Clusters[name] = &clientcmdapi.Cluster{
+			Server: server.URL,
+			CertificateAuthorityData: pem.EncodeToMemory(&pem.Block{
+				Type: "CERTIFICATE", Bytes: server.Certificate().Raw,
+			}),
+		}
+		config.AuthInfos[name] = &clientcmdapi.AuthInfo{}
+		config.Contexts[name] = &clientcmdapi.Context{Cluster: name, AuthInfo: name}
+	}
+	config.AuthInfos["blocked"].Exec = &clientcmdapi.ExecConfig{
+		Command:         os.Args[0],
+		Args:            []string{"-test.run=TestDefaultProbeExecCredentialTimeoutIsContained"},
+		APIVersion:      "client.authentication.k8s.io/v1",
+		InteractiveMode: clientcmdapi.NeverExecInteractiveMode,
+		Env: []clientcmdapi.ExecEnvVar{
+			{Name: "SITH_EXEC_HELPER", Value: "1"},
+			{Name: "SITH_EXEC_TOKEN_ENV", Value: tokenEnv},
+			{Name: "SITH_EXEC_START_PATH", Value: startPath},
+			{Name: "SITH_EXEC_RELEASE_PATH", Value: releasePath},
+		},
+	}
+
+	adapter, err := New(
+		WithLoadingRules(testLoadingRules(t, *config)),
+		WithProbeTimeout(100*time.Millisecond),
+		WithMaxConcurrency(4),
+		withDynamicFactory(func(_ *rest.Config) (dynamic.Interface, error) { return fakeClient(), nil }),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	for run := 1; run <= 3; run++ {
+		discovery, err := adapter.Discover(context.Background())
+		if err != nil {
+			t.Fatalf("Discover() run %d error = %v", run, err)
+		}
+		if !slices.Equal(discovery.Unreachable, []string{"blocked"}) {
+			t.Fatalf("Discover() run %d unreachable = %v, want [blocked]", run, discovery.Unreachable)
+		}
+	}
+	if got := peerRequests.Load(); got != 3 {
+		t.Fatalf("peer requests = %d, want one request per discovery", got)
+	}
+	if got := blockedRequests.Load(); got != 0 {
+		t.Fatalf("blocked requests before helper release = %d, want 0", got)
+	}
+	started, err := os.ReadFile(startPath)
+	if err != nil {
+		t.Fatalf("read helper start marker: %v", err)
+	}
+	if got := string(started); got != "started\n" {
+		t.Fatalf("helper start markers = %q, want one process", got)
+	}
+
+	if err := os.WriteFile(releasePath, []byte("release"), 0o600); err != nil {
+		t.Fatalf("release exec helper: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		adapter.gate.mu.Lock()
+		active := adapter.gate.byScope["blocked"]
+		adapter.gate.mu.Unlock()
+		if active == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("retained operations = %d after helper release, want 0", active)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	discovery, err := adapter.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover() after helper release error = %v", err)
+	}
+	if len(discovery.Unreachable) != 0 {
+		t.Fatalf("Discover() after helper release unreachable = %v, want none", discovery.Unreachable)
+	}
+	if blockedRequests.Load() == 0 {
+		t.Fatal("blocked context made no authenticated request after helper release")
+	}
+	discoveryJSON, err := json.Marshal(discovery)
+	if err != nil {
+		t.Fatalf("marshal discovery: %v", err)
+	}
+	assertNoSecretMaterial(t, "fleet discovery", discoveryJSON, []string{token})
+	assertSandboxExcludesSecrets(t, sandbox, []string{token})
+}
+
 func runExecCredentialHelper() {
 	var input struct {
 		APIVersion string `json:"apiVersion"`
@@ -555,6 +732,25 @@ func runExecCredentialHelper() {
 	tokenEnv := os.Getenv("SITH_EXEC_TOKEN_ENV")
 	if tokenEnv == "" || os.Getenv(tokenEnv) == "" {
 		os.Exit(2)
+	}
+	if startPath := os.Getenv("SITH_EXEC_START_PATH"); startPath != "" {
+		marker, err := os.OpenFile(startPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			os.Exit(2)
+		}
+		if _, err := marker.WriteString("started\n"); err != nil || marker.Close() != nil {
+			os.Exit(2)
+		}
+		releasePath := os.Getenv("SITH_EXEC_RELEASE_PATH")
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			if _, err := os.Stat(releasePath); err == nil {
+				break
+			} else if !errors.Is(err, fs.ErrNotExist) || time.Now().After(deadline) {
+				os.Exit(2)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 	status := map[string]any{"token": os.Getenv(tokenEnv)}
 	certificateEnv, keyEnv := os.Getenv("SITH_EXEC_CERTIFICATE_ENV"), os.Getenv("SITH_EXEC_KEY_ENV")
