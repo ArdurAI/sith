@@ -254,10 +254,12 @@ func mcpStore(t *testing.T) *fleetcache.Store {
 	}})
 	local := mcpPodFact(t, fleet.LocalWorkspace, "alpha", "local-api", now)
 	other := mcpPodFact(t, "other", "beta", "other-api", now)
-	if err := store.Replace("Pod", fleet.QueryResult{
-		Facts: []fleet.Fact{local, other}, Coverage: fleet.Coverage{Requested: 2, Reachable: 2},
-	}); err != nil {
-		t.Fatal(err)
+	for workspace, fact := range map[string]fleet.Fact{fleet.LocalWorkspace: local, "other": other} {
+		if err := store.Replace(workspace, "Pod", fleet.QueryResult{
+			Facts: []fleet.Fact{fact}, Coverage: fleet.Coverage{Requested: 1, Reachable: 1},
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	cvePayload, err := json.Marshal(fleet.CVEObservation{
 		Image: "registry.example/payments:v4", IDs: []string{"CVE-2026-1234"}, Severity: "high",
@@ -269,7 +271,7 @@ func mcpStore(t *testing.T) *fleetcache.Store {
 		Ref:  fleet.ResourceRef{SourceKind: "scanner", Scope: "alpha", Kind: "Image", Name: "payments-v4"},
 		Kind: fleet.FactCVE, Observed: cvePayload, ObservedAt: now, Source: "scanner",
 	}, Workspace: fleet.LocalWorkspace}
-	if err := store.Replace("CVE", fleet.QueryResult{
+	if err := store.Replace(fleet.LocalWorkspace, "CVE", fleet.QueryResult{
 		Facts: []fleet.Fact{cve}, Coverage: fleet.Coverage{Requested: 2, Reachable: 2},
 	}); err != nil {
 		t.Fatal(err)

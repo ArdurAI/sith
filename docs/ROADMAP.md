@@ -133,6 +133,10 @@ always-green slices, each leaving the binary more useful than the last:
 > outlive cancellation; #185 paginates Kubernetes resource lists within a deterministic
 > fleet-wide materialization budget and reports incomplete scopes explicitly. #190 tracks the
 > remaining generic server-table response bound so that path is not misrepresented as complete.
+> #187 workspace-qualifies fleet-cache record identity, coverage, sync/pause/error state, and
+> change notifications; missing or mixed-workspace replace/watch mutations fail closed, with
+> race, fuzz, and real two-cluster kind coverage proving identical resource identities remain
+> independent across workspaces.
 
 **Exit criteria.**
 - First run to a populated cross-cluster answer in **< 10 minutes**, offline.

@@ -91,8 +91,8 @@ func TestModelNavigationFilterPauseAndCoverage(t *testing.T) {
 	_, _ = model.Update(keyMessage(":"))
 	_, _ = model.Update(keyMessage("pause"))
 	_, _ = model.Update(specialKey(tea.KeyEnter))
-	if !store.Paused() || !strings.Contains(strings.ToLower(model.View().Content), "paused") {
-		t.Fatalf("paused state/view = %v/%q", store.Paused(), model.View().Content)
+	if !store.Paused(fleet.LocalWorkspace) || !strings.Contains(strings.ToLower(model.View().Content), "paused") {
+		t.Fatalf("paused state/view = %v/%q", store.Paused(fleet.LocalWorkspace), model.View().Content)
 	}
 	_, command := model.Update(keyMessage("ctrl+r"))
 	if command == nil {
@@ -314,7 +314,7 @@ func populatedStore(t *testing.T, pods int) *fleetcache.Store {
 			},
 		}, now))
 	}
-	if err := store.Replace("Pod", fleet.QueryResult{Facts: podFacts, Coverage: fleet.Coverage{Requested: 2, Reachable: 2}}); err != nil {
+	if err := store.Replace(fleet.LocalWorkspace, "Pod", fleet.QueryResult{Facts: podFacts, Coverage: fleet.Coverage{Requested: 2, Reachable: 2}}); err != nil {
 		t.Fatalf("Replace(Pod) error = %v", err)
 	}
 	deployFacts := []fleet.Fact{
@@ -325,7 +325,7 @@ func populatedStore(t *testing.T, pods int) *fleetcache.Store {
 			"spec": map[string]any{"replicas": 3}, "status": map[string]any{"availableReplicas": 0, "updatedReplicas": 0},
 		}, now),
 	}
-	if err := store.Replace("Deployment", fleet.QueryResult{Facts: deployFacts, Coverage: fleet.Coverage{Requested: 2, Reachable: 2}}); err != nil {
+	if err := store.Replace(fleet.LocalWorkspace, "Deployment", fleet.QueryResult{Facts: deployFacts, Coverage: fleet.Coverage{Requested: 2, Reachable: 2}}); err != nil {
 		t.Fatalf("Replace(Deployment) error = %v", err)
 	}
 	return store

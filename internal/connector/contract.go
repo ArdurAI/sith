@@ -101,9 +101,10 @@ const (
 	WatchError    WatchEventType = "error"
 )
 
-// WatchEvent carries a source-stamped, per-scope reconciliation delta.
+// WatchEvent carries an explicitly workspace-bound, source-stamped reconciliation delta.
 type WatchEvent struct {
 	Type       WatchEventType
+	Workspace  string
 	Kind       string
 	Scope      string
 	Facts      []fleet.Fact

@@ -12,6 +12,7 @@ import (
 
 	"github.com/ArdurAI/sith/internal/connector"
 	"github.com/ArdurAI/sith/internal/fleet"
+	"github.com/ArdurAI/sith/internal/tenancy"
 )
 
 const defaultFreshFor = 15 * time.Second
@@ -48,24 +49,30 @@ type scopeMetadataKey struct {
 	scope     string
 }
 
+type workspaceKindKey struct {
+	workspace string
+	kind      string
+}
+
 // Store owns normalized last-known fleet state and never performs network I/O.
 type Store struct {
 	mu sync.RWMutex
 
 	records         map[string]map[string]Record
-	coverage        map[string]fleet.Coverage
-	aliases         map[string]string
+	coverage        map[workspaceKindKey]fleet.Coverage
+	aliases         map[workspaceKindKey]string
 	scopes          map[scopeMetadataKey]connector.Scope
 	diagnostics     map[string][]connector.Diagnostic
 	scopeWorkspaces map[string]map[string]bool
-	warmed          map[string]bool
-	expected        map[string]bool
-	syncing         bool
-	paused          bool
-	lastError       string
-	updatedAt       time.Time
-	version         uint64
-	changed         chan struct{}
+	warmed          map[workspaceKindKey]bool
+	expected        map[workspaceKindKey]bool
+	syncing         map[string]bool
+	paused          map[string]bool
+	syncErrors      map[string]string
+	watchErrors     map[workspaceKindKey]string
+	updatedAt       map[string]time.Time
+	versions        map[string]uint64
+	changed         map[string]chan struct{}
 	now             func() time.Time
 	freshFor        time.Duration
 }
@@ -78,44 +85,56 @@ func New() *Store {
 func newStore(now func() time.Time, freshFor time.Duration) *Store {
 	return &Store{
 		records:         make(map[string]map[string]Record),
-		coverage:        make(map[string]fleet.Coverage),
-		aliases:         make(map[string]string),
+		coverage:        make(map[workspaceKindKey]fleet.Coverage),
+		aliases:         make(map[workspaceKindKey]string),
 		scopes:          make(map[scopeMetadataKey]connector.Scope),
 		diagnostics:     make(map[string][]connector.Diagnostic),
 		scopeWorkspaces: make(map[string]map[string]bool),
-		warmed:          make(map[string]bool),
-		expected:        make(map[string]bool),
-		changed:         make(chan struct{}),
+		warmed:          make(map[workspaceKindKey]bool),
+		expected:        make(map[workspaceKindKey]bool),
+		syncing:         make(map[string]bool),
+		paused:          make(map[string]bool),
+		syncErrors:      make(map[string]string),
+		watchErrors:     make(map[workspaceKindKey]string),
+		updatedAt:       make(map[string]time.Time),
+		versions:        make(map[string]uint64),
+		changed:         make(map[string]chan struct{}),
 		now:             now,
 		freshFor:        freshFor,
 	}
 }
 
-// BeginSync marks background reconciliation as active without blocking readers.
-func (store *Store) BeginSync(kinds ...string) bool {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if store.paused || store.syncing {
+// BeginSync marks one workspace's background reconciliation as active without blocking readers.
+func (store *Store) BeginSync(workspace string, kinds ...string) bool {
+	if tenancy.ValidateWorkspaceID(tenancy.WorkspaceID(workspace)) != nil {
 		return false
 	}
-	store.syncing = true
-	store.lastError = ""
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.paused[workspace] || store.syncing[workspace] {
+		return false
+	}
+	store.syncing[workspace] = true
+	delete(store.syncErrors, workspace)
 	for _, kind := range kinds {
 		if canonical := canonicalKind(kind); canonical != "" {
-			store.expected[canonical] = true
-			store.aliases[kindAlias(kind)] = canonical
+			store.expected[workspaceKindKey{workspace: workspace, kind: canonical}] = true
+			store.aliases[workspaceKindKey{workspace: workspace, kind: kindAlias(kind)}] = canonical
 		}
 	}
-	store.notifyLocked()
+	store.notifyLocked(workspace)
 	return true
 }
 
 // SetDiscovery refreshes one workspace's known context set while preserving last-known facts.
-func (store *Store) SetDiscovery(workspace string, discovery connector.Discovery) {
+func (store *Store) SetDiscovery(workspace string, discovery connector.Discovery) error {
+	if err := tenancy.ValidateWorkspaceID(tenancy.WorkspaceID(workspace)); err != nil {
+		return fmt.Errorf("set cache discovery: %w", err)
+	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if store.paused || strings.TrimSpace(workspace) == "" {
-		return
+	if store.paused[workspace] {
+		return nil
 	}
 	for name, memberships := range store.scopeWorkspaces {
 		if memberships[workspace] {
@@ -140,11 +159,15 @@ func (store *Store) SetDiscovery(workspace string, discovery connector.Discovery
 		store.markScopeWorkspaceLocked(workspace, name)
 	}
 	store.diagnostics[workspace] = cloneDiagnostics(discovery.Diagnostics)
-	store.notifyLocked()
+	store.notifyLocked(workspace)
+	return nil
 }
 
-// Replace reconciles one resource kind while preserving last-known rows for failed scopes.
-func (store *Store) Replace(kind string, result fleet.QueryResult) error {
+// Replace reconciles one workspace's resource kind while preserving last-known rows for failed scopes.
+func (store *Store) Replace(workspace, kind string, result fleet.QueryResult) error {
+	if err := tenancy.ValidateWorkspaceID(tenancy.WorkspaceID(workspace)); err != nil {
+		return fmt.Errorf("replace cache records: %w", err)
+	}
 	canonical := canonicalKind(kind)
 	if canonical == "" {
 		return fmt.Errorf("replace cache records: resource kind is required")
@@ -155,20 +178,23 @@ func (store *Store) Replace(kind string, result fleet.QueryResult) error {
 		if err != nil {
 			return err
 		}
+		if record.Workspace != workspace {
+			return fmt.Errorf("replace cache records: fact workspace %q does not match mutation workspace %q", record.Workspace, workspace)
+		}
 		normalized = append(normalized, record)
 	}
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if store.paused {
+	if store.paused[workspace] {
 		return nil
 	}
 	if store.records[canonical] == nil {
 		store.records[canonical] = make(map[string]Record)
 	}
-	store.aliases[kindAlias(kind)] = canonical
+	store.aliases[workspaceKindKey{workspace: workspace, kind: kindAlias(kind)}] = canonical
 	for _, record := range normalized {
-		store.aliases[kindAlias(record.Kind)] = canonical
+		store.aliases[workspaceKindKey{workspace: workspace, kind: kindAlias(record.Kind)}] = canonical
 		store.markScopeWorkspaceLocked(record.Workspace, record.Cluster)
 	}
 	preserve := stringSet(result.Coverage.Unreachable)
@@ -176,6 +202,9 @@ func (store *Store) Replace(kind string, result fleet.QueryResult) error {
 		preserve[scope] = struct{}{}
 	}
 	for key, record := range store.records[canonical] {
+		if record.Workspace != workspace {
+			continue
+		}
 		if _, incomplete := preserve[record.Cluster]; !incomplete {
 			delete(store.records[canonical], key)
 		}
@@ -183,15 +212,23 @@ func (store *Store) Replace(kind string, result fleet.QueryResult) error {
 	for _, record := range normalized {
 		store.records[canonical][recordKey(record)] = record
 	}
-	store.coverage[canonical] = cloneCoverage(result.Coverage)
-	store.warmed[canonical] = true
-	store.updatedAt = store.now().UTC()
-	store.notifyLocked()
+	key := workspaceKindKey{workspace: workspace, kind: canonical}
+	store.coverage[key] = cloneCoverage(result.Coverage)
+	if len(result.Coverage.Unreachable) == 0 {
+		delete(store.watchErrors, key)
+	}
+	store.warmed[key] = true
+	store.updatedAt[workspace] = store.now().UTC()
+	store.notifyLocked(workspace)
 	return nil
 }
 
-// ApplyWatchEvent atomically reconciles one live-reader delta without network access.
+// ApplyWatchEvent atomically reconciles one workspace-bound live-reader delta without network access.
 func (store *Store) ApplyWatchEvent(event connector.WatchEvent) error {
+	workspace := event.Workspace
+	if err := tenancy.ValidateWorkspaceID(tenancy.WorkspaceID(workspace)); err != nil {
+		return fmt.Errorf("apply watch event: %w", err)
+	}
 	canonical := canonicalKind(event.Kind)
 	if canonical == "" || strings.TrimSpace(event.Scope) == "" {
 		return fmt.Errorf("apply watch event: kind and scope are required")
@@ -212,6 +249,9 @@ func (store *Store) ApplyWatchEvent(event connector.WatchEvent) error {
 			if record.Cluster != event.Scope {
 				return fmt.Errorf("apply watch event: fact scope %q does not match stream scope %q", record.Cluster, event.Scope)
 			}
+			if record.Workspace != workspace {
+				return fmt.Errorf("apply watch event: fact workspace %q does not match stream workspace %q", record.Workspace, workspace)
+			}
 			normalized = append(normalized, record)
 		}
 	case connector.WatchUpsert:
@@ -221,6 +261,9 @@ func (store *Store) ApplyWatchEvent(event connector.WatchEvent) error {
 		}
 		if record.Cluster != event.Scope {
 			return fmt.Errorf("apply watch event: fact scope %q does not match stream scope %q", record.Cluster, event.Scope)
+		}
+		if record.Workspace != workspace {
+			return fmt.Errorf("apply watch event: fact workspace %q does not match stream workspace %q", record.Workspace, workspace)
 		}
 		normalized = []Record{record}
 	case connector.WatchDelete:
@@ -234,125 +277,127 @@ func (store *Store) ApplyWatchEvent(event connector.WatchEvent) error {
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if store.paused {
+	if store.paused[workspace] {
 		return nil
 	}
-	store.aliases[kindAlias(event.Kind)] = canonical
+	if !store.scopeWorkspaces[event.Scope][workspace] {
+		return fmt.Errorf("apply watch event: scope %q is not discovered in workspace %q", event.Scope, workspace)
+	}
+	store.aliases[workspaceKindKey{workspace: workspace, kind: kindAlias(event.Kind)}] = canonical
 	if store.records[canonical] == nil {
 		store.records[canonical] = make(map[string]Record)
 	}
 	for _, record := range normalized {
-		store.aliases[kindAlias(record.Kind)] = canonical
+		store.aliases[workspaceKindKey{workspace: workspace, kind: kindAlias(record.Kind)}] = canonical
 		store.markScopeWorkspaceLocked(record.Workspace, record.Cluster)
 	}
 
 	switch event.Type {
 	case connector.WatchSnapshot:
 		for key, record := range store.records[canonical] {
-			if record.Cluster == event.Scope {
+			if record.Workspace == workspace && record.Cluster == event.Scope {
 				delete(store.records[canonical], key)
 			}
 		}
 		for _, record := range normalized {
 			store.records[canonical][recordKey(record)] = record
 		}
-		store.markScopeReachableLocked(canonical, event.Scope, event.ObservedAt)
-		coverage := store.coverage[canonical]
+		store.markScopeReachableLocked(workspace, canonical, event.Scope, event.ObservedAt)
+		coverageKey := workspaceKindKey{workspace: workspace, kind: canonical}
+		coverage := store.coverage[coverageKey]
 		coverage.Truncated = removeString(coverage.Truncated, event.Scope)
-		store.coverage[canonical] = coverage
+		store.coverage[coverageKey] = coverage
 	case connector.WatchUpsert:
 		store.records[canonical][recordKey(normalized[0])] = normalized[0]
-		store.markScopeReachableLocked(canonical, event.Scope, event.ObservedAt)
+		store.markScopeReachableLocked(workspace, canonical, event.Scope, event.ObservedAt)
 	case connector.WatchDelete:
 		for key, record := range store.records[canonical] {
-			if record.Cluster == event.Scope && record.Namespace == event.Ref.Namespace && record.Name == event.Ref.Name {
+			if record.Workspace == workspace && record.Cluster == event.Scope && record.Namespace == event.Ref.Namespace && record.Name == event.Ref.Name {
 				delete(store.records[canonical], key)
 			}
 		}
-		store.markScopeReachableLocked(canonical, event.Scope, event.ObservedAt)
+		store.markScopeReachableLocked(workspace, canonical, event.Scope, event.ObservedAt)
 	case connector.WatchError:
-		store.markScopeUnreachableLocked(canonical, event.Scope, event.Err)
+		store.markScopeUnreachableLocked(workspace, canonical, event.Scope, event.Err)
 	}
-	store.warmed[canonical] = true
-	store.updatedAt = store.now().UTC()
-	store.notifyLocked()
+	store.warmed[workspaceKindKey{workspace: workspace, kind: canonical}] = true
+	store.updatedAt[workspace] = store.now().UTC()
+	store.notifyLocked(workspace)
 	return nil
 }
 
-func (store *Store) markScopeReachableLocked(kind, scope string, observedAt time.Time) {
-	memberships := store.scopeWorkspaces[scope]
-	if len(memberships) != 1 {
-		return
+func (store *Store) markScopeReachableLocked(workspace, kind, scope string, observedAt time.Time) {
+	scopeKey := scopeMetadataKey{workspace: workspace, scope: scope}
+	current := store.scopes[scopeKey]
+	current.Name = scope
+	current.Reachable = true
+	if !observedAt.IsZero() {
+		current.ObservedAt = observedAt
 	}
-	for workspace := range memberships {
-		key := scopeMetadataKey{workspace: workspace, scope: scope}
-		current := store.scopes[key]
-		current.Name = scope
-		current.Reachable = true
-		if !observedAt.IsZero() {
-			current.ObservedAt = observedAt
-		}
-		store.scopes[key] = current
-	}
-	coverage := store.coverage[kind]
-	coverage.Requested = max(coverage.Requested, len(store.scopeWorkspaces))
+	store.scopes[scopeKey] = current
+	key := workspaceKindKey{workspace: workspace, kind: kind}
+	coverage := store.coverage[key]
+	coverage.Requested = max(coverage.Requested, store.workspaceScopeCountLocked(workspace))
 	coverage.Unreachable = removeString(coverage.Unreachable, scope)
 	coverage.Stale = removeString(coverage.Stale, scope)
 	coverage.Reachable = max(coverage.Requested-len(coverage.Unreachable), 0)
-	store.coverage[kind] = coverage
-	if store.allCoverageCompleteLocked() {
-		store.lastError = ""
+	store.coverage[key] = coverage
+	if len(coverage.Unreachable) == 0 {
+		delete(store.watchErrors, key)
 	}
 }
 
-func (store *Store) markScopeUnreachableLocked(kind, scope string, watchErr error) {
-	coverage := store.coverage[kind]
-	coverage.Requested = max(coverage.Requested, len(store.scopeWorkspaces))
+func (store *Store) markScopeUnreachableLocked(workspace, kind, scope string, watchErr error) {
+	key := workspaceKindKey{workspace: workspace, kind: kind}
+	coverage := store.coverage[key]
+	coverage.Requested = max(coverage.Requested, store.workspaceScopeCountLocked(workspace))
 	coverage.Unreachable = appendUniqueSorted(coverage.Unreachable, scope)
 	coverage.Stale = appendUniqueSorted(coverage.Stale, scope)
 	coverage.Reachable = max(coverage.Requested-len(coverage.Unreachable), 0)
-	store.coverage[kind] = coverage
-	store.lastError = fmt.Sprintf("watch %s in %s: %v", kind, scope, watchErr)
+	store.coverage[key] = coverage
+	store.watchErrors[key] = fmt.Sprintf("watch %s in %s: %v", kind, scope, watchErr)
 }
 
-func (store *Store) allCoverageCompleteLocked() bool {
-	for _, coverage := range store.coverage {
-		if len(coverage.Unreachable) > 0 {
-			return false
-		}
+// EndSync marks one workspace's reconciliation complete and retains prior data on failure.
+func (store *Store) EndSync(workspace string, err error) error {
+	if validationErr := tenancy.ValidateWorkspaceID(tenancy.WorkspaceID(workspace)); validationErr != nil {
+		return fmt.Errorf("end cache sync: %w", validationErr)
 	}
-	return true
-}
-
-// EndSync marks reconciliation complete and retains any prior data on failure.
-func (store *Store) EndSync(err error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	store.syncing = false
+	store.syncing[workspace] = false
 	if err != nil {
-		store.lastError = err.Error()
+		store.syncErrors[workspace] = err.Error()
 	} else {
-		store.lastError = ""
+		delete(store.syncErrors, workspace)
 	}
-	store.notifyLocked()
+	store.notifyLocked(workspace)
+	return nil
 }
 
-// SetPaused freezes or resumes background mutations while keeping snapshots available.
-func (store *Store) SetPaused(paused bool) {
+// SetPaused freezes or resumes one workspace's background mutations while keeping snapshots available.
+func (store *Store) SetPaused(workspace string, paused bool) error {
+	if err := tenancy.ValidateWorkspaceID(tenancy.WorkspaceID(workspace)); err != nil {
+		return fmt.Errorf("set cache pause: %w", err)
+	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if store.paused == paused {
-		return
+	if store.paused[workspace] == paused {
+		return nil
 	}
-	store.paused = paused
-	store.notifyLocked()
+	store.paused[workspace] = paused
+	store.notifyLocked(workspace)
+	return nil
 }
 
-// Paused reports whether background reconciliation is frozen.
-func (store *Store) Paused() bool {
+// Paused reports whether one workspace's background reconciliation is frozen.
+func (store *Store) Paused(workspace string) bool {
+	if tenancy.ValidateWorkspaceID(tenancy.WorkspaceID(workspace)) != nil {
+		return false
+	}
 	store.mu.RLock()
 	defer store.mu.RUnlock()
-	return store.paused
+	return store.paused[workspace]
 }
 
 // Query returns a deterministic workspace-scoped answer without connector or network access.
@@ -364,7 +409,7 @@ func (store *Store) Query(workspace string, query Query) Snapshot {
 	}
 	now := store.now().UTC()
 	records := make([]Record, 0)
-	selectedKind := store.resolveKindLocked(query.Kind)
+	selectedKind := store.resolveKindLocked(workspace, query.Kind)
 	matchQuery := query
 	if selectedKind != "" {
 		matchQuery.Kind = ""
@@ -404,32 +449,39 @@ func (store *Store) Query(workspace string, query Query) Snapshot {
 			}
 		}
 	}
-	pending := selectedKind != "" && !store.warmed[selectedKind]
+	pending := selectedKind != "" && !store.warmed[workspaceKindKey{workspace: workspace, kind: selectedKind}]
+	lastError := store.lastErrorLocked(workspace, selectedKind)
 	return Snapshot{
-		Version:     store.version,
-		State:       store.stateLocked(coverage, store.recordCountLocked(workspace), pending),
-		Syncing:     store.syncing,
-		Paused:      store.paused,
+		Version:     store.versions[workspace],
+		State:       store.stateLocked(workspace, coverage, store.recordCountLocked(workspace), pending, lastError),
+		Syncing:     store.syncing[workspace],
+		Paused:      store.paused[workspace],
 		Records:     records,
 		Coverage:    coverage,
-		UpdatedAt:   store.updatedAt,
-		LastError:   store.lastError,
+		UpdatedAt:   store.updatedAt[workspace],
+		LastError:   lastError,
 		Scopes:      store.scopesLocked(workspace, query.Scopes),
 		Diagnostics: cloneDiagnostics(store.diagnostics[workspace]),
 	}
 }
 
-// WaitForChange blocks until the store advances beyond a known version or the context ends.
-func (store *Store) WaitForChange(ctx context.Context, after uint64) (uint64, error) {
+// WaitForChange blocks until one workspace advances beyond a known version or the context ends.
+func (store *Store) WaitForChange(ctx context.Context, workspace string, after uint64) (uint64, error) {
+	if err := tenancy.ValidateWorkspaceID(tenancy.WorkspaceID(workspace)); err != nil {
+		return 0, fmt.Errorf("wait for cache change: %w", err)
+	}
 	for {
-		store.mu.RLock()
-		if store.version > after {
-			version := store.version
-			store.mu.RUnlock()
+		store.mu.Lock()
+		if store.versions[workspace] > after {
+			version := store.versions[workspace]
+			store.mu.Unlock()
 			return version, nil
 		}
-		changed := store.changed
-		store.mu.RUnlock()
+		if store.changed[workspace] == nil {
+			store.changed[workspace] = make(chan struct{})
+		}
+		changed := store.changed[workspace]
+		store.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			return 0, ctx.Err()
@@ -443,22 +495,26 @@ func (store *Store) coverageLocked(workspace string, query Query, records []Reco
 	unreachable := make(map[string]struct{})
 	stale := make(map[string]struct{})
 	truncated := make(map[string]struct{})
-	kind := store.resolveKindLocked(query.Kind)
+	kind := store.resolveKindLocked(workspace, query.Kind)
 	if kind != "" {
-		if !store.warmed[kind] {
+		key := workspaceKindKey{workspace: workspace, kind: kind}
+		if !store.warmed[key] {
 			return fleet.Coverage{Requested: len(targets)}
 		}
-		for _, name := range store.coverage[kind].Unreachable {
+		for _, name := range store.coverage[key].Unreachable {
 			unreachable[name] = struct{}{}
 		}
-		for _, name := range store.coverage[kind].Stale {
+		for _, name := range store.coverage[key].Stale {
 			stale[name] = struct{}{}
 		}
-		for _, name := range store.coverage[kind].Truncated {
+		for _, name := range store.coverage[key].Truncated {
 			truncated[name] = struct{}{}
 		}
 	} else {
-		for _, coverage := range store.coverage {
+		for key, coverage := range store.coverage {
+			if key.workspace != workspace {
+				continue
+			}
 			for _, name := range coverage.Unreachable {
 				unreachable[name] = struct{}{}
 			}
@@ -501,12 +557,12 @@ func (store *Store) coverageLocked(workspace string, query Query, records []Reco
 	return coverage
 }
 
-func (store *Store) resolveKindLocked(kind string) string {
+func (store *Store) resolveKindLocked(workspace, kind string) string {
 	canonical := canonicalKind(kind)
 	if canonical == "" {
 		return ""
 	}
-	if resolved := store.aliases[kindAlias(kind)]; resolved != "" {
+	if resolved := store.aliases[workspaceKindKey{workspace: workspace, kind: kindAlias(kind)}]; resolved != "" {
 		return resolved
 	}
 	return canonical
@@ -559,27 +615,71 @@ func (store *Store) scopesLocked(workspace string, patterns []string) []connecto
 	return result
 }
 
-func (store *Store) stateLocked(coverage fleet.Coverage, recordCount int, pending bool) State {
+func (store *Store) stateLocked(workspace string, coverage fleet.Coverage, recordCount int, pending bool, lastError string) State {
+	syncing := store.syncing[workspace]
 	switch {
-	case store.paused:
+	case store.paused[workspace]:
 		return StatePaused
-	case pending && store.syncing:
+	case pending && syncing:
 		return StateWarming
-	case pending && store.lastError == "":
+	case pending && lastError == "":
 		return StateCold
-	case recordCount == 0 && store.syncing:
+	case recordCount == 0 && syncing:
 		return StateWarming
-	case recordCount == 0 && len(store.warmed) == 0:
+	case recordCount == 0 && !store.workspaceWarmedLocked(workspace):
 		return StateCold
-	case coverage.Reachable == 0 && (recordCount > 0 || store.lastError != ""):
+	case coverage.Reachable == 0 && (recordCount > 0 || lastError != ""):
 		return StateOffline
-	case len(coverage.Unreachable) > 0 || len(coverage.Stale) > 0 || len(coverage.Truncated) > 0 || store.lastError != "":
+	case len(coverage.Unreachable) > 0 || len(coverage.Stale) > 0 || len(coverage.Truncated) > 0 || lastError != "":
 		return StateDegraded
-	case store.syncing:
+	case syncing:
 		return StateWarming
 	default:
 		return StateWarm
 	}
+}
+
+func (store *Store) lastErrorLocked(workspace, kind string) string {
+	result := make([]string, 0, 1)
+	if syncError := store.syncErrors[workspace]; syncError != "" {
+		result = append(result, syncError)
+	}
+	if kind != "" {
+		if watchError := store.watchErrors[workspaceKindKey{workspace: workspace, kind: kind}]; watchError != "" {
+			result = append(result, watchError)
+		}
+		return strings.Join(result, "; ")
+	}
+	keys := make([]workspaceKindKey, 0)
+	for key, watchError := range store.watchErrors {
+		if key.workspace == workspace && watchError != "" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Slice(keys, func(left, right int) bool { return keys[left].kind < keys[right].kind })
+	for _, key := range keys {
+		result = append(result, store.watchErrors[key])
+	}
+	return strings.Join(result, "; ")
+}
+
+func (store *Store) workspaceWarmedLocked(workspace string) bool {
+	for key, warmed := range store.warmed {
+		if key.workspace == workspace && warmed {
+			return true
+		}
+	}
+	return false
+}
+
+func (store *Store) workspaceScopeCountLocked(workspace string) int {
+	count := 0
+	for _, memberships := range store.scopeWorkspaces {
+		if memberships[workspace] {
+			count++
+		}
+	}
+	return count
 }
 
 func (store *Store) recordCountLocked(workspace string) int {
@@ -608,14 +708,16 @@ func (store *Store) markScopeWorkspaceLocked(workspace, scope string) {
 	}
 }
 
-func (store *Store) notifyLocked() {
-	store.version++
-	close(store.changed)
-	store.changed = make(chan struct{})
+func (store *Store) notifyLocked(workspace string) {
+	store.versions[workspace]++
+	if changed := store.changed[workspace]; changed != nil {
+		close(changed)
+	}
+	store.changed[workspace] = make(chan struct{})
 }
 
 func recordKey(record Record) string {
-	return strings.Join([]string{record.Kind, record.Cluster, record.Namespace, record.Name}, "\x00")
+	return strings.Join([]string{record.Workspace, record.Kind, record.Cluster, record.Namespace, record.Name}, "\x00")
 }
 
 func stringSet(values []string) map[string]struct{} {

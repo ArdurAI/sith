@@ -418,9 +418,14 @@ func (model *Model) applyCommand() (tea.Model, tea.Cmd) {
 		model.closeLocalSessions()
 		return model, tea.Quit
 	case "pause":
-		model.store.SetPaused(true)
+		if err := model.store.SetPaused(fleet.LocalWorkspace, true); err != nil {
+			model.lastError = err.Error()
+		}
 	case "resume":
-		model.store.SetPaused(false)
+		if err := model.store.SetPaused(fleet.LocalWorkspace, false); err != nil {
+			model.lastError = err.Error()
+			return model, nil
+		}
 		return model, model.syncCommand()
 	case "refresh":
 		return model, model.syncCommand()
@@ -510,7 +515,7 @@ func (model *Model) syncLensCommand() tea.Cmd {
 
 func (model *Model) waitCommand(after uint64) tea.Cmd {
 	return func() tea.Msg {
-		version, err := model.store.WaitForChange(model.ctx, after)
+		version, err := model.store.WaitForChange(model.ctx, fleet.LocalWorkspace, after)
 		return cacheChangedMsg{version: version, err: err}
 	}
 }

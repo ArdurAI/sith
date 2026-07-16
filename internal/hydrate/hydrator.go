@@ -253,27 +253,31 @@ func waitForRetry(ctx context.Context, delay time.Duration) bool {
 	}
 }
 
-func (hydrator *Hydrator) sync(ctx context.Context, kinds []string) error {
-	if hydrator.store.Paused() {
+func (hydrator *Hydrator) sync(ctx context.Context, kinds []string) (syncErr error) {
+	if hydrator.store.Paused(fleet.LocalWorkspace) {
 		return ErrPaused
 	}
-	if !hydrator.store.BeginSync(kinds...) {
-		if hydrator.store.Paused() {
+	if !hydrator.store.BeginSync(fleet.LocalWorkspace, kinds...) {
+		if hydrator.store.Paused(fleet.LocalWorkspace) {
 			return ErrPaused
 		}
 		return ErrSyncInProgress
 	}
 
-	var syncErr error
 	defer func() {
-		hydrator.store.EndSync(syncErr)
+		if endErr := hydrator.store.EndSync(fleet.LocalWorkspace, syncErr); endErr != nil {
+			syncErr = errors.Join(syncErr, endErr)
+		}
 	}()
 	discovery, err := hydrator.reader.Discover(ctx)
 	if err != nil {
 		syncErr = fmt.Errorf("discover hydration scopes: %w", err)
 		return syncErr
 	}
-	hydrator.store.SetDiscovery(fleet.LocalWorkspace, discovery)
+	if err := hydrator.store.SetDiscovery(fleet.LocalWorkspace, discovery); err != nil {
+		syncErr = err
+		return syncErr
+	}
 
 	errorsByKind := make([]error, len(kinds))
 	workers := min(hydrator.limit, len(kinds))
@@ -293,7 +297,7 @@ func (hydrator *Hydrator) sync(ctx context.Context, kinds []string) error {
 					errorsByKind[index] = fmt.Errorf("query %s cache: %w", kind, queryErr)
 					continue
 				}
-				if replaceErr := hydrator.store.Replace(kind, result); replaceErr != nil {
+				if replaceErr := hydrator.store.Replace(fleet.LocalWorkspace, kind, result); replaceErr != nil {
 					errorsByKind[index] = fmt.Errorf("replace %s cache: %w", kind, replaceErr)
 				}
 			}

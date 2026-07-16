@@ -47,7 +47,8 @@ func (adapter *Adapter) Watch(ctx context.Context, kinds ...string) (<-chan conn
 				go func(scopeName, resourceKind string) {
 					defer waitGroup.Done()
 					sendWatchEvent(ctx, events, connector.WatchEvent{
-						Type: connector.WatchError, Kind: resourceKind, Scope: scopeName, Err: ErrUnreachableScope,
+						Type: connector.WatchError, Workspace: fleet.LocalWorkspace,
+						Kind: resourceKind, Scope: scopeName, Err: ErrUnreachableScope,
 					})
 				}(name, kind)
 				continue
@@ -131,7 +132,8 @@ func (adapter *Adapter) watchScope(
 			return
 		}
 		if !sendWatchEvent(ctx, events, connector.WatchEvent{
-			Type: connector.WatchSnapshot, Kind: kind, Scope: scope, Facts: facts, ObservedAt: observedAt,
+			Type: connector.WatchSnapshot, Workspace: fleet.LocalWorkspace,
+			Kind: kind, Scope: scope, Facts: facts, ObservedAt: observedAt,
 		}) {
 			return
 		}
@@ -199,7 +201,7 @@ func (adapter *Adapter) consumeWatch(
 				return err
 			}
 			watchEvent := connector.WatchEvent{
-				Kind: kind, Scope: scope, ObservedAt: observedAt, Ref: evidence.Ref,
+				Workspace: fleet.LocalWorkspace, Kind: kind, Scope: scope, ObservedAt: observedAt, Ref: evidence.Ref,
 			}
 			switch event.Type {
 			case watch.Added, watch.Modified:
@@ -234,7 +236,7 @@ func (adapter *Adapter) reportWatchError(
 	err error,
 ) bool {
 	return sendWatchEvent(ctx, events, connector.WatchEvent{
-		Type: connector.WatchError, Kind: kind, Scope: scope, Err: err,
+		Type: connector.WatchError, Workspace: fleet.LocalWorkspace, Kind: kind, Scope: scope, Err: err,
 	})
 }
 

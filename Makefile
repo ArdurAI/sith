@@ -114,6 +114,9 @@ e2e-isolation: ## Run signed-identity, scoped-query, and real PostgreSQL isolati
 	go test -run '^$$' -fuzz '^FuzzQueryScopedNeverLeaksForeignWorkspace$$' \
 		-fuzztime="$(ISOLATION_FUZZ_BUDGET)" -parallel="$(ISOLATION_FUZZ_WORKERS)" \
 		-timeout=2m ./internal/fleetcache
+	go test -run '^$$' -fuzz '^FuzzStoreForeignWorkspaceMutationCannotChangeEitherWorkspace$$' \
+		-fuzztime="$(ISOLATION_FUZZ_BUDGET)" -parallel="$(ISOLATION_FUZZ_WORKERS)" \
+		-timeout=2m ./internal/fleetcache
 
 lint: ## Run golangci-lint (v2)
 	$(GOLANGCI) run ./...
