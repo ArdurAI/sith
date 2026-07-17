@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+
+	"github.com/ArdurAI/sith/internal/intent"
 )
 
 // ErrNotRegistered reports a lookup for an unknown connector kind.
@@ -29,11 +31,12 @@ type registryEntry struct {
 type Registry struct {
 	mu      sync.RWMutex
 	entries map[string]registryEntry
+	verbs   map[intent.Verb]string
 }
 
 // NewRegistry returns an empty connector registry.
 func NewRegistry() *Registry {
-	return &Registry{entries: make(map[string]registryEntry)}
+	return &Registry{entries: make(map[string]registryEntry), verbs: make(map[intent.Verb]string)}
 }
 
 // Register builds and validates a connector before atomically adding it.
@@ -60,7 +63,15 @@ func (registry *Registry) Register(factory Factory) error {
 	if _, exists := registry.entries[entry.descriptor.Kind]; exists {
 		return fmt.Errorf("register connector %q: kind already registered", entry.descriptor.Kind)
 	}
+	for _, verb := range entry.descriptor.Verbs {
+		if owner, exists := registry.verbs[verb]; exists {
+			return fmt.Errorf("register connector %q: action verb %q already belongs to %q", entry.descriptor.Kind, verb, owner)
+		}
+	}
 	registry.entries[entry.descriptor.Kind] = entry
+	for _, verb := range entry.descriptor.Verbs {
+		registry.verbs[verb] = entry.descriptor.Kind
+	}
 	return nil
 }
 
@@ -177,6 +188,65 @@ func (registry *Registry) VerifierFor(kind string) (Verifier, error) {
 	return verifier, nil
 }
 
+// PlannerForVerb returns the only registered planner classified for verb.
+func (registry *Registry) PlannerForVerb(verb intent.Verb) (Planner, error) {
+	entry, err := registry.entryForVerb(verb, CapPlan)
+	if err != nil {
+		return nil, err
+	}
+	planner, ok := entry.connector.(Planner)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s does not implement planner", ErrCapability, entry.descriptor.Kind)
+	}
+	return planner, nil
+}
+
+// ExecutorForVerb returns the only registered executor classified for verb.
+func (registry *Registry) ExecutorForVerb(verb intent.Verb) (Executor, error) {
+	entry, err := registry.entryForVerb(verb, CapExecute)
+	if err != nil {
+		return nil, err
+	}
+	executor, ok := entry.connector.(Executor)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s does not implement executor", ErrCapability, entry.descriptor.Kind)
+	}
+	return executor, nil
+}
+
+// VerifierForVerb returns the only registered post-condition verifier classified for verb.
+func (registry *Registry) VerifierForVerb(verb intent.Verb) (Verifier, error) {
+	entry, err := registry.entryForVerb(verb, CapVerify)
+	if err != nil {
+		return nil, err
+	}
+	verifier, ok := entry.connector.(Verifier)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s does not implement verifier", ErrCapability, entry.descriptor.Kind)
+	}
+	return verifier, nil
+}
+
+func (registry *Registry) entryForVerb(verb intent.Verb, capability Capability) (registryEntry, error) {
+	if !verb.Valid() {
+		return registryEntry{}, fmt.Errorf("%w: unknown action verb", ErrNotRegistered)
+	}
+	registry.mu.RLock()
+	kind, exists := registry.verbs[verb]
+	entry := registry.entries[kind]
+	registry.mu.RUnlock()
+	if !exists {
+		return registryEntry{}, fmt.Errorf("%w: action verb %q", ErrNotRegistered, verb)
+	}
+	if entry.descriptor.ConnKind != KindTypedAction {
+		return registryEntry{}, fmt.Errorf("%w: %s is not a typed-action connector", ErrCapability, kind)
+	}
+	if _, declared := entry.declared[capability]; !declared {
+		return registryEntry{}, fmt.Errorf("%w: %s did not declare %s", ErrCapability, kind, capability)
+	}
+	return entry, nil
+}
+
 func (registry *Registry) entryFor(kind string, capability Capability, typedAction bool) (registryEntry, error) {
 	registry.mu.RLock()
 	entry, exists := registry.entries[kind]
@@ -232,9 +302,9 @@ func validateConnector(candidate Connector) (registryEntry, error) {
 		if len(descriptor.Verbs) == 0 {
 			return registryEntry{}, fmt.Errorf("typed-action connector must declare at least one verb")
 		}
-		seen := make(map[string]struct{}, len(descriptor.Verbs))
+		seen := make(map[intent.Verb]struct{}, len(descriptor.Verbs))
 		for _, verb := range descriptor.Verbs {
-			if !ValidVerb(verb) {
+			if !verb.Valid() {
 				return registryEntry{}, fmt.Errorf("invalid action verb %q", verb)
 			}
 			if _, duplicate := seen[verb]; duplicate {
@@ -312,6 +382,6 @@ func connectorIsNil(candidate Connector) bool {
 
 func cloneDescriptor(descriptor Descriptor) Descriptor {
 	descriptor.Capabilities = append([]Capability(nil), descriptor.Capabilities...)
-	descriptor.Verbs = append([]string(nil), descriptor.Verbs...)
+	descriptor.Verbs = append([]intent.Verb(nil), descriptor.Verbs...)
 	return descriptor
 }

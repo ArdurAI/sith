@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ArdurAI/sith/internal/fleet"
+	"github.com/ArdurAI/sith/internal/intent"
 )
 
 type testReader struct {
@@ -73,8 +74,16 @@ func (connector testExecutor) Descriptor() Descriptor {
 	return cloneDescriptor(connector.descriptor)
 }
 
+func (testExecutor) Plan(_ context.Context, request Intent) (ActionPlan, error) {
+	return ActionPlan{IntentID: request.ID, Verb: request.Verb}, nil
+}
+
 func (testExecutor) Execute(_ context.Context, plan ActionPlan) (ExecutionResult, error) {
 	return ExecutionResult{IntentID: plan.IntentID, Applied: true}, nil
+}
+
+func (testExecutor) Verify(_ context.Context, request VerifyRequest) (Verification, error) {
+	return Verification{Satisfied: request.IntentID != ""}, nil
 }
 
 func TestRegistryRegisterAndLookupReader(t *testing.T) {
@@ -108,9 +117,9 @@ func TestRegistryRejectsInvalidConnectors(t *testing.T) {
 		{name: "unknown taxonomy", connector: identityOnlyConnector{descriptor: Descriptor{Kind: "bad", ConnKind: "other", ProtocolV: "1.0.0", Owner: "test"}}},
 		{name: "declared but not implemented", connector: identityOnlyConnector{descriptor: Descriptor{Kind: "bad", ConnKind: KindReadAdapter, ProtocolV: "1.0.0", Owner: "test", Capabilities: []Capability{CapRead}}}},
 		{name: "unknown capability", connector: identityOnlyConnector{descriptor: Descriptor{Kind: "bad", ConnKind: KindReadAdapter, ProtocolV: "1.0.0", Owner: "test", Capabilities: []Capability{"shell"}}}},
-		{name: "read adapter with verbs", connector: identityOnlyConnector{descriptor: Descriptor{Kind: "bad", ConnKind: KindReadAdapter, ProtocolV: "1.0.0", Owner: "test", Verbs: []string{"gitops.open-pr"}}}},
+		{name: "read adapter with verbs", connector: identityOnlyConnector{descriptor: Descriptor{Kind: "bad", ConnKind: KindReadAdapter, ProtocolV: "1.0.0", Owner: "test", Verbs: []intent.Verb{intent.VerbGitOpsOpenPR}}}},
 		{name: "action without verbs", connector: testExecutor{descriptor: Descriptor{Kind: "bad", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test", Capabilities: []Capability{CapExecute}}}},
-		{name: "action with unknown verb", connector: testExecutor{descriptor: Descriptor{Kind: "bad", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test", Capabilities: []Capability{CapExecute}, Verbs: []string{"shell.exec"}}}},
+		{name: "action with unknown verb", connector: testExecutor{descriptor: Descriptor{Kind: "bad", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test", Capabilities: []Capability{CapExecute}, Verbs: []intent.Verb{"shell.exec"}}}},
 	}
 
 	for _, test := range tests {
@@ -171,7 +180,7 @@ func TestRegistryExecutorRequiresTypedAction(t *testing.T) {
 		ProtocolV:    "1.0.0",
 		Owner:        "test",
 		Capabilities: []Capability{CapExecute},
-		Verbs:        []string{"argocd.sync"},
+		Verbs:        []intent.Verb{intent.VerbArgoCDSync},
 	}}
 	if err := registry.Register(func() (Connector, error) { return executor, nil }); err != nil {
 		t.Fatalf("Register() error = %v", err)
@@ -203,11 +212,85 @@ func TestRegistryFactoryFailuresAreAtomic(t *testing.T) {
 	}
 }
 
-func TestValidVerb(t *testing.T) {
+func TestRegistryRejectsDuplicateVerbOwnershipAtomically(t *testing.T) {
 	t.Parallel()
 
-	if !ValidVerb("gitops.open-pr") || ValidVerb("shell.exec") {
-		t.Fatal("ValidVerb() does not enforce the closed vocabulary")
+	registry := NewRegistry()
+	first := testExecutor{descriptor: Descriptor{
+		Kind: "first", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test",
+		Capabilities: []Capability{CapExecute}, Verbs: []intent.Verb{intent.VerbGitOpsOpenPR},
+	}}
+	second := testExecutor{descriptor: Descriptor{
+		Kind: "second", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test",
+		Capabilities: []Capability{CapExecute}, Verbs: []intent.Verb{intent.VerbGitOpsOpenPR, intent.VerbArgoCDSync},
+	}}
+	if err := registry.Register(func() (Connector, error) { return first, nil }); err != nil {
+		t.Fatalf("first Register() error = %v", err)
+	}
+	if err := registry.Register(func() (Connector, error) { return second, nil }); err == nil {
+		t.Fatal("duplicate verb owner was accepted")
+	}
+	if _, ok := registry.ByKind("second"); ok {
+		t.Fatal("failed registration modified kind index")
+	}
+	if _, err := registry.ExecutorForVerb(intent.VerbArgoCDSync); !errors.Is(err, ErrNotRegistered) {
+		t.Fatalf("failed registration modified verb index: %v", err)
+	}
+	if executor, err := registry.ExecutorForVerb(intent.VerbGitOpsOpenPR); err != nil || executor.Kind() != "first" {
+		t.Fatalf("original verb owner = %v, %v", executor, err)
+	}
+}
+
+func TestRegistryVerbLookupFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	executor := testExecutor{descriptor: Descriptor{
+		Kind: "git", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test",
+		Capabilities: []Capability{CapExecute}, Verbs: []intent.Verb{intent.VerbGitOpsOpenPR},
+	}}
+	if err := registry.Register(func() (Connector, error) { return executor, nil }); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if got, err := registry.ExecutorForVerb(intent.VerbGitOpsOpenPR); err != nil || got.Kind() != "git" {
+		t.Fatalf("ExecutorForVerb() = %v, %v", got, err)
+	}
+	if _, err := registry.ExecutorForVerb("shell.exec"); !errors.Is(err, ErrNotRegistered) {
+		t.Fatalf("unknown ExecutorForVerb() error = %v", err)
+	}
+	if _, err := registry.ExecutorForVerb(intent.VerbArgoCDSync); !errors.Is(err, ErrNotRegistered) {
+		t.Fatalf("unregistered ExecutorForVerb() error = %v", err)
+	}
+	if _, err := registry.PlannerForVerb(intent.VerbGitOpsOpenPR); !errors.Is(err, ErrCapability) {
+		t.Fatalf("wrong-capability PlannerForVerb() error = %v", err)
+	}
+	if _, err := registry.VerifierForVerb(intent.VerbGitOpsOpenPR); !errors.Is(err, ErrCapability) {
+		t.Fatalf("wrong-capability VerifierForVerb() error = %v", err)
+	}
+}
+
+func TestRegistryVerbLookupRoutesDeclaredCapabilities(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	action := testExecutor{descriptor: Descriptor{
+		Kind: "git", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test",
+		Capabilities: []Capability{CapPlan, CapExecute, CapVerify}, Verbs: []intent.Verb{intent.VerbGitOpsOpenPR},
+	}}
+	if err := registry.Register(func() (Connector, error) { return action, nil }); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	planner, err := registry.PlannerForVerb(intent.VerbGitOpsOpenPR)
+	if err != nil || planner.Kind() != "git" {
+		t.Fatalf("PlannerForVerb() = %v, %v", planner, err)
+	}
+	executor, err := registry.ExecutorForVerb(intent.VerbGitOpsOpenPR)
+	if err != nil || executor.Kind() != "git" {
+		t.Fatalf("ExecutorForVerb() = %v, %v", executor, err)
+	}
+	verifier, err := registry.VerifierForVerb(intent.VerbGitOpsOpenPR)
+	if err != nil || verifier.Kind() != "git" {
+		t.Fatalf("VerifierForVerb() = %v, %v", verifier, err)
 	}
 }
 
