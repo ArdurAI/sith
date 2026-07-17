@@ -142,10 +142,25 @@ func TestGenericResourceResolutionIsCached(t *testing.T) {
 func TestWatchStreamsSnapshotUpsertAndDelete(t *testing.T) {
 	t.Parallel()
 	client := fakeClient(pod("api-0", "apps", "registry/api:v1", nil))
+	var bootstrapOptionsMu sync.Mutex
+	var bootstrapOptions []metav1.ListOptions
+	recordingClient := listOptionsRecordingClient{
+		Interface: client,
+		record: func(options metav1.ListOptions) {
+			bootstrapOptionsMu.Lock()
+			bootstrapOptions = append(bootstrapOptions, options)
+			bootstrapOptionsMu.Unlock()
+		},
+	}
+	client.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		list := podList("", pod("api-0", "apps", "registry/api:v1", nil))
+		list.SetResourceVersion("2")
+		return true, list, nil
+	})
 	adapter, err := New(
 		WithLoadingRules(testLoadingRules(t, testConfig("alpha"))),
 		withProbe(func(_ context.Context, _ *rest.Config) error { return nil }),
-		withDynamicFactory(func(_ *rest.Config) (dynamic.Interface, error) { return client, nil }),
+		withDynamicFactory(func(_ *rest.Config) (dynamic.Interface, error) { return recordingClient, nil }),
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -158,9 +173,18 @@ func TestWatchStreamsSnapshotUpsertAndDelete(t *testing.T) {
 	}
 	snapshot := receiveWatchEvent(ctx, t, events)
 	if snapshot.Type != connector.WatchSnapshot || snapshot.Scope != "alpha" || len(snapshot.Facts) != 1 {
-		t.Fatalf("snapshot = %#v", snapshot)
+		t.Fatalf("snapshot = %#v, error = %v", snapshot, snapshot.Err)
 	}
 	waitForWatchAction(ctx, t, client)
+	bootstrapOptionsMu.Lock()
+	observedOptions := append([]metav1.ListOptions(nil), bootstrapOptions...)
+	bootstrapOptionsMu.Unlock()
+	if !slices.ContainsFunc(observedOptions, func(options metav1.ListOptions) bool {
+		return options.Limit == watchBootstrapPageSize && options.Continue == ""
+	}) {
+		t.Fatalf("watch list options = %#v, want bounded bootstrap request", observedOptions)
+	}
+	assertWatchResourceVersion(t, client, "2")
 
 	created := pod("api-1", "apps", "registry/api:v2", nil)
 	if _, err := client.Resource(schema.GroupVersionResource{Version: "v1", Resource: "pods"}).
@@ -179,6 +203,53 @@ func TestWatchStreamsSnapshotUpsertAndDelete(t *testing.T) {
 	if deleted.Type != connector.WatchDelete || deleted.Ref.Name != "api-1" {
 		t.Fatalf("delete = %#v", deleted)
 	}
+}
+
+type listOptionsRecordingClient struct {
+	dynamic.Interface
+	record func(metav1.ListOptions)
+}
+
+func (client listOptionsRecordingClient) Resource(
+	resource schema.GroupVersionResource,
+) dynamic.NamespaceableResourceInterface {
+	return &listOptionsRecordingNamespaceable{
+		NamespaceableResourceInterface: client.Interface.Resource(resource),
+		record:                         client.record,
+	}
+}
+
+type listOptionsRecordingNamespaceable struct {
+	dynamic.NamespaceableResourceInterface
+	record func(metav1.ListOptions)
+}
+
+func (resource *listOptionsRecordingNamespaceable) Namespace(namespace string) dynamic.ResourceInterface {
+	return &listOptionsRecordingResource{
+		ResourceInterface: resource.NamespaceableResourceInterface.Namespace(namespace),
+		record:            resource.record,
+	}
+}
+
+func (resource *listOptionsRecordingNamespaceable) List(
+	ctx context.Context,
+	options metav1.ListOptions,
+) (*unstructured.UnstructuredList, error) {
+	resource.record(options)
+	return resource.NamespaceableResourceInterface.List(ctx, options)
+}
+
+type listOptionsRecordingResource struct {
+	dynamic.ResourceInterface
+	record func(metav1.ListOptions)
+}
+
+func (resource *listOptionsRecordingResource) List(
+	ctx context.Context,
+	options metav1.ListOptions,
+) (*unstructured.UnstructuredList, error) {
+	resource.record(options)
+	return resource.ResourceInterface.List(ctx, options)
 }
 
 func TestDiscoverIsIndependentAndPreservesLastSeen(t *testing.T) {
@@ -1025,10 +1096,26 @@ func podList(continueToken string, objects ...*unstructured.Unstructured) *unstr
 	list.SetAPIVersion("v1")
 	list.SetKind("PodList")
 	list.SetContinue(continueToken)
+	list.SetResourceVersion("test-resource-version")
 	for _, object := range objects {
 		list.Items = append(list.Items, *object.DeepCopy())
 	}
 	return list
+}
+
+func assertWatchResourceVersion(t *testing.T, client *dynamicfake.FakeDynamicClient, want string) {
+	t.Helper()
+	for _, action := range client.Actions() {
+		watchAction, ok := action.(k8stesting.WatchAction)
+		if !ok {
+			continue
+		}
+		if got := watchAction.GetWatchRestrictions().ResourceVersion; got != want {
+			t.Fatalf("watch resourceVersion = %q, want %q", got, want)
+		}
+		return
+	}
+	t.Fatal("watch action not found")
 }
 
 func fakeClientWithKinds(

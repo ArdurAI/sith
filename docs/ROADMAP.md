@@ -149,6 +149,11 @@ always-green slices, each leaving the binary more useful than the last:
 > and each request at 16 MiB, rejects ignored limits and continuation cycles, and retains display
 > fields only for selected facts. Unit adversarial coverage and a real second-page kind fixture
 > prove that the presentation path remains bounded without dropping late-page server columns.
+> #192 pages every list-watch bootstrap at 250 objects under one absolute request deadline and
+> accepts a complete snapshot only within 10,000 objects and 128 pages per scope and kind. Empty
+> or changed resource versions, ignored limits, continuation failures/cycles, cancellation, and
+> budget exhaustion emit `WatchError` without opening a stream; a real late-page ConfigMap proves
+> the watch starts from the completed consistent snapshot.
 > #187 workspace-qualifies fleet-cache record identity, coverage, sync/pause/error state, and
 > change notifications; missing or mixed-workspace replace/watch mutations fail closed, with
 > race, fuzz, and real two-cluster kind coverage proving identical resource identities remain
