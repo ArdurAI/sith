@@ -208,7 +208,12 @@ argv exposure imposed by `clusteradm` 1.3.1 and makes a captured registration to
 before the reach tests begin.
 
 It downloads both 0.10.0 charts into isolated scratch, verifies their exact archive hashes,
-installs them, and waits for all four `ManagedClusterAddOn` conditions.
+installs them, and waits for all four `ManagedClusterAddOn` conditions. Creation and availability
+share one absolute five-minute deadline per add-on. The runner polls only the current object's
+machine-formatted UID and `Available` condition, tolerates NotFound and delete/recreate transitions,
+and requires two consecutive `Available=True` observations of the same UID. Authorization, API,
+duplicate-condition, malformed-status, and malformed-identity failures stop the run without printing
+the server response body.
 
 ### Scoped reach and negative controls
 

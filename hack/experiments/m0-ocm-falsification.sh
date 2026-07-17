@@ -481,16 +481,60 @@ wait_for_addon_creation() {
   local cluster=$1
   local addon=$2
   local deadline=$((SECONDS + 300))
+  local observation
+  local uid
+  local condition
+  local ready_uid=""
+  local remaining
 
-  while ! "${KUBECTL_BIN}" --context "${HUB_CONTEXT}" -n "${cluster}" get \
-    "managedclusteraddon/${addon}" >/dev/null 2>&1; do
-    if (( SECONDS >= deadline )); then
-      die "timed out waiting for ${cluster} managedclusteraddon/${addon} creation"
+  while (( SECONDS < deadline )); do
+    remaining=$((deadline - SECONDS))
+    if ! observation="$("${KUBECTL_BIN}" --context "${HUB_CONTEXT}" -n "${cluster}" get \
+      "managedclusteraddon/${addon}" --ignore-not-found --request-timeout="${remaining}s" \
+      -o=go-template='{{.metadata.uid}}{{"\t"}}{{range .status.conditions}}{{if eq .type "Available"}}{{.status}}{{"|"}}{{end}}{{end}}' \
+      2>/dev/null)"; then
+      if (( SECONDS >= deadline )); then
+        die "timed out waiting for ${cluster} managedclusteraddon/${addon} availability"
+      fi
+      die "cannot read current ${cluster} managedclusteraddon/${addon} state"
     fi
+    if (( SECONDS >= deadline )); then
+      die "timed out waiting for ${cluster} managedclusteraddon/${addon} availability"
+    fi
+
+    if [[ -z "${observation}" ]]; then
+      ready_uid=""
+      sleep 1
+      continue
+    fi
+    if [[ "${observation}" != *$'\t'* ]]; then
+      die "${cluster} managedclusteraddon/${addon} returned malformed status"
+    fi
+    uid="${observation%%$'\t'*}"
+    condition="${observation#*$'\t'}"
+    if [[ ! "${uid}" =~ ^[A-Za-z0-9._:-]{1,128}$ ]]; then
+      die "${cluster} managedclusteraddon/${addon} returned malformed identity"
+    fi
+
+    case "${condition}" in
+      'True|')
+        if [[ "${ready_uid}" == "${uid}" ]]; then
+          log "${cluster} managedclusteraddon/${addon} is Available"
+          return 0
+        fi
+        ready_uid="${uid}"
+        continue
+        ;;
+      '' | 'False|' | 'Unknown|')
+        ready_uid=""
+        ;;
+      *)
+        die "${cluster} managedclusteraddon/${addon} returned malformed Available status"
+        ;;
+    esac
     sleep 1
   done
-  "${KUBECTL_BIN}" --context "${HUB_CONTEXT}" -n "${cluster}" wait \
-    "managedclusteraddon/${addon}" --for=condition=Available --timeout=300s
+  die "timed out waiting for ${cluster} managedclusteraddon/${addon} availability"
 }
 
 install_addons() {
