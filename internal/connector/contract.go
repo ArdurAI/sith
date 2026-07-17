@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ArdurAI/sith/internal/fleet"
+	"github.com/ArdurAI/sith/internal/intent"
 )
 
 // Connector identifies one canonical integration and its declared capabilities.
@@ -25,7 +26,7 @@ type Descriptor struct {
 	ProtocolV    string        `json:"protocol_version"`
 	Owner        string        `json:"owner"`
 	Capabilities []Capability  `json:"capabilities"`
-	Verbs        []string      `json:"verbs,omitempty"`
+	Verbs        []intent.Verb `json:"verbs,omitempty"`
 }
 
 // ConnectorKind is the closed integration taxonomy.
@@ -167,7 +168,7 @@ type Intent struct {
 	ID            string              `json:"id"`
 	Workspace     string              `json:"workspace"`
 	Actor         string              `json:"actor"`
-	Verb          string              `json:"verb"`
+	Verb          intent.Verb         `json:"verb"`
 	Target        fleet.ResourceRef   `json:"target"`
 	Args          json.RawMessage     `json:"args"`
 	Justification string              `json:"justification"`
@@ -178,7 +179,7 @@ type Intent struct {
 // ActionPlan is the non-mutating, inspectable result of planning an intent.
 type ActionPlan struct {
 	IntentID   string            `json:"intent_id"`
-	Verb       string            `json:"verb"`
+	Verb       intent.Verb       `json:"verb"`
 	Target     fleet.ResourceRef `json:"target"`
 	Diff       fleet.Diff        `json:"diff"`
 	Steps      []PlanStep        `json:"steps"`
@@ -223,17 +224,4 @@ type Verification struct {
 type DiffRequest struct {
 	Target  fleet.ResourceRef `json:"target"`
 	Desired json.RawMessage   `json:"desired,omitempty"`
-}
-
-// ValidVerb reports whether a verb belongs to the reviewed initial action vocabulary.
-func ValidVerb(verb string) bool {
-	switch verb {
-	case "argocd.sync", "argocd.rollback",
-		"rollout.promote", "rollout.abort",
-		"deployment.scale", "deployment.restart",
-		"gitops.open-pr":
-		return true
-	default:
-		return false
-	}
 }
