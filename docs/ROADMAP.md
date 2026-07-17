@@ -327,8 +327,13 @@ need:**
   exists. This slice adds no HTTP client, token loading, persistence, or GitHub write capability.
   Issue #214 establishes the Elasticsearch log-evidence contract: one already-fetched, complete
   Search API response using the current ECS Kubernetes field profile becomes at most three bounded
-  TELEMETRY cause facts for R3. Cluster, namespace, Pod, optional container, and query-window
-  identity must match the trusted caller; raw messages are classified in memory and discarded.
+  TELEMETRY cause facts for R3. Cluster, namespace, and Pod identity must match the trusted caller.
+  A supplied container requires every hit to carry that exact container; an omitted container is a
+  deliberate Pod-wide query, accepts hits with any or no container field, and emits no container
+  identity. The trusted query window is the inclusive `[start, end]` interval, its duration cannot
+  exceed fifteen minutes, and its end cannot be more than five minutes ahead of collection time;
+  the duration cap is not a freshness claim. A future live reader must issue these same bounds.
+  Raw messages are classified in memory and discarded.
   Missing cluster identity, partial or failed shards, `_source`, unknown fields, and ambiguous values
   fail closed. This slice adds no HTTP client, index discovery, credentials, persistence, or writes.
 - **W2 — desired-state/diff:** Helm · Kustomize · kubectl-diff (readers, **not** action targets in v1).

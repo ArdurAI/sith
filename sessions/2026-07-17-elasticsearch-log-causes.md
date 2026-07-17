@@ -18,8 +18,13 @@ HTTP client, endpoint/index configuration, credential custody, persistence, or m
   `orchestrator.cluster.name`, `kubernetes.namespace`, `kubernetes.pod.name`, and optional
   `kubernetes.container.name`.
 - Take workspace, cluster scope, namespace, Pod, optional container, query window, and collection
-  time only from trusted caller input.
-- Require every hit to match that identity and fall inside a maximum fifteen-minute window.
+  time only from trusted caller input. When container is supplied, every hit must carry that exact
+  value. When omitted, the scope is deliberately Pod-wide: hits may carry any container or omit the
+  field, and the aggregate fact carries no container identity.
+- Require every hit timestamp to fall in the inclusive trusted `[WindowStart, WindowEnd]` interval.
+  The interval duration is capped at fifteen minutes; this is a query-width cap, not a freshness
+  claim. `ObservedAt` only prevents `WindowEnd` from exceeding collection time by more than the
+  five-minute clock-skew allowance. A future live reader must query the identical bounds.
 - Classify a closed cause taxonomy: `panic`, `missing-config`, or `dependency-failure`.
 - Emit at most one aggregate fact per cause with count and first/last event time.
 - Discard raw messages, index/document IDs, source documents, unknown fields, labels, URLs, query
@@ -91,6 +96,10 @@ comment-independent production AST must match its reviewed SHA-256 fingerprint, 
 nine value-only fields are independently shape-checked for readable failures. Regressions reject
 callback, reader, and extra-response fields. Focused race tests and `make ci` pass after this
 test-only change.
+[T] The final contract-clarity review asked for exact optional-container and time-window semantics.
+`TestProjectLogCausesAcceptsInclusiveWindowAndOptionalContainer` already proves both endpoint
+inclusion and Pod-wide matching without a container field; the roadmap and this decision record now
+state those rules explicitly for the future live reader.
 [T] `README.md` was reviewed in full. No update is warranted because this slice adds no user-facing
 command, configuration, authentication flow, endpoint, runtime connector, or supported behavior;
 the roadmap and this checkpoint are the correct documentation surfaces.
@@ -110,6 +119,7 @@ Primary compatibility references:
 - `2026-07-17/elasticsearch-log-causes#2`
 - `2026-07-17/elasticsearch-log-causes#3`
 - `2026-07-17/elasticsearch-log-causes#4`
+- `2026-07-17/elasticsearch-log-causes#5`
 
 ## Open questions
 
