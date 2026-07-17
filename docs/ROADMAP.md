@@ -316,6 +316,10 @@ need:**
   AWS. With just this, R1/R2/R4/R5/R6 reach *confident* and R3 reaches *detect*.
   Issue #206 establishes the first ArgoCD contract as a bounded, sanitized `Application`-to-graph
   projector before any network adapter or out-of-process framework is generalized around it.
+  Issue #209 establishes the matching Prometheus `/api/v1/alerts` contract: already-fetched active
+  alerts become bounded TELEMETRY facts, annotations and unknown labels are discarded, and only one
+  unambiguous allowlisted Kubernetes identity can attach a fact to the graph. The endpoint remains
+  query-through; this slice adds no network client, series retention, credential loading, or writes.
 - **W2 — desired-state/diff:** Helm · Kustomize · kubectl-diff (readers, **not** action targets in v1).
 - **W3 — viz/tracing/clouds:** Grafana (deep-link only) · OTel (semconv key backbone) · OpenShift ·
   Azure · GCP.
