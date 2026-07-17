@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -71,6 +72,31 @@ func TestSlogAuditorRejectsUnsafeEventsWithoutEmission(t *testing.T) {
 	}
 	if _, err := NewSlogAuditor(nil); err == nil {
 		t.Fatal("NewSlogAuditor() accepted nil logger")
+	}
+}
+
+func TestSlogAuditorReportsHandlerFailure(t *testing.T) {
+	t.Parallel()
+
+	want := errors.New("structured audit sink unavailable")
+	auditor, err := NewSlogAuditor(slog.New(failingAuditHandler{err: want}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := auditor.Record(context.Background(), policyAuditEvent(time.Now().UTC(), VerdictAllow, "phase-1-read")); !errors.Is(err, want) {
+		t.Fatalf("Record() error = %v, want handler failure", err)
+	}
+}
+
+func TestSlogAuditorFailsClosedWhenEventLevelIsDisabled(t *testing.T) {
+	t.Parallel()
+
+	auditor, err := NewSlogAuditor(slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := auditor.Record(context.Background(), policyAuditEvent(time.Now().UTC(), VerdictAllow, "phase-1-read")); err == nil || !strings.Contains(err.Error(), "level is disabled") {
+		t.Fatalf("Record() error = %v, want disabled-level refusal", err)
 	}
 }
 
@@ -200,3 +226,15 @@ func policyAuditEvent(at time.Time, verdict Verdict, reason string) AuditEvent {
 		Action: tenancy.ActionRead, Verb: VerbFleetRead, Verdict: verdict, ReasonCode: reason,
 	}
 }
+
+type failingAuditHandler struct {
+	err error
+}
+
+func (handler failingAuditHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (handler failingAuditHandler) Handle(context.Context, slog.Record) error { return handler.err }
+
+func (handler failingAuditHandler) WithAttrs([]slog.Attr) slog.Handler { return handler }
+
+func (handler failingAuditHandler) WithGroup(string) slog.Handler { return handler }

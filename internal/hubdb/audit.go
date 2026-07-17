@@ -63,12 +63,12 @@ func AuditIsolation(ctx context.Context, database catalogQueryer, appRole string
 		       ) AS has_scope_column,
 		       COALESCE(policy.using_expression, '') AS using_expression,
 		       COALESCE(policy.check_expression, '') AS check_expression,
-		       has_table_privilege($1, c.oid, 'SELECT')
-		           AND has_table_privilege($1, c.oid, 'INSERT')
-		           AND has_table_privilege($1, c.oid, 'UPDATE')
-		           AND has_table_privilege($1, c.oid, 'DELETE') AS has_dml,
+		       has_table_privilege($1, c.oid, 'SELECT') AS can_select,
+		       has_table_privilege($1, c.oid, 'INSERT') AS can_insert,
+		       has_any_column_privilege($1, c.oid, 'UPDATE') AS can_update,
+		       has_table_privilege($1, c.oid, 'DELETE') AS can_delete,
 		       has_table_privilege($1, c.oid, 'TRUNCATE')
-		           OR has_table_privilege($1, c.oid, 'REFERENCES')
+		           OR has_any_column_privilege($1, c.oid, 'REFERENCES')
 		           OR has_table_privilege($1, c.oid, 'TRIGGER')
 		           OR has_table_privilege($1, c.oid, 'MAINTAIN') AS has_unsafe_privilege
 		FROM pg_class c
@@ -101,10 +101,14 @@ func AuditIsolation(ctx context.Context, database catalogQueryer, appRole string
 			hasScopeColumn     bool
 			usingExpression    string
 			checkExpression    string
-			hasDML             bool
+			canSelect          bool
+			canInsert          bool
+			canUpdate          bool
+			canDelete          bool
 			hasUnsafePrivilege bool
 		)
-		if err := rows.Scan(&table, &rlsEnabled, &rlsForced, &appOwns, &hasScopeColumn, &usingExpression, &checkExpression, &hasDML, &hasUnsafePrivilege); err != nil {
+		if err := rows.Scan(&table, &rlsEnabled, &rlsForced, &appOwns, &hasScopeColumn, &usingExpression, &checkExpression,
+			&canSelect, &canInsert, &canUpdate, &canDelete, &hasUnsafePrivilege); err != nil {
 			return fmt.Errorf("audit database isolation: scan catalog: %w", err)
 		}
 		if !rlsEnabled {
@@ -126,8 +130,19 @@ func AuditIsolation(ctx context.Context, database catalogQueryer, appRole string
 		if !validPolicyExpression(usingExpression, scopeColumn) || !validPolicyExpression(checkExpression, scopeColumn) {
 			violations = append(violations, table+": complete workspace policy is missing")
 		}
-		if !hasDML {
-			violations = append(violations, table+": application DML grant is incomplete")
+		switch table {
+		case "policy_audit_entries":
+			if !canSelect || !canInsert || canUpdate || canDelete {
+				violations = append(violations, table+": immutable application privilege contract is invalid")
+			}
+		case "policy_audit_heads":
+			if !canSelect || !canInsert || !canUpdate || canDelete {
+				violations = append(violations, table+": chain-head application privilege contract is invalid")
+			}
+		default:
+			if !canSelect || !canInsert || !canUpdate || !canDelete {
+				violations = append(violations, table+": application DML grant is incomplete")
+			}
 		}
 		if hasUnsafePrivilege {
 			violations = append(violations, table+": application role has unsafe table privileges")
