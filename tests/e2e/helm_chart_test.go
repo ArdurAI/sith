@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -21,8 +22,12 @@ import (
 )
 
 const (
-	helmContractVersion = "v4.2.2"
+	helmContractVersion = "v4.2.3"
 	validHubImage       = "registry.example.invalid/sith/hub@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+)
+
+var helmContractVersionPattern = regexp.MustCompile(
+	`^` + regexp.QuoteMeta(helmContractVersion) + `(?:\+g[0-9a-f]{7,40})?$`,
 )
 
 type helmProfileResources struct {
@@ -42,6 +47,8 @@ var hubProfileResources = map[string]helmProfileResources{
 }
 
 func TestHelmHubChartContract(t *testing.T) {
+	assertHelmVersionPolicy(t)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 	root := repositoryRoot(t)
@@ -52,7 +59,7 @@ func TestHelmHubChartContract(t *testing.T) {
 	if _, err := exec.LookPath(helm); err != nil {
 		t.Fatalf("find Helm binary %q: %v", helm, err)
 	}
-	if output, err := runHelm(ctx, t, helm, root, "version", "--short"); err != nil || !strings.HasPrefix(strings.TrimSpace(output), helmContractVersion) {
+	if output, err := runHelm(ctx, t, helm, root, "version", "--short"); err != nil || !helmVersionIsPinnedRelease(output) {
 		t.Fatalf("Helm version/output = %q / %v, want %s", output, err, helmContractVersion)
 	}
 
@@ -119,6 +126,36 @@ func TestHelmHubChartContract(t *testing.T) {
 		t.Run("skip schema validation "+name, func(t *testing.T) {
 			if output, err := runHelm(ctx, t, helm, root, "template", "sith-hub", chart, "--namespace", "sith-system", "--skip-schema-validation", "--values", writeHelmValues(t, invalid)); err == nil {
 				t.Fatalf("helm template --skip-schema-validation accepted %s:\n%s", name, output)
+			}
+		})
+	}
+}
+
+func helmVersionIsPinnedRelease(output string) bool {
+	return helmContractVersionPattern.MatchString(strings.TrimSuffix(output, "\n"))
+}
+
+func assertHelmVersionPolicy(t *testing.T) {
+	t.Helper()
+
+	for _, test := range []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{name: "plain release", output: "v4.2.3", want: true},
+		{name: "official build metadata", output: "v4.2.3+g43e8b7f\n", want: true},
+		{name: "lookalike patch", output: "v4.2.30", want: false},
+		{name: "prerelease", output: "v4.2.3-rc.1", want: false},
+		{name: "arbitrary suffix", output: "v4.2.3+vendor", want: false},
+		{name: "short commit", output: "v4.2.3+g123456", want: false},
+		{name: "uppercase commit", output: "v4.2.3+g43E8B7F", want: false},
+		{name: "leading whitespace", output: " v4.2.3+g43e8b7f\n", want: false},
+		{name: "extra output", output: "warning\nv4.2.3+g43e8b7f\n", want: false},
+	} {
+		t.Run("version policy/"+test.name, func(t *testing.T) {
+			if got := helmVersionIsPinnedRelease(test.output); got != test.want {
+				t.Fatalf("helmVersionIsPinnedRelease(%q) = %t, want %t", test.output, got, test.want)
 			}
 		})
 	}

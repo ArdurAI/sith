@@ -122,13 +122,17 @@ kubeconfig: its only per-spoke credentials are the projected `sith-reader` token
 | clusteradm / OCM core | `v1.3.1-0-g90bdc31` / `1.3.1` |
 | cluster-proxy chart | `0.10.0`, SHA-256 `30128f5f…481c75d` |
 | managed-serviceaccount chart | `0.10.0`, SHA-256 `ddd8b7da…0b06dbf` |
-| Helm | `v4.1.4` |
+| Helm | `v4.2.3` |
 | Go fixture toolchain | `go1.26.5` |
 
 The addon releases and their publication dates are available from the upstream
 [`cluster-proxy` v0.10.0 release](https://github.com/open-cluster-management-io/cluster-proxy/releases/tag/v0.10.0)
 and
 [`managed-serviceaccount` v0.10.0 release](https://github.com/open-cluster-management-io/managed-serviceaccount/releases/tag/v0.10.0).
+The Helm pin follows the official
+[`v4.2.3` release](https://github.com/helm/helm/releases/tag/v4.2.3). The runner requires the exact
+release version and accepts only Helm's `+g<hex-commit>` build-metadata form; prefix lookalikes and
+vendor suffixes fail closed.
 The OCM registration procedure follows the official
 [`clusteradm` registration guidance](https://open-cluster-management.io/docs/getting-started/installation/register-a-cluster/),
 including `--force-internal-endpoint-lookup` for local kind clusters.

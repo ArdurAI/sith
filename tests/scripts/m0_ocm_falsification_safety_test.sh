@@ -173,6 +173,20 @@ expect_failure "kind enumeration failure is not treated as cluster absence" \
   env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/kind-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
   KIND_BIN=/usr/bin/false bash -c 'source "$1"; cluster_exists sith-m0-hub' _ "${SCRIPT}"
 
+for helm_version in v4.2.3 v4.2.3+g43e8b7f; do
+  env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/helm-version-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
+    HELM_VERSION_OUTPUT="${helm_version}" bash -c \
+    'source "$1"; helm_version_is_pinned_release "${HELM_VERSION_OUTPUT}"' _ "${SCRIPT}"
+done
+pass "Helm version policy accepts the pinned release and official build metadata"
+
+for helm_version in v4.2.30 v4.2.3-rc.1 v4.2.3+vendor v4.2.3+g123456 v4.2.3+g43E8B7F; do
+  expect_failure "Helm version policy rejects lookalike ${helm_version}" \
+    env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/helm-version-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
+    HELM_VERSION_OUTPUT="${helm_version}" bash -c \
+    'source "$1"; helm_version_is_pinned_release "${HELM_VERSION_OUTPUT}"' _ "${SCRIPT}"
+done
+
 token_flag_marker="${TEST_ROOT}/token-flag"
 expect_failure "malformed token output still requires invalidation" \
   env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/token-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
