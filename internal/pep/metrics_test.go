@@ -65,6 +65,24 @@ func TestEnforcerRecoversFromPanickingObserver(t *testing.T) {
 	}
 }
 
+func TestEnforcerObservesCanonicalProposalVerb(t *testing.T) {
+	observer := &recordingDecisionObserver{}
+	enforcer, err := NewEnforcer(Config{
+		Hook:     proposalDecision(VerdictAllow, "proposal-allowed"),
+		Auditor:  AuditFunc(func(context.Context, AuditEvent) error { return nil }),
+		Observer: observer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := enforcer.AuthorizeProposal(context.Background(), operatorScope(t), testProposalInput(t)); err != nil {
+		t.Fatalf("AuthorizeProposal() error = %v", err)
+	}
+	if len(observer.events) != 1 || observer.events[0].verb != "deployment.restart" || observer.events[0].outcome != DecisionOutcomeAllow {
+		t.Fatalf("observations = %#v", observer.events)
+	}
+}
+
 type decisionObservation struct {
 	verb     Verb
 	outcome  DecisionOutcome

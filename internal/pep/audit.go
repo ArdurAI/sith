@@ -66,7 +66,17 @@ func (event AuditEvent) Validate() error {
 	if err := validateSafeText("policy audit actor", event.Actor, maxActorBytes); err != nil {
 		return err
 	}
-	if !event.Role.Valid() || event.Action != tenancy.ActionRead || !event.Verb.Valid() {
+	if !event.Role.Valid() || (event.Action != tenancy.ActionRead && event.Action != tenancy.ActionProposeIntent) {
+		return fmt.Errorf("policy audit has unsupported role, action, or verb")
+	}
+	if !event.Role.Allows(event.Action) && (event.Verdict != VerdictDeny || (event.ReasonCode != "role-denied" && event.ReasonCode != "invalid-request")) {
+		return fmt.Errorf("policy audit has impossible role and action outcome")
+	}
+	if event.Verb == invalidVerb {
+		if event.Verdict != VerdictDeny || event.ReasonCode != "invalid-request" {
+			return fmt.Errorf("policy audit has unsafe invalid-request sentinel")
+		}
+	} else if !event.Verb.validForAction(event.Action) {
 		return fmt.Errorf("policy audit has unsupported role, action, or verb")
 	}
 	return (Decision{Verdict: event.Verdict, ReasonCode: event.ReasonCode}).Validate()

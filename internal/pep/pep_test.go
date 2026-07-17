@@ -127,6 +127,20 @@ func TestReadInputBindsCanonicalArgumentsAndRejectsAlteredDigest(t *testing.T) {
 	}
 }
 
+func TestNormalizedAuditRequestErasesPolicyBindingDigest(t *testing.T) {
+	request := Request{
+		WorkspaceID: "workspace-a", Actor: "user:reader", Role: tenancy.RoleReader,
+		Action: tenancy.ActionRead, Verb: VerbFleetRead, ArgumentsDigest: "token=caller-secret",
+	}
+	normalized, ok := normalizedAuditRequest(request)
+	if !ok {
+		t.Fatal("normalizedAuditRequest() rejected safe audit identity")
+	}
+	if normalized.ArgumentsDigest != "" {
+		t.Fatalf("normalized audit request retained binding digest %q", normalized.ArgumentsDigest)
+	}
+}
+
 type recordingAuditor struct {
 	events []AuditEvent
 }

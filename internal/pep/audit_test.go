@@ -110,6 +110,90 @@ func TestSlogAuditorTextHandlerPreservesSafeFieldsAndSeverity(t *testing.T) {
 	}
 }
 
+func TestSlogAuditorAcceptsProposalAndConstrainedInvalidRequestEvents(t *testing.T) {
+	var output bytes.Buffer
+	auditor, err := NewSlogAuditor(slog.New(slog.NewJSONHandler(&output, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal := policyAuditEvent(time.Now().UTC(), VerdictAllow, "proposal-allowed")
+	proposal.Actor = "user:operator"
+	proposal.Role = tenancy.RoleOperator
+	proposal.Action = tenancy.ActionProposeIntent
+	proposal.Verb = "deployment.restart"
+	invalid := proposal
+	invalid.Verb = invalidVerb
+	invalid.Verdict = VerdictDeny
+	invalid.ReasonCode = "invalid-request"
+	invalidRead := policyAuditEvent(time.Now().UTC(), VerdictDeny, "invalid-request")
+	invalidRead.Verb = invalidVerb
+	for _, event := range []AuditEvent{proposal, invalid, invalidRead} {
+		if err := auditor.Record(context.Background(), event); err != nil {
+			t.Fatalf("Record(%s) error = %v", event.Verb, err)
+		}
+	}
+	logged := output.String()
+	for _, field := range []string{`"action":"propose-intent"`, `"verb":"deployment.restart"`, `"verb":"invalid"`} {
+		if !strings.Contains(logged, field) {
+			t.Fatalf("proposal audit missing %s: %s", field, logged)
+		}
+	}
+	for _, forbidden := range []string{"arguments_digest", "resolved_digest", "payments", "token", "secret"} {
+		if strings.Contains(logged, forbidden) {
+			t.Fatalf("proposal audit leaked %q: %s", forbidden, logged)
+		}
+	}
+}
+
+func TestAuditEventRejectsUnsafeInvalidRequestSentinel(t *testing.T) {
+	base := policyAuditEvent(time.Now().UTC(), VerdictDeny, "invalid-request")
+	base.Verb = invalidVerb
+	if err := base.Validate(); err != nil {
+		t.Fatalf("baseline invalid-request event should validate: %v", err)
+	}
+	for _, mutate := range []func(*AuditEvent){
+		func(event *AuditEvent) { event.Verdict = VerdictAllow },
+		func(event *AuditEvent) { event.Verdict = VerdictRequireApproval },
+		func(event *AuditEvent) { event.ReasonCode = "policy-deny" },
+	} {
+		event := base
+		mutate(&event)
+		if err := event.Validate(); err == nil {
+			t.Fatalf("AuditEvent.Validate() accepted unsafe invalid sentinel: %#v", event)
+		}
+	}
+}
+
+func TestAuditEventRejectsImpossibleProposalRoleOutcome(t *testing.T) {
+	base := policyAuditEvent(time.Now().UTC(), VerdictDeny, "role-denied")
+	base.Action = tenancy.ActionProposeIntent
+	base.Verb = "deployment.restart"
+	if err := base.Validate(); err != nil {
+		t.Fatalf("role-denied proposal event should validate: %v", err)
+	}
+
+	invalidRequest := base
+	invalidRequest.ReasonCode = "invalid-request"
+	if err := invalidRequest.Validate(); err != nil {
+		t.Fatalf("pre-role invalid-request event should validate: %v", err)
+	}
+
+	for _, mutate := range []func(*AuditEvent){
+		func(event *AuditEvent) { event.Verdict = VerdictAllow; event.ReasonCode = "proposal-allowed" },
+		func(event *AuditEvent) {
+			event.Verdict = VerdictRequireApproval
+			event.ReasonCode = "approval-required"
+		},
+		func(event *AuditEvent) { event.ReasonCode = "policy-deny" },
+	} {
+		event := base
+		mutate(&event)
+		if err := event.Validate(); err == nil {
+			t.Fatalf("AuditEvent.Validate() accepted impossible role outcome: %#v", event)
+		}
+	}
+}
+
 func policyAuditEvent(at time.Time, verdict Verdict, reason string) AuditEvent {
 	return AuditEvent{
 		At: at, TraceID: tracing.ID("0123456789abcdef0123456789abcdef"), WorkspaceID: "workspace-a", Actor: "user:reader", Role: tenancy.RoleReader,
