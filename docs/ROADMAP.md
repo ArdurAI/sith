@@ -189,8 +189,12 @@ kubeconfigs — the read source is abstracted so hub mode and local mode share o
 > coalesces only concurrent refreshes for the same validated workspace, and runs shared work on a
 > detached internal trace so leader/waiter cancellation and request context cannot cross caller
 > boundaries. Completed, failed, and panicking flights are removed; different workspaces remain
-> independent. #193 and #194 separately track database snapshot consistency and bounded parallel
-> spoke collection rather than coupling those concerns into the coordination layer.
+> independent. #193 separately reads persisted coverage and facts from one repeatable-read
+> workspace snapshot. #194 admits spoke transports through a validated 1-64 worker pool with a
+> conservative default of four, serializes persistence and coverage mutation, and cancels all
+> admitted peers before returning a parent-cancellation or store error. These boundaries are kept
+> separate from refresh coordination so caller isolation, transport fan-out, and database snapshot
+> consistency can each fail closed independently.
 
 **Exit criteria.**
 - A single query returns a correct, tenant-scoped, cross-cluster answer over **≥ 2 spokes**.
