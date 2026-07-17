@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/hubfleet"
@@ -29,17 +30,21 @@ import (
 )
 
 const (
-	consoleCSRFHeader          = "X-Sith-CSRF"
-	consoleCSRFVersion         = byte(1)
-	consoleCSRFTimeBytes       = 10
-	consoleCSRFRandomBytes     = 32
-	consoleCSRFKeyBytes        = 32
-	consoleCSRFDigestBytes     = sha256.Size
-	consoleCSRFPayloadBytes    = 1 + consoleCSRFTimeBytes + consoleCSRFRandomBytes
-	consoleCSRFTokenBytes      = consoleCSRFPayloadBytes + consoleCSRFDigestBytes
-	consoleCSRFDomain          = "sith-hub-console-fleet/v1"
-	defaultConsoleCSRFLifetime = 5 * time.Minute
-	maximumConsoleCSRFLifetime = 10 * time.Minute
+	consoleCSRFHeader                   = "X-Sith-CSRF"
+	consoleCSRFVersion                  = byte(1)
+	consoleCSRFTimeBytes                = 10
+	consoleCSRFRandomBytes              = 32
+	consoleCSRFKeyBytes                 = 32
+	consoleCSRFDigestBytes              = sha256.Size
+	consoleCSRFPayloadBytes             = 1 + consoleCSRFTimeBytes + consoleCSRFRandomBytes
+	consoleCSRFTokenBytes               = consoleCSRFPayloadBytes + consoleCSRFDigestBytes
+	consoleFleetCSRFDomain              = "sith-hub-console-fleet/v1"
+	consoleCorrelationDomain            = "sith-hub-console-correlation/v1"
+	consoleCorrelationReadLimit         = 257
+	consoleCorrelationMaxMatches        = 256
+	consoleCorrelationMaxCoverageScopes = 1_000
+	defaultConsoleCSRFLifetime          = 5 * time.Minute
+	maximumConsoleCSRFLifetime          = 10 * time.Minute
 )
 
 //go:embed console_assets/*
@@ -50,6 +55,7 @@ type ConsoleHandlerConfig struct {
 	Verifier     Verifier
 	AuthObserver AuthObserver
 	Reader       hubfleet.FleetReader
+	Correlator   *hubfleet.Correlator
 	PEP          *pep.Enforcer
 	CSRFLifetime time.Duration
 	Now          func() time.Time
@@ -61,6 +67,7 @@ type ConsoleHandler struct {
 	verifier     Verifier
 	authObserver AuthObserver
 	reader       hubfleet.FleetReader
+	correlator   *hubfleet.Correlator
 	pep          *pep.Enforcer
 	csrfLifetime time.Duration
 	now          func() time.Time
@@ -72,8 +79,9 @@ type ConsoleHandler struct {
 }
 
 type consolePageData struct {
-	Workspace string
-	CSRFToken string
+	Workspace            string
+	FleetCSRFToken       string
+	CorrelationCSRFToken string
 }
 
 type consoleFleetResponse struct {
@@ -81,11 +89,28 @@ type consoleFleetResponse struct {
 	Assessment fleet.CoverageAssessment `json:"assessment"`
 }
 
+type consoleHealthMatch struct {
+	Scope        string    `json:"scope"`
+	ResourceKind string    `json:"resource_kind"`
+	Namespace    string    `json:"namespace,omitempty"`
+	Name         string    `json:"name"`
+	Health       string    `json:"health"`
+	ObservedAt   time.Time `json:"observed_at"`
+	Stale        bool      `json:"stale"`
+	StaleFor     string    `json:"stale_for,omitempty"`
+}
+
+type consoleCorrelationResponse struct {
+	Matches    []consoleHealthMatch     `json:"matches"`
+	Coverage   fleet.Coverage           `json:"coverage"`
+	Assessment fleet.CoverageAssessment `json:"assessment"`
+}
+
 // NewConsoleHandler constructs a separate cookie-authenticated read surface. It does not alter
 // bearer API authentication and exposes no refresh, connector, local-operation, or write seam.
 func NewConsoleHandler(config ConsoleHandlerConfig) (*ConsoleHandler, error) {
-	if config.Verifier == nil || config.Reader == nil || config.PEP == nil {
-		return nil, fmt.Errorf("construct Hub console: verifier, reader, and policy enforcer are required")
+	if config.Verifier == nil || config.Reader == nil || config.Correlator == nil || config.PEP == nil {
+		return nil, fmt.Errorf("construct Hub console: verifier, reader, correlator, and policy enforcer are required")
 	}
 	if config.CSRFLifetime == 0 {
 		config.CSRFLifetime = defaultConsoleCSRFLifetime
@@ -108,7 +133,7 @@ func NewConsoleHandler(config ConsoleHandlerConfig) (*ConsoleHandler, error) {
 		return nil, fmt.Errorf("construct Hub console: page template is invalid")
 	}
 	handler := &ConsoleHandler{
-		verifier: config.Verifier, authObserver: config.AuthObserver, reader: config.Reader, pep: config.PEP,
+		verifier: config.Verifier, authObserver: config.AuthObserver, reader: config.Reader, correlator: config.Correlator, pep: config.PEP,
 		csrfLifetime: config.CSRFLifetime, now: config.Now, random: config.Random, page: page, assets: assets,
 	}
 	if _, err := io.ReadFull(handler.random, handler.csrfKey[:]); err != nil {
@@ -117,7 +142,7 @@ func NewConsoleHandler(config ConsoleHandlerConfig) (*ConsoleHandler, error) {
 	return handler, nil
 }
 
-// ServePage returns the authenticated shell and one session/workspace-bound CSRF token.
+// ServePage returns the authenticated shell and purpose-separated session/workspace-bound proofs.
 func (handler *ConsoleHandler) ServePage(response http.ResponseWriter, request *http.Request) {
 	setConsoleSecurityHeaders(response.Header())
 	workspaceID, ok := canonicalConsoleRequest(request, "/console")
@@ -129,13 +154,20 @@ func (handler *ConsoleHandler) ServePage(response http.ResponseWriter, request *
 	if !ok {
 		return
 	}
-	csrfToken, err := handler.newCSRFToken(rawSession, scope.WorkspaceID())
+	fleetCSRFToken, err := handler.newCSRFToken(rawSession, scope.WorkspaceID(), consoleFleetCSRFDomain)
+	if err != nil {
+		writeConsoleError(response, http.StatusServiceUnavailable, "console_unavailable")
+		return
+	}
+	correlationCSRFToken, err := handler.newCSRFToken(rawSession, scope.WorkspaceID(), consoleCorrelationDomain)
 	if err != nil {
 		writeConsoleError(response, http.StatusServiceUnavailable, "console_unavailable")
 		return
 	}
 	var rendered bytes.Buffer
-	if err := handler.page.Execute(&rendered, consolePageData{Workspace: string(scope.WorkspaceID()), CSRFToken: csrfToken}); err != nil {
+	if err := handler.page.Execute(&rendered, consolePageData{
+		Workspace: string(scope.WorkspaceID()), FleetCSRFToken: fleetCSRFToken, CorrelationCSRFToken: correlationCSRFToken,
+	}); err != nil {
 		writeConsoleError(response, http.StatusServiceUnavailable, "console_unavailable")
 		return
 	}
@@ -156,7 +188,8 @@ func (handler *ConsoleHandler) ServeFleet(response http.ResponseWriter, request 
 	if !ok {
 		return
 	}
-	if !sameOriginFetch(request.Header.Values("Sec-Fetch-Site")) || !handler.validCSRFToken(request.Header.Values(consoleCSRFHeader), rawSession, scope.WorkspaceID()) {
+	if !sameOriginFetch(request.Header.Values("Sec-Fetch-Site")) ||
+		!handler.validCSRFToken(request.Header.Values(consoleCSRFHeader), rawSession, scope.WorkspaceID(), consoleFleetCSRFDomain) {
 		writeConsoleError(response, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -171,6 +204,37 @@ func (handler *ConsoleHandler) ServeFleet(response http.ResponseWriter, request 
 		return
 	}
 	writeConsoleJSON(response, http.StatusOK, consoleFleetResponse{Fleet: result, Assessment: result.Coverage.Assessment()})
+}
+
+// ServeCorrelation answers one explicit exact-resource health question through the existing
+// tenant-scoped PEP correlator, then projects stored facts to a deliberately minimal response.
+func (handler *ConsoleHandler) ServeCorrelation(response http.ResponseWriter, request *http.Request) {
+	setConsoleSecurityHeaders(response.Header())
+	workspaceID, correlationRequest, ok := canonicalConsoleCorrelationRequest(request)
+	if !ok {
+		writeConsoleError(response, http.StatusNotFound, "not_found")
+		return
+	}
+	scope, rawSession, ok := handler.authorize(response, request, workspaceID)
+	if !ok {
+		return
+	}
+	if !sameOriginFetch(request.Header.Values("Sec-Fetch-Site")) ||
+		!handler.validCSRFToken(request.Header.Values(consoleCSRFHeader), rawSession, scope.WorkspaceID(), consoleCorrelationDomain) {
+		writeConsoleError(response, http.StatusForbidden, "forbidden")
+		return
+	}
+	result, err := handler.correlator.Correlate(request.Context(), scope, correlationRequest)
+	if err != nil {
+		writeConsoleError(response, http.StatusServiceUnavailable, "correlation_unavailable")
+		return
+	}
+	projected, err := projectConsoleCorrelation(result, scope.WorkspaceID(), correlationRequest)
+	if err != nil {
+		writeConsoleError(response, http.StatusServiceUnavailable, "correlation_unavailable")
+		return
+	}
+	writeConsoleJSON(response, http.StatusOK, projected)
 }
 
 // ServeCSS returns the fixed embedded stylesheet and never inspects a session cookie.
@@ -263,11 +327,161 @@ func canonicalConsoleRequest(request *http.Request, suffix string) (tenancy.Work
 	return workspaceID, request.URL.EscapedPath() == wantPath
 }
 
+func canonicalConsoleCorrelationRequest(request *http.Request) (tenancy.WorkspaceID, hubfleet.CorrelationRequest, bool) {
+	if request == nil || request.Method != http.MethodGet || request.URL == nil || request.URL.Fragment != "" ||
+		request.URL.RawQuery == "" || len(request.URL.RawQuery) > 1_024 {
+		return "", hubfleet.CorrelationRequest{}, false
+	}
+	workspaceID := tenancy.WorkspaceID(request.PathValue("workspace"))
+	if tenancy.ValidateWorkspaceID(workspaceID) != nil {
+		return "", hubfleet.CorrelationRequest{}, false
+	}
+	wantPath := "/v1/workspaces/" + url.PathEscape(string(workspaceID)) + "/console/correlate"
+	if request.URL.EscapedPath() != wantPath {
+		return "", hubfleet.CorrelationRequest{}, false
+	}
+	values, err := url.ParseQuery(request.URL.RawQuery)
+	if err != nil || len(values) < 2 || len(values) > 3 || values.Encode() != request.URL.RawQuery {
+		return "", hubfleet.CorrelationRequest{}, false
+	}
+	for key, entries := range values {
+		if (key != "kind" && key != "name" && key != "namespace") || len(entries) != 1 {
+			return "", hubfleet.CorrelationRequest{}, false
+		}
+	}
+	if len(values["kind"]) != 1 || len(values["name"]) != 1 ||
+		(len(values["namespace"]) == 1 && values.Get("namespace") == "") {
+		return "", hubfleet.CorrelationRequest{}, false
+	}
+	correlationRequest := hubfleet.CorrelationRequest{
+		ResourceKind: values.Get("kind"), Name: values.Get("name"), Namespace: values.Get("namespace"),
+		HealthNot: "Healthy", Limit: consoleCorrelationReadLimit,
+	}
+	if correlationRequest.Validate() != nil {
+		return "", hubfleet.CorrelationRequest{}, false
+	}
+	return workspaceID, correlationRequest, true
+}
+
+func projectConsoleCorrelation(
+	result fleet.QueryResult,
+	workspaceID tenancy.WorkspaceID,
+	request hubfleet.CorrelationRequest,
+) (consoleCorrelationResponse, error) {
+	if workspaceID == "" || len(result.Facts) > consoleCorrelationMaxMatches {
+		return consoleCorrelationResponse{}, fmt.Errorf("project console correlation: invalid result bounds")
+	}
+	coverage, err := projectConsoleCoverage(result.Coverage)
+	if err != nil {
+		return consoleCorrelationResponse{}, err
+	}
+	matches := make([]consoleHealthMatch, 0, len(result.Facts))
+	seen := make(map[string]struct{}, len(result.Facts))
+	for _, fact := range result.Facts {
+		if fact.Workspace != string(workspaceID) || fact.Kind != fleet.FactHealth || fact.Ref.SourceKind != hubfleet.SourceKind ||
+			fact.Source != fact.Ref.Scope || fact.Ref.Kind != request.ResourceKind || fact.Ref.Name != request.Name ||
+			fact.Ref.Namespace != request.Namespace || fact.ObservedAt.IsZero() ||
+			validateConsoleProjectionText(fact.Ref.Scope, 256, false) != nil ||
+			validateConsoleProjectionText(fact.Ref.Kind, 128, false) != nil ||
+			validateConsoleProjectionText(fact.Ref.Name, 256, false) != nil ||
+			validateConsoleProjectionText(fact.Ref.Namespace, 256, true) != nil ||
+			validateConsoleProjectionText(fact.StaleFor, 128, true) != nil || fact.Stale != (fact.StaleFor != "") {
+			return consoleCorrelationResponse{}, fmt.Errorf("project console correlation: invalid stored fact")
+		}
+		health, err := decodeConsoleHealth(fact.Observed)
+		if err != nil || health == request.HealthNot {
+			return consoleCorrelationResponse{}, fmt.Errorf("project console correlation: invalid stored health")
+		}
+		identity := strings.Join([]string{fact.Ref.Scope, fact.Ref.Kind, fact.Ref.Namespace, fact.Ref.Name}, "\x00")
+		if _, exists := seen[identity]; exists {
+			return consoleCorrelationResponse{}, fmt.Errorf("project console correlation: duplicate stored fact")
+		}
+		seen[identity] = struct{}{}
+		matches = append(matches, consoleHealthMatch{
+			Scope: fact.Ref.Scope, ResourceKind: fact.Ref.Kind, Namespace: fact.Ref.Namespace, Name: fact.Ref.Name,
+			Health: health, ObservedAt: fact.ObservedAt.UTC(), Stale: fact.Stale, StaleFor: fact.StaleFor,
+		})
+	}
+	return consoleCorrelationResponse{Matches: matches, Coverage: coverage, Assessment: coverage.Assessment()}, nil
+}
+
+func projectConsoleCoverage(coverage fleet.Coverage) (fleet.Coverage, error) {
+	if coverage.Requested < 0 || coverage.Reachable < 0 {
+		return fleet.Coverage{}, fmt.Errorf("project console correlation: invalid coverage counts")
+	}
+	count := len(coverage.Unreachable) + len(coverage.Stale) + len(coverage.Truncated)
+	if count > consoleCorrelationMaxCoverageScopes {
+		return fleet.Coverage{}, fmt.Errorf("project console correlation: coverage exceeds response bound")
+	}
+	unreachable, err := projectConsoleCoverageScopes(coverage.Unreachable)
+	if err != nil {
+		return fleet.Coverage{}, err
+	}
+	stale, err := projectConsoleCoverageScopes(coverage.Stale)
+	if err != nil {
+		return fleet.Coverage{}, err
+	}
+	truncated, err := projectConsoleCoverageScopes(coverage.Truncated)
+	if err != nil {
+		return fleet.Coverage{}, err
+	}
+	return fleet.Coverage{
+		Requested: coverage.Requested, Reachable: coverage.Reachable,
+		Unreachable: unreachable, Stale: stale, Truncated: truncated,
+	}, nil
+}
+
+func projectConsoleCoverageScopes(scopes []string) ([]string, error) {
+	projected := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		if err := validateConsoleProjectionText(scope, 256, false); err != nil {
+			return nil, fmt.Errorf("project console correlation: invalid coverage scope")
+		}
+		projected = append(projected, scope)
+	}
+	return projected, nil
+}
+
+func decodeConsoleHealth(payload json.RawMessage) (string, error) {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	var observation struct {
+		Status string `json:"status"`
+	}
+	if err := decoder.Decode(&observation); err != nil {
+		return "", err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return "", fmt.Errorf("health observation contains trailing data")
+	}
+	switch observation.Status {
+	case "Healthy", "Degraded", "Progressing", "Unknown":
+		return observation.Status, nil
+	default:
+		return "", fmt.Errorf("health observation contains an unsupported status")
+	}
+}
+
+func validateConsoleProjectionText(value string, maximum int, allowEmpty bool) error {
+	if value == "" && allowEmpty {
+		return nil
+	}
+	if value == "" || len(value) > maximum || strings.TrimSpace(value) != value {
+		return fmt.Errorf("invalid projected text")
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return fmt.Errorf("invalid projected text")
+		}
+	}
+	return nil
+}
+
 func sameOriginFetch(values []string) bool {
 	return len(values) == 0 || (len(values) == 1 && values[0] == "same-origin")
 }
 
-func (handler *ConsoleHandler) newCSRFToken(rawSession string, workspaceID tenancy.WorkspaceID) (string, error) {
+func (handler *ConsoleHandler) newCSRFToken(rawSession string, workspaceID tenancy.WorkspaceID, domain string) (string, error) {
 	payload := make([]byte, consoleCSRFPayloadBytes)
 	payload[0] = consoleCSRFVersion
 	expiresAt := strconv.FormatInt(handler.now().UTC().Add(handler.csrfLifetime).Unix(), 10)
@@ -281,11 +495,11 @@ func (handler *ConsoleHandler) newCSRFToken(rawSession string, workspaceID tenan
 	if err != nil {
 		return "", fmt.Errorf("generate console CSRF token")
 	}
-	mac := handler.csrfMAC(payload, rawSession, workspaceID)
+	mac := handler.csrfMAC(payload, rawSession, workspaceID, domain)
 	return base64.RawURLEncoding.EncodeToString(append(payload, mac...)), nil
 }
 
-func (handler *ConsoleHandler) validCSRFToken(values []string, rawSession string, workspaceID tenancy.WorkspaceID) bool {
+func (handler *ConsoleHandler) validCSRFToken(values []string, rawSession string, workspaceID tenancy.WorkspaceID, domain string) bool {
 	if handler == nil || len(values) != 1 || values[0] == "" || strings.TrimSpace(values[0]) != values[0] {
 		return false
 	}
@@ -303,14 +517,14 @@ func (handler *ConsoleHandler) validCSRFToken(values []string, rawSession string
 		return false
 	}
 	payload := decoded[:consoleCSRFPayloadBytes]
-	expected := handler.csrfMAC(payload, rawSession, workspaceID)
+	expected := handler.csrfMAC(payload, rawSession, workspaceID, domain)
 	return subtle.ConstantTimeCompare(decoded[consoleCSRFPayloadBytes:], expected) == 1
 }
 
-func (handler *ConsoleHandler) csrfMAC(payload []byte, rawSession string, workspaceID tenancy.WorkspaceID) []byte {
+func (handler *ConsoleHandler) csrfMAC(payload []byte, rawSession string, workspaceID tenancy.WorkspaceID, domain string) []byte {
 	sessionDigest := sha256.Sum256([]byte(rawSession))
 	mac := hmac.New(sha256.New, handler.csrfKey[:])
-	_, _ = mac.Write([]byte(consoleCSRFDomain))
+	_, _ = mac.Write([]byte(domain))
 	_, _ = mac.Write([]byte{0})
 	_, _ = mac.Write(payload)
 	_, _ = mac.Write([]byte{0})

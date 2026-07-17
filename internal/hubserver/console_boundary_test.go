@@ -37,7 +37,7 @@ func TestConsoleProductionBoundaryIsReadOnlyAndStructurallyPinned(t *testing.T) 
 		"bytes": true, "crypto/hmac": true, "crypto/rand": true, "crypto/sha256": true, "crypto/subtle": true,
 		"embed": true, "encoding/base64": true, "encoding/json": true, "fmt": true,
 		"html/template": true, "io": true, "io/fs": true, "net/http": true, "net/url": true, "strconv": true, "strings": true,
-		"sync": true, "time": true,
+		"sync": true, "time": true, "unicode": true,
 		"github.com/ArdurAI/sith/internal/fleet": true, "github.com/ArdurAI/sith/internal/hubfleet": true,
 		"github.com/ArdurAI/sith/internal/pep": true, "github.com/ArdurAI/sith/internal/tenancy": true,
 	}
@@ -88,9 +88,18 @@ func TestConsoleProductionBoundaryIsReadOnlyAndStructurallyPinned(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, dependency := range []string{
+		`hubfleet.NewCorrelator(hubfleet.CorrelatorConfig{Querier: database, PEP: enforcer})`,
+		`Correlator: consoleCorrelator`,
+	} {
+		if strings.Count(string(runtimeSource), dependency) != 1 {
+			t.Fatalf("Hub runtime does not compose exact console dependency %q once", dependency)
+		}
+	}
 	for _, route := range []string{
 		`mux.Handle("GET /v1/workspaces/{workspace}/console", http.HandlerFunc(consoleHandler.ServePage))`,
 		`mux.Handle("GET /v1/workspaces/{workspace}/console/fleet", http.HandlerFunc(consoleHandler.ServeFleet))`,
+		`mux.Handle("GET /v1/workspaces/{workspace}/console/correlate", http.HandlerFunc(consoleHandler.ServeCorrelation))`,
 		`mux.Handle("GET /v1/console/assets/console.css", http.HandlerFunc(consoleHandler.ServeCSS))`,
 		`mux.Handle("GET /v1/console/assets/console.js", http.HandlerFunc(consoleHandler.ServeJavaScript))`,
 	} {

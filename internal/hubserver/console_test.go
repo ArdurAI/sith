@@ -38,7 +38,8 @@ func TestConsoleHandlerReadsOnlySignedWorkspaceWithCSRFAndPEP(t *testing.T) {
 	}
 	readerCalled := 0
 	handler, err := NewConsoleHandler(ConsoleHandlerConfig{
-		Verifier: verifier,
+		Verifier:   verifier,
+		Correlator: noopConsoleCorrelator(t),
 		Reader: fleetReaderFunc(func(_ context.Context, scope tenancy.Scope, freshness time.Duration, gotNow time.Time) (fleet.FleetResult, error) {
 			readerCalled++
 			if scope.WorkspaceID() != "workspace-a" || scope.Subject() != "user:alice" || freshness != 5*time.Minute || gotNow.IsZero() {
@@ -100,7 +101,8 @@ func TestConsoleRoutesResolveWorkspaceThroughServeMux(t *testing.T) {
 	session := signHubTestToken(t, hubValidClaims(now), privateKey)
 	readerCalled := 0
 	handler, err := NewConsoleHandler(ConsoleHandlerConfig{
-		Verifier: verifier,
+		Verifier:   verifier,
+		Correlator: noopConsoleCorrelator(t),
 		Reader: fleetReaderFunc(func(_ context.Context, scope tenancy.Scope, _ time.Duration, _ time.Time) (fleet.FleetResult, error) {
 			readerCalled++
 			if scope.WorkspaceID() != "workspace-a" {
@@ -163,7 +165,8 @@ func TestConsoleHandlerFailsClosedBeforeReader(t *testing.T) {
 	readerCalled := 0
 	newHandler := func(fill byte) *ConsoleHandler {
 		handler, err := NewConsoleHandler(ConsoleHandlerConfig{
-			Verifier: verifier,
+			Verifier:   verifier,
+			Correlator: noopConsoleCorrelator(t),
 			Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
 				readerCalled++
 				return fleet.FleetResult{Coverage: fleet.Coverage{}}, nil
@@ -265,7 +268,8 @@ func TestConsoleHandlerHidesReaderErrorsAndServesFixedAssets(t *testing.T) {
 	verifier, privateKey := fleetTestVerifier(t, now)
 	session := signHubTestToken(t, hubValidClaims(now), privateKey)
 	handler, err := NewConsoleHandler(ConsoleHandlerConfig{
-		Verifier: verifier,
+		Verifier:   verifier,
+		Correlator: noopConsoleCorrelator(t),
 		Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
 			return fleet.FleetResult{}, errors.New("database=secret topology=private")
 		}),
@@ -288,7 +292,7 @@ func TestConsoleHandlerHidesReaderErrorsAndServesFixedAssets(t *testing.T) {
 		required    string
 	}{
 		{name: "CSS", serve: handler.ServeCSS, contentType: "text/css; charset=utf-8", required: "prefers-reduced-motion"},
-		{name: "JavaScript", serve: handler.ServeJavaScript, contentType: "text/javascript; charset=utf-8", required: "X-Sith-CSRF"},
+		{name: "JavaScript", serve: handler.ServeJavaScript, contentType: "text/javascript; charset=utf-8", required: "Correlation complete."},
 	} {
 		t.Run(asset.name, func(t *testing.T) {
 			path := "/v1/console/assets/console.css"
@@ -318,7 +322,10 @@ func TestNewConsoleHandlerRejectsUnsafeConfiguration(t *testing.T) {
 		{Verifier: authVerifierFunc(func(context.Context, string) (tenancy.Principal, error) { return tenancy.Principal{}, nil }), Reader: fleetReaderFunc(nil), PEP: nil},
 		{Verifier: authVerifierFunc(func(context.Context, string) (tenancy.Principal, error) { return tenancy.Principal{}, nil }), Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
 			return fleet.FleetResult{}, nil
-		}), PEP: fleetTestPEP(t, pep.AllowReadHook{}), CSRFLifetime: 30 * time.Second},
+		}), PEP: fleetTestPEP(t, pep.AllowReadHook{})},
+		{Verifier: authVerifierFunc(func(context.Context, string) (tenancy.Principal, error) { return tenancy.Principal{}, nil }), Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
+			return fleet.FleetResult{}, nil
+		}), Correlator: noopConsoleCorrelator(t), PEP: fleetTestPEP(t, pep.AllowReadHook{}), CSRFLifetime: 30 * time.Second},
 	} {
 		if _, err := NewConsoleHandler(config); err == nil {
 			t.Fatalf("NewConsoleHandler accepted unsafe config %#v", config)
@@ -326,7 +333,8 @@ func TestNewConsoleHandlerRejectsUnsafeConfiguration(t *testing.T) {
 	}
 	verifier, _ := fleetTestVerifier(t, time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC))
 	if _, err := NewConsoleHandler(ConsoleHandlerConfig{
-		Verifier: verifier,
+		Verifier:   verifier,
+		Correlator: noopConsoleCorrelator(t),
 		Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
 			return fleet.FleetResult{}, nil
 		}),
@@ -345,7 +353,7 @@ func TestConsolePageAndAssetFailuresRemainGeneric(t *testing.T) {
 	})
 
 	shortRandom, err := NewConsoleHandler(ConsoleHandlerConfig{
-		Verifier: verifier, Reader: reader, PEP: fleetTestPEP(t, pep.AllowReadHook{}), Now: func() time.Time { return now },
+		Verifier: verifier, Reader: reader, Correlator: noopConsoleCorrelator(t), PEP: fleetTestPEP(t, pep.AllowReadHook{}), Now: func() time.Time { return now },
 		Random: bytes.NewReader(bytes.Repeat([]byte{0x51}, consoleCSRFKeyBytes)),
 	})
 	if err != nil {
@@ -358,7 +366,7 @@ func TestConsolePageAndAssetFailuresRemainGeneric(t *testing.T) {
 	}
 
 	handler, err := NewConsoleHandler(ConsoleHandlerConfig{
-		Verifier: verifier, Reader: reader, PEP: fleetTestPEP(t, pep.AllowReadHook{}), Now: func() time.Time { return now },
+		Verifier: verifier, Reader: reader, Correlator: noopConsoleCorrelator(t), PEP: fleetTestPEP(t, pep.AllowReadHook{}), Now: func() time.Time { return now },
 		Random: bytes.NewReader(bytes.Repeat([]byte{0x61}, 128)),
 	})
 	if err != nil {

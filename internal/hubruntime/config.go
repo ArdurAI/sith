@@ -189,8 +189,13 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 			cleanup()
 			return nil, fmt.Errorf("construct hub runtime: browser OIDC handler configuration is invalid")
 		}
+		consoleCorrelator, err := hubfleet.NewCorrelator(hubfleet.CorrelatorConfig{Querier: database, PEP: enforcer})
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("construct hub runtime: console correlator configuration is invalid")
+		}
 		consoleHandler, err := hubserver.NewConsoleHandler(hubserver.ConsoleHandlerConfig{
-			Verifier: verifier, AuthObserver: authObserver, Reader: database, PEP: enforcer,
+			Verifier: verifier, AuthObserver: authObserver, Reader: database, Correlator: consoleCorrelator, PEP: enforcer,
 		})
 		if err != nil {
 			cleanup()
@@ -201,6 +206,7 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		mux.Handle("GET "+browserHandler.CallbackPath(), http.HandlerFunc(browserHandler.Callback))
 		mux.Handle("GET /v1/workspaces/{workspace}/console", http.HandlerFunc(consoleHandler.ServePage))
 		mux.Handle("GET /v1/workspaces/{workspace}/console/fleet", http.HandlerFunc(consoleHandler.ServeFleet))
+		mux.Handle("GET /v1/workspaces/{workspace}/console/correlate", http.HandlerFunc(consoleHandler.ServeCorrelation))
 		mux.Handle("GET /v1/console/assets/console.css", http.HandlerFunc(consoleHandler.ServeCSS))
 		mux.Handle("GET /v1/console/assets/console.js", http.HandlerFunc(consoleHandler.ServeJavaScript))
 		mux.Handle("/", fleetHandler)

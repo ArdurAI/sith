@@ -31,7 +31,8 @@ a {
 }
 
 button:focus-visible,
-a:focus-visible {
+a:focus-visible,
+input:focus-visible {
   outline: 3px solid var(--amber);
   outline-offset: 3px;
 }
@@ -71,6 +72,7 @@ a:focus-visible {
 .snapshot-time,
 .cluster-source,
 .cluster-observed,
+.resource-address,
 .workspace-stamp dt,
 .workspace-stamp dd,
 .rail-legend,
@@ -133,6 +135,7 @@ h2 {
 }
 
 .coverage-panel,
+.correlation-panel,
 .ledger {
   padding: 3rem 0;
   border-bottom: 1px solid var(--basalt);
@@ -163,6 +166,176 @@ h2 {
 .reload-button:disabled {
   cursor: wait;
   opacity: 0.6;
+}
+
+.correlation-panel {
+  background: linear-gradient(115deg, rgba(247, 250, 251, 0.72), rgba(217, 154, 43, 0.08));
+  padding-inline: clamp(1rem, 3vw, 2.25rem);
+  border-inline: 1px solid var(--hairline);
+}
+
+.query-contract,
+.correlation-form label span,
+.match-freshness {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.query-contract {
+  margin: 0 0 0.2rem;
+  color: var(--slate);
+}
+
+.correlation-intro {
+  max-width: 52rem;
+  margin: 1.5rem 0 0;
+  color: #384652;
+  font-size: 1.05rem;
+  line-height: 1.55;
+}
+
+.correlation-form {
+  display: grid;
+  grid-template-columns: minmax(9rem, 0.8fr) minmax(12rem, 1.2fr) minmax(12rem, 1fr) auto;
+  gap: 0.8rem;
+  align-items: end;
+  margin-top: 1.8rem;
+}
+
+.correlation-form label {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.correlation-form label span {
+  color: #46535f;
+  font-weight: 700;
+}
+
+.correlation-form small {
+  color: var(--slate);
+  font: inherit;
+  font-weight: 400;
+}
+
+.correlation-form input {
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--basalt);
+  border-radius: 0;
+  color: var(--basalt);
+  background: var(--paper);
+  font: inherit;
+}
+
+.correlation-form input::placeholder {
+  color: #7a8791;
+}
+
+.correlation-button {
+  min-height: 2.75rem;
+  padding: 0.65rem 1rem;
+  border: 1px solid var(--basalt);
+  border-radius: 0;
+  color: var(--basalt);
+  background: var(--amber);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.correlation-button:hover:not(:disabled) {
+  color: var(--paper);
+  background: var(--basalt);
+}
+
+.correlation-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.correlation-state {
+  margin-bottom: 0;
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  white-space: nowrap !important;
+}
+
+.correlation-answer {
+  margin-top: 1.5rem;
+}
+
+.correlation-answer[hidden] {
+  display: none;
+}
+
+.answer-heading {
+  display: flex;
+  gap: 2rem;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.correlation-summary {
+  max-width: 52rem;
+  margin-bottom: 0;
+  font-size: clamp(1.1rem, 2vw, 1.45rem);
+  line-height: 1.45;
+}
+
+.correlation-list {
+  margin: 1.5rem 0 0;
+  padding: 0;
+  border-top: 1px solid var(--basalt);
+  list-style: none;
+}
+
+.correlation-row {
+  display: grid;
+  grid-template-columns: 3rem minmax(13rem, 1.4fr) minmax(11rem, 1fr) auto minmax(9rem, 0.7fr);
+  gap: 1.25rem;
+  align-items: center;
+  min-height: 6rem;
+  padding: 1rem 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.health-badge {
+  min-width: 7.5rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid currentColor;
+  color: #8f321f;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.health-badge.progressing {
+  color: #80560e;
+}
+
+.health-badge.unknown {
+  color: #46535f;
+}
+
+.match-freshness {
+  margin: 0;
+  color: #46535f;
+  line-height: 1.4;
 }
 
 .coverage-summary {
@@ -304,10 +477,15 @@ h2 {
 }
 
 .cluster-source,
-.cluster-observed {
+.cluster-observed,
+.resource-address {
   margin: 0;
   color: #46535f;
   overflow-wrap: anywhere;
+}
+
+.resource-address {
+  margin-top: 0.18rem;
 }
 
 .state-badge {
@@ -371,6 +549,36 @@ h2 {
 
   .reload-button {
     width: 100%;
+  }
+
+  .correlation-form {
+    grid-template-columns: 1fr;
+  }
+
+  .correlation-button {
+    width: 100%;
+  }
+
+  .answer-heading {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .correlation-row {
+    grid-template-columns: 2rem 1fr auto;
+    gap: 0.7rem 1rem;
+    align-items: start;
+  }
+
+  .correlation-row .cluster-observed,
+  .correlation-row .match-freshness {
+    grid-column: 2 / -1;
+  }
+
+  .correlation-row .health-badge {
+    grid-column: 3;
+    grid-row: 1;
+    min-width: auto;
   }
 
   .coverage-rail {
