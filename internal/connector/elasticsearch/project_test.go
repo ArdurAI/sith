@@ -217,13 +217,20 @@ func TestProjectLogCausesRejectsMalformedResponseFieldTypes(t *testing.T) {
 	valid := testProjection(t)
 	cases := [][]byte{
 		[]byte(`[]`),
+		[]byte(`{"timed_out":null,"_shards":{"total":1,"successful":1,"skipped":0,"failed":0},"hits":{"hits":[]}}`),
 		[]byte(`{"timed_out":{},"_shards":{"total":1,"successful":1,"skipped":0,"failed":0},"hits":{"hits":[]}}`),
+		[]byte(`{"timed_out":false,"terminated_early":null,"_shards":{"total":1,"successful":1,"skipped":0,"failed":0},"hits":{"hits":[]}}`),
 		[]byte(`{"timed_out":false,"terminated_early":{},"_shards":{"total":1,"successful":1,"skipped":0,"failed":0},"hits":{"hits":[]}}`),
+		[]byte(`{"timed_out":false,"_shards":null,"hits":{"hits":[]}}`),
 		[]byte(`{"timed_out":false,"_shards":[],"hits":{"hits":[]}}`),
+		[]byte(`{"timed_out":false,"_shards":{"total":null,"successful":1,"skipped":0,"failed":0},"hits":{"hits":[]}}`),
 		[]byte(`{"timed_out":false,"_shards":{"total":"one","successful":1,"skipped":0,"failed":0},"hits":{"hits":[]}}`),
+		[]byte(`{"timed_out":false,"_shards":{"total":1,"successful":1,"skipped":0,"failed":0},"hits":null}`),
 		[]byte(`{"timed_out":false,"_shards":{"total":1,"successful":1,"skipped":0,"failed":0},"hits":[]}`),
+		[]byte(`{"timed_out":false,"_shards":{"total":1,"successful":1,"skipped":0,"failed":0},"hits":{"hits":null}}`),
 		[]byte(`{"timed_out":false,"_shards":{"total":1,"successful":1,"skipped":0,"failed":0},"hits":{"hits":{}}}`),
 		[]byte(`{"timed_out":false,"_shards":{"total":1,"successful":1,"skipped":0,"failed":0},"hits":{"hits":[[]]}}`),
+		[]byte(`{"timed_out":false,"_shards":{"total":1,"successful":1,"skipped":0,"failed":0},"hits":{"hits":[{"fields":null}]}}`),
 		[]byte(`{"timed_out":false,"_shards":{"total":1,"successful":1,"skipped":0,"failed":0},"hits":{"hits":[{"fields":[]}]}}`),
 	}
 	for index, document := range cases {

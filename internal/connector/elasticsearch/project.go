@@ -187,6 +187,9 @@ func decodeOptionalField(fields map[string]json.RawMessage, name string, target 
 	if !exists {
 		return nil
 	}
+	if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return fmt.Errorf("search response field %s is invalid", name)
+	}
 	if err := json.Unmarshal(value, target); err != nil {
 		return fmt.Errorf("search response field %s is invalid", name)
 	}

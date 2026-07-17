@@ -29,51 +29,72 @@ var allowedProductionImports = map[string]bool{
 }
 
 var allowedProductionDeclarations = map[string]bool{
-	"Kind":                       true,
-	"ProtocolVersion":            true,
-	"Projection":                 true,
-	"ProjectLogCauses":           true,
-	"UnmarshalJSON":              true,
-	"allowedHitFields":           true,
-	"buildFact":                  true,
-	"causeAggregate":             true,
-	"causeObservation":           true,
-	"classifyMessage":            true,
-	"clusterField":               true,
-	"consumeUniqueJSON":          true,
-	"containerField":             true,
-	"containsAny":                true,
-	"decodeOptionalField":        true,
-	"hitEnvelope":                true,
-	"indicatesDependencyFailure": true,
-	"indicatesMissingConfig":     true,
-	"indicatesPanic":             true,
-	"matchingDelimiter":          true,
-	"maxCauseFacts":              true,
-	"maxClockSkew":               true,
-	"maxFactPayloadBytes":        true,
-	"maxHits":                    true,
-	"maxIdentityText":            true,
-	"maxJSONDepth":               true,
-	"maxMessageBytes":            true,
-	"maxQueryWindow":             true,
-	"maxResponseBytes":           true,
-	"messageField":               true,
-	"namespaceField":             true,
-	"objectFields":               true,
-	"optionalSingleString":       true,
-	"podField":                   true,
-	"rejectDuplicateJSON":        true,
-	"requiredSingleMessage":      true,
-	"requiredSingleString":       true,
-	"searchHit":                  true,
-	"searchResponse":             true,
-	"shardSummary":               true,
-	"timestampField":             true,
-	"validateHit":                true,
-	"validateProjection":         true,
-	"validateSearchResponse":     true,
-	"validateText":               true,
+	"func:ProjectLogCauses":               true,
+	"func:buildFact":                      true,
+	"func:classifyMessage":                true,
+	"func:consumeUniqueJSON":              true,
+	"func:containsAny":                    true,
+	"func:decodeOptionalField":            true,
+	"func:indicatesDependencyFailure":     true,
+	"func:indicatesMissingConfig":         true,
+	"func:indicatesPanic":                 true,
+	"func:matchingDelimiter":              true,
+	"func:objectFields":                   true,
+	"func:optionalSingleString":           true,
+	"func:rejectDuplicateJSON":            true,
+	"func:requiredSingleMessage":          true,
+	"func:requiredSingleString":           true,
+	"func:validateHit":                    true,
+	"func:validateProjection":             true,
+	"func:validateSearchResponse":         true,
+	"func:validateText":                   true,
+	"method:hitEnvelope.UnmarshalJSON":    true,
+	"method:searchHit.UnmarshalJSON":      true,
+	"method:searchResponse.UnmarshalJSON": true,
+	"method:shardSummary.UnmarshalJSON":   true,
+	"type:Projection":                     true,
+	"type:causeAggregate":                 true,
+	"type:causeObservation":               true,
+	"type:hitEnvelope":                    true,
+	"type:searchHit":                      true,
+	"type:searchResponse":                 true,
+	"type:shardSummary":                   true,
+	"value:Kind":                          true,
+	"value:ProtocolVersion":               true,
+	"value:allowedHitFields":              true,
+	"value:clusterField":                  true,
+	"value:containerField":                true,
+	"value:maxCauseFacts":                 true,
+	"value:maxClockSkew":                  true,
+	"value:maxFactPayloadBytes":           true,
+	"value:maxHits":                       true,
+	"value:maxIdentityText":               true,
+	"value:maxJSONDepth":                  true,
+	"value:maxMessageBytes":               true,
+	"value:maxQueryWindow":                true,
+	"value:maxResponseBytes":              true,
+	"value:messageField":                  true,
+	"value:namespaceField":                true,
+	"value:podField":                      true,
+	"value:timestampField":                true,
+}
+
+func functionDeclarationKey(declaration *ast.FuncDecl) string {
+	if declaration.Recv == nil {
+		return "func:" + declaration.Name.Name
+	}
+	if len(declaration.Recv.List) != 1 {
+		return "method:<invalid>." + declaration.Name.Name
+	}
+	receiver := declaration.Recv.List[0].Type
+	if pointer, ok := receiver.(*ast.StarExpr); ok {
+		receiver = pointer.X
+	}
+	identifier, ok := receiver.(*ast.Ident)
+	if !ok {
+		return "method:<invalid>." + declaration.Name.Name
+	}
+	return "method:" + identifier.Name + "." + declaration.Name.Name
 }
 
 func TestProjectorHasNoIOCredentialPersistenceOrMutationSeam(t *testing.T) {
@@ -102,20 +123,23 @@ func TestProjectorHasNoIOCredentialPersistenceOrMutationSeam(t *testing.T) {
 		for _, node := range file.Decls {
 			switch declaration := node.(type) {
 			case *ast.FuncDecl:
-				if !allowedProductionDeclarations[declaration.Name.Name] {
-					t.Errorf("projector declares unreviewed function or method %s", declaration.Name.Name)
+				key := functionDeclarationKey(declaration)
+				if !allowedProductionDeclarations[key] {
+					t.Errorf("projector declares unreviewed function or method %s", key)
 				}
 			case *ast.GenDecl:
 				for _, specification := range declaration.Specs {
 					switch typed := specification.(type) {
 					case *ast.TypeSpec:
-						if !allowedProductionDeclarations[typed.Name.Name] {
-							t.Errorf("projector declares unreviewed type %s", typed.Name.Name)
+						key := "type:" + typed.Name.Name
+						if !allowedProductionDeclarations[key] {
+							t.Errorf("projector declares unreviewed type %s", key)
 						}
 					case *ast.ValueSpec:
 						for _, name := range typed.Names {
-							if !allowedProductionDeclarations[name.Name] {
-								t.Errorf("projector declares unreviewed value %s", name.Name)
+							key := "value:" + name.Name
+							if !allowedProductionDeclarations[key] {
+								t.Errorf("projector declares unreviewed value %s", key)
 							}
 						}
 					}
@@ -128,5 +152,37 @@ func TestProjectorHasNoIOCredentialPersistenceOrMutationSeam(t *testing.T) {
 			}
 			return true
 		})
+	}
+}
+
+func TestFunctionDeclarationKeyQualifiesReceiverType(t *testing.T) {
+	t.Parallel()
+	file, err := parser.ParseFile(token.NewFileSet(), "methods.go", `package example
+func Project() {}
+func (*searchResponse) UnmarshalJSON([]byte) error { return nil }
+func (Projection) UnmarshalJSON([]byte) error { return nil }
+`, 0)
+	if err != nil {
+		t.Fatalf("parse method declarations: %v", err)
+	}
+
+	var keys []string
+	for _, declaration := range file.Decls {
+		if function, ok := declaration.(*ast.FuncDecl); ok {
+			keys = append(keys, functionDeclarationKey(function))
+		}
+	}
+	want := []string{
+		"func:Project",
+		"method:searchResponse.UnmarshalJSON",
+		"method:Projection.UnmarshalJSON",
+	}
+	if len(keys) != len(want) {
+		t.Fatalf("functionDeclarationKey() produced %v; want %v", keys, want)
+	}
+	for index := range want {
+		if keys[index] != want[index] {
+			t.Fatalf("functionDeclarationKey() key %d = %q; want %q", index, keys[index], want[index])
+		}
 	}
 }

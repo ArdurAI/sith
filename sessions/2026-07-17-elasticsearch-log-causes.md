@@ -71,6 +71,13 @@ findings, the full race suite, policy tests, performance, subprocess E2E, and bu
 fuzzers. `make e2e-kind` passes pinned two-cluster fan-out, OCI, and Argo tests in 236.347 seconds.
 [T] `make release-check` passes module verification, two reproducible release builds, archive/SPDX
 SBOM validation, Homebrew formula generation, and the multi-platform distroless OCI layout.
+[T] CodeRabbit's committed-diff review found two valid fail-closed gaps: present JSON `null` values
+could decode as absent values, and the declaration boundary keyed methods only by their bare name.
+The projector now rejects every present `null` response field, while the boundary allowlist keys
+methods by receiver type and has a regression proving identically named methods remain distinct.
+[T] Post-review focused race tests still pass at 95.7% statement coverage, and native fuzzing
+completed 4,185,770 executions without a failure. The complete post-review matrix is green:
+`make ci`, `make e2e-isolation`, `make e2e-kind` (236.131 seconds), and `make release-check`.
 [T] `README.md` was reviewed in full. No update is warranted because this slice adds no user-facing
 command, configuration, authentication flow, endpoint, runtime connector, or supported behavior;
 the roadmap and this checkpoint are the correct documentation surfaces.
@@ -87,6 +94,7 @@ Primary compatibility references:
 ## Checkpoint
 
 - `2026-07-17/elasticsearch-log-causes#1`
+- `2026-07-17/elasticsearch-log-causes#2`
 
 ## Open questions
 
