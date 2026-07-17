@@ -46,6 +46,22 @@ func consoleTestCorrelator(t *testing.T, querier hubfleet.FleetQuerier, enforcer
 	return correlator
 }
 
+func noopConsoleInventory(t *testing.T) *hubfleet.InventorySearcher {
+	t.Helper()
+	return consoleTestInventory(t, consoleFleetQuerierFunc(func(context.Context, tenancy.Scope, fleet.Query, time.Duration, time.Time) (fleet.QueryResult, error) {
+		return fleet.QueryResult{}, nil
+	}), fleetTestPEP(t, pep.AllowReadHook{}))
+}
+
+func consoleTestInventory(t *testing.T, querier hubfleet.FleetQuerier, enforcer *pep.Enforcer) *hubfleet.InventorySearcher {
+	t.Helper()
+	searcher, err := hubfleet.NewInventorySearcher(hubfleet.InventorySearcherConfig{Querier: querier, PEP: enforcer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return searcher
+}
+
 func TestConsoleCorrelationUsesPurposeProofPEPAndMinimalProjection(t *testing.T) {
 	now := time.Date(2026, 7, 17, 15, 0, 0, 0, time.UTC)
 	verifier, privateKey := fleetTestVerifier(t, now)
@@ -90,8 +106,8 @@ func TestConsoleCorrelationUsesPurposeProofPEPAndMinimalProjection(t *testing.T)
 		Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
 			return fleet.FleetResult{}, nil
 		}),
-		Correlator: correlator, PEP: enforcer, Now: func() time.Time { return now },
-		Random: bytes.NewReader(bytes.Repeat([]byte{0x72}, 96)),
+		Correlator: correlator, Inventory: noopConsoleInventory(t), PEP: enforcer, Now: func() time.Time { return now },
+		Random: bytes.NewReader(bytes.Repeat([]byte{0x72}, 128)),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +157,7 @@ func TestConsoleCorrelationRejectsUnsafeRequestsBeforeQuery(t *testing.T) {
 			Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
 				return fleet.FleetResult{}, nil
 			}),
-			Correlator: correlator, PEP: enforcer, Now: func() time.Time { return consoleNow },
+			Correlator: correlator, Inventory: noopConsoleInventory(t), PEP: enforcer, Now: func() time.Time { return consoleNow },
 			Random: bytes.NewReader(bytes.Repeat([]byte{fill}, 128)),
 		})
 		if err != nil {
@@ -267,6 +283,10 @@ func TestProjectConsoleCorrelationFailsClosedOnStoredShape(t *testing.T) {
 		{name: "healthy mismatch", mutate: func(result *fleet.QueryResult) { result.Facts[0].Observed = json.RawMessage(`{"status":"Healthy"}`) }},
 		{name: "source mismatch", mutate: func(result *fleet.QueryResult) { result.Facts[0].Source = "cluster-b" }},
 		{name: "stale mismatch", mutate: func(result *fleet.QueryResult) { result.Facts[0].StaleFor = "collection failed" }},
+		{name: "untrusted stale text", mutate: func(result *fleet.QueryResult) {
+			result.Facts[0].Stale = true
+			result.Facts[0].StaleFor = "credential=must-not-leak"
+		}},
 		{name: "duplicate fact", mutate: func(result *fleet.QueryResult) { result.Facts = append(result.Facts, result.Facts[0]) }},
 		{name: "oversized coverage", mutate: func(result *fleet.QueryResult) {
 			result.Coverage.Stale = make([]string, consoleCorrelationMaxCoverageScopes+1)

@@ -32,7 +32,8 @@ a {
 
 button:focus-visible,
 a:focus-visible,
-input:focus-visible {
+input:focus-visible,
+select:focus-visible {
   outline: 3px solid var(--amber);
   outline-offset: 3px;
 }
@@ -135,6 +136,7 @@ h2 {
 }
 
 .coverage-panel,
+.inventory-panel,
 .correlation-panel,
 .ledger {
   padding: 3rem 0;
@@ -172,6 +174,187 @@ h2 {
   background: linear-gradient(115deg, rgba(247, 250, 251, 0.72), rgba(217, 154, 43, 0.08));
   padding-inline: clamp(1rem, 3vw, 2.25rem);
   border-inline: 1px solid var(--hairline);
+}
+
+.inventory-panel {
+  margin-top: 3rem;
+  padding-inline: clamp(1rem, 3vw, 2.25rem);
+  color: var(--paper);
+  background:
+    linear-gradient(130deg, rgba(45, 106, 115, 0.3), transparent 48%),
+    var(--basalt);
+  border-bottom: 0;
+}
+
+.inventory-panel .eyebrow {
+  color: #7fc1c8;
+}
+
+.inventory-panel .query-contract,
+.inventory-panel .snapshot-time {
+  color: #aab6bf;
+}
+
+.inventory-intro {
+  max-width: 55rem;
+  margin: 1.5rem 0 0;
+  color: #cfdae0;
+  font-size: 1.05rem;
+  line-height: 1.55;
+}
+
+.inventory-form {
+  display: grid;
+  grid-template-columns: minmax(10rem, 0.8fr) minmax(12rem, 1fr) minmax(12rem, 1fr) auto;
+  gap: 0.8rem;
+  align-items: end;
+  margin-top: 1.8rem;
+}
+
+.inventory-form label {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.inventory-form label span {
+  color: #c9d5dc;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.inventory-form small {
+  color: #96a6b1;
+  font: inherit;
+  font-weight: 400;
+}
+
+.inventory-form input,
+.inventory-form select {
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #7b8993;
+  border-radius: 0;
+  color: var(--paper);
+  background: #192431;
+  font: inherit;
+}
+
+.inventory-form input::placeholder {
+  color: #8e9ba5;
+}
+
+.inventory-button {
+  min-height: 2.75rem;
+  padding: 0.65rem 1rem;
+  border: 1px solid var(--amber);
+  border-radius: 0;
+  color: var(--basalt);
+  background: var(--amber);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.inventory-button:hover:not(:disabled) {
+  color: var(--paper);
+  background: transparent;
+}
+
+.inventory-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.inventory-state {
+  border-left-color: #7fc1c8;
+  background: rgba(247, 250, 251, 0.08);
+}
+
+.inventory-answer {
+  margin-top: 1.5rem;
+}
+
+.inventory-answer[hidden] {
+  display: none;
+}
+
+.inventory-panel .inventory-gaps {
+  color: var(--basalt);
+  background: var(--paper);
+}
+
+.inventory-list {
+  margin: 1.5rem 0 0;
+  padding: 0;
+  border-top: 1px solid #72808b;
+  list-style: none;
+}
+
+.inventory-row {
+  display: grid;
+  grid-template-columns: 3rem minmax(13rem, 1.35fr) minmax(11rem, 0.9fr) minmax(12rem, 1fr) minmax(8rem, 0.7fr);
+  gap: 1.25rem;
+  align-items: center;
+  min-height: 6.25rem;
+  padding: 1rem 0;
+  border-bottom: 1px solid rgba(247, 250, 251, 0.2);
+}
+
+.inventory-row .cluster-name {
+  color: var(--paper);
+}
+
+.inventory-row .cluster-source,
+.inventory-row .cluster-observed,
+.inventory-row .resource-address {
+  color: #b8c6ce;
+}
+
+.inventory-metrics {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+}
+
+.inventory-metrics div {
+  display: flex;
+  gap: 0.7rem;
+  justify-content: space-between;
+}
+
+.inventory-metrics dt,
+.inventory-metrics dd,
+.inventory-freshness {
+  margin: 0;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.inventory-metrics dt {
+  color: #92a2ad;
+}
+
+.inventory-metrics dd {
+  color: var(--paper);
+  font-weight: 700;
+}
+
+.inventory-freshness {
+  padding: 0.45rem 0.65rem;
+  border: 1px solid #7fc1c8;
+  color: #a9dde1;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.inventory-freshness.stale {
+  border-color: var(--amber);
+  color: #f0bf67;
 }
 
 .query-contract,
@@ -525,7 +708,7 @@ h2 {
   to { transform: scaleY(1); opacity: 1; }
 }
 
-@media (max-width: 48rem) {
+@media (max-width: 60rem) {
   .console-shell {
     width: min(100% - 1.25rem, 76rem);
     padding-top: 0.5rem;
@@ -555,7 +738,15 @@ h2 {
     grid-template-columns: 1fr;
   }
 
+  .inventory-form {
+    grid-template-columns: 1fr;
+  }
+
   .correlation-button {
+    width: 100%;
+  }
+
+  .inventory-button {
     width: 100%;
   }
 
@@ -568,6 +759,18 @@ h2 {
     grid-template-columns: 2rem 1fr auto;
     gap: 0.7rem 1rem;
     align-items: start;
+  }
+
+  .inventory-row {
+    grid-template-columns: 2rem minmax(0, 1fr);
+    gap: 0.7rem 1rem;
+    align-items: start;
+  }
+
+  .inventory-row .cluster-observed,
+  .inventory-row .inventory-metrics,
+  .inventory-row .inventory-freshness {
+    grid-column: 2;
   }
 
   .correlation-row .cluster-observed,

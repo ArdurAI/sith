@@ -27,6 +27,7 @@ type Verb string
 const (
 	VerbFleetRead                Verb = "fleet.read"
 	VerbFleetCorrelate           Verb = "fleet.correlate"
+	VerbFleetInventorySearch     Verb = "fleet.inventory.search"
 	VerbFleetImageSearch         Verb = "fleet.image.search"
 	VerbFleetCVESearch           Verb = "fleet.cve.search"
 	VerbFleetCVEIdentifierSearch Verb = "fleet.cve.identifier.search"
@@ -36,7 +37,7 @@ const (
 // Valid reports whether a verb belongs to the currently supported closed vocabulary.
 func (verb Verb) Valid() bool {
 	switch verb {
-	case VerbFleetRead, VerbFleetCorrelate, VerbFleetImageSearch, VerbFleetCVESearch, VerbFleetCVEIdentifierSearch, VerbSpokeSnapshotRefresh:
+	case VerbFleetRead, VerbFleetCorrelate, VerbFleetInventorySearch, VerbFleetImageSearch, VerbFleetCVESearch, VerbFleetCVEIdentifierSearch, VerbSpokeSnapshotRefresh:
 		return true
 	default:
 		return false

@@ -71,7 +71,18 @@ func TestHubReadEntrypointsStopBeforeDependenciesWhenPolicyRefuses(t *testing.T)
 	if querier.calls != 0 {
 		t.Fatalf("image search reached fleet query %d times after refusal", querier.calls)
 	}
-	if got, want := refusal.verbs, []pep.Verb{pep.VerbSpokeSnapshotRefresh, pep.VerbFleetRead, pep.VerbFleetCorrelate, pep.VerbFleetImageSearch}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] || got[3] != want[3] {
+
+	inventorySearcher, err := NewInventorySearcher(InventorySearcherConfig{Querier: querier, PEP: refusal.enforcer(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inventorySearcher.Search(context.Background(), scope, InventorySearchRequest{ResourceKind: "Pod"}); err == nil {
+		t.Fatal("Inventory Search() unexpectedly bypassed policy refusal")
+	}
+	if querier.calls != 0 {
+		t.Fatalf("inventory search reached fleet query %d times after refusal", querier.calls)
+	}
+	if got, want := refusal.verbs, []pep.Verb{pep.VerbSpokeSnapshotRefresh, pep.VerbFleetRead, pep.VerbFleetCorrelate, pep.VerbFleetImageSearch, pep.VerbFleetInventorySearch}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] || got[3] != want[3] || got[4] != want[4] {
 		t.Fatalf("policy verbs = %q, want %q", got, want)
 	}
 }
@@ -109,6 +120,11 @@ func TestHubReadConstructorsRequirePolicyEnforcer(t *testing.T) {
 		return fleet.QueryResult{}, nil
 	})}); err == nil {
 		t.Fatal("NewCorrelator() accepted no policy enforcer")
+	}
+	if _, err := NewInventorySearcher(InventorySearcherConfig{Querier: fleetQuerierFunc(func(context.Context, tenancy.Scope, fleet.Query, time.Duration, time.Time) (fleet.QueryResult, error) {
+		return fleet.QueryResult{}, nil
+	})}); err == nil {
+		t.Fatal("NewInventorySearcher() accepted no policy enforcer")
 	}
 	if _, err := NewSource(SourceConfig{Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
 		return fleet.FleetResult{}, nil

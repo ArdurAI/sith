@@ -40,9 +40,13 @@ const (
 	consoleCSRFTokenBytes               = consoleCSRFPayloadBytes + consoleCSRFDigestBytes
 	consoleFleetCSRFDomain              = "sith-hub-console-fleet/v1"
 	consoleCorrelationDomain            = "sith-hub-console-correlation/v1"
+	consoleInventoryDomain              = "sith-hub-console-inventory/v1"
 	consoleCorrelationReadLimit         = 257
 	consoleCorrelationMaxMatches        = 256
 	consoleCorrelationMaxCoverageScopes = 1_000
+	consoleInventoryReadLimit           = 257
+	consoleInventoryMaxRecords          = 256
+	consoleMaximumSafeInteger           = int64(9_007_199_254_740_991)
 	defaultConsoleCSRFLifetime          = 5 * time.Minute
 	maximumConsoleCSRFLifetime          = 10 * time.Minute
 )
@@ -56,6 +60,7 @@ type ConsoleHandlerConfig struct {
 	AuthObserver AuthObserver
 	Reader       hubfleet.FleetReader
 	Correlator   *hubfleet.Correlator
+	Inventory    *hubfleet.InventorySearcher
 	PEP          *pep.Enforcer
 	CSRFLifetime time.Duration
 	Now          func() time.Time
@@ -68,6 +73,7 @@ type ConsoleHandler struct {
 	authObserver AuthObserver
 	reader       hubfleet.FleetReader
 	correlator   *hubfleet.Correlator
+	inventory    *hubfleet.InventorySearcher
 	pep          *pep.Enforcer
 	csrfLifetime time.Duration
 	now          func() time.Time
@@ -82,6 +88,7 @@ type consolePageData struct {
 	Workspace            string
 	FleetCSRFToken       string
 	CorrelationCSRFToken string
+	InventoryCSRFToken   string
 }
 
 type consoleFleetResponse struct {
@@ -106,11 +113,31 @@ type consoleCorrelationResponse struct {
 	Assessment fleet.CoverageAssessment `json:"assessment"`
 }
 
+type consoleInventoryRecord struct {
+	Scope             string    `json:"scope"`
+	ResourceKind      string    `json:"resource_kind"`
+	Namespace         string    `json:"namespace,omitempty"`
+	Name              string    `json:"name"`
+	ObservedAt        time.Time `json:"observed_at"`
+	Stale             bool      `json:"stale"`
+	StaleFor          string    `json:"stale_for,omitempty"`
+	Replicas          *int64    `json:"replicas,omitempty"`
+	AvailableReplicas *int64    `json:"available_replicas,omitempty"`
+	Ready             *bool     `json:"ready,omitempty"`
+	Generation        int64     `json:"generation"`
+}
+
+type consoleInventoryResponse struct {
+	Records    []consoleInventoryRecord `json:"records"`
+	Coverage   fleet.Coverage           `json:"coverage"`
+	Assessment fleet.CoverageAssessment `json:"assessment"`
+}
+
 // NewConsoleHandler constructs a separate cookie-authenticated read surface. It does not alter
 // bearer API authentication and exposes no refresh, connector, local-operation, or write seam.
 func NewConsoleHandler(config ConsoleHandlerConfig) (*ConsoleHandler, error) {
-	if config.Verifier == nil || config.Reader == nil || config.Correlator == nil || config.PEP == nil {
-		return nil, fmt.Errorf("construct Hub console: verifier, reader, correlator, and policy enforcer are required")
+	if config.Verifier == nil || config.Reader == nil || config.Correlator == nil || config.Inventory == nil || config.PEP == nil {
+		return nil, fmt.Errorf("construct Hub console: verifier, reader, correlator, inventory searcher, and policy enforcer are required")
 	}
 	if config.CSRFLifetime == 0 {
 		config.CSRFLifetime = defaultConsoleCSRFLifetime
@@ -133,7 +160,7 @@ func NewConsoleHandler(config ConsoleHandlerConfig) (*ConsoleHandler, error) {
 		return nil, fmt.Errorf("construct Hub console: page template is invalid")
 	}
 	handler := &ConsoleHandler{
-		verifier: config.Verifier, authObserver: config.AuthObserver, reader: config.Reader, correlator: config.Correlator, pep: config.PEP,
+		verifier: config.Verifier, authObserver: config.AuthObserver, reader: config.Reader, correlator: config.Correlator, inventory: config.Inventory, pep: config.PEP,
 		csrfLifetime: config.CSRFLifetime, now: config.Now, random: config.Random, page: page, assets: assets,
 	}
 	if _, err := io.ReadFull(handler.random, handler.csrfKey[:]); err != nil {
@@ -164,9 +191,14 @@ func (handler *ConsoleHandler) ServePage(response http.ResponseWriter, request *
 		writeConsoleError(response, http.StatusServiceUnavailable, "console_unavailable")
 		return
 	}
+	inventoryCSRFToken, err := handler.newCSRFToken(rawSession, scope.WorkspaceID(), consoleInventoryDomain)
+	if err != nil {
+		writeConsoleError(response, http.StatusServiceUnavailable, "console_unavailable")
+		return
+	}
 	var rendered bytes.Buffer
 	if err := handler.page.Execute(&rendered, consolePageData{
-		Workspace: string(scope.WorkspaceID()), FleetCSRFToken: fleetCSRFToken, CorrelationCSRFToken: correlationCSRFToken,
+		Workspace: string(scope.WorkspaceID()), FleetCSRFToken: fleetCSRFToken, CorrelationCSRFToken: correlationCSRFToken, InventoryCSRFToken: inventoryCSRFToken,
 	}); err != nil {
 		writeConsoleError(response, http.StatusServiceUnavailable, "console_unavailable")
 		return
@@ -232,6 +264,37 @@ func (handler *ConsoleHandler) ServeCorrelation(response http.ResponseWriter, re
 	projected, err := projectConsoleCorrelation(result, scope.WorkspaceID(), correlationRequest)
 	if err != nil {
 		writeConsoleError(response, http.StatusServiceUnavailable, "correlation_unavailable")
+		return
+	}
+	writeConsoleJSON(response, http.StatusOK, projected)
+}
+
+// ServeInventory answers one explicit bounded inventory selection through the dedicated
+// tenant-scoped PEP service, then projects stored facts to a closed browser response.
+func (handler *ConsoleHandler) ServeInventory(response http.ResponseWriter, request *http.Request) {
+	setConsoleSecurityHeaders(response.Header())
+	workspaceID, inventoryRequest, ok := canonicalConsoleInventoryRequest(request)
+	if !ok {
+		writeConsoleError(response, http.StatusNotFound, "not_found")
+		return
+	}
+	scope, rawSession, ok := handler.authorize(response, request, workspaceID)
+	if !ok {
+		return
+	}
+	if !sameOriginFetch(request.Header.Values("Sec-Fetch-Site")) ||
+		!handler.validCSRFToken(request.Header.Values(consoleCSRFHeader), rawSession, scope.WorkspaceID(), consoleInventoryDomain) {
+		writeConsoleError(response, http.StatusForbidden, "forbidden")
+		return
+	}
+	result, err := handler.inventory.Search(request.Context(), scope, inventoryRequest)
+	if err != nil {
+		writeConsoleError(response, http.StatusServiceUnavailable, "inventory_unavailable")
+		return
+	}
+	projected, err := projectConsoleInventory(result, scope.WorkspaceID(), inventoryRequest)
+	if err != nil {
+		writeConsoleError(response, http.StatusServiceUnavailable, "inventory_unavailable")
 		return
 	}
 	writeConsoleJSON(response, http.StatusOK, projected)
@@ -363,6 +426,42 @@ func canonicalConsoleCorrelationRequest(request *http.Request) (tenancy.Workspac
 	return workspaceID, correlationRequest, true
 }
 
+func canonicalConsoleInventoryRequest(request *http.Request) (tenancy.WorkspaceID, hubfleet.InventorySearchRequest, bool) {
+	if request == nil || request.Method != http.MethodGet || request.URL == nil || request.URL.Fragment != "" ||
+		request.URL.RawQuery == "" || len(request.URL.RawQuery) > 1_024 {
+		return "", hubfleet.InventorySearchRequest{}, false
+	}
+	workspaceID := tenancy.WorkspaceID(request.PathValue("workspace"))
+	if tenancy.ValidateWorkspaceID(workspaceID) != nil {
+		return "", hubfleet.InventorySearchRequest{}, false
+	}
+	wantPath := "/v1/workspaces/" + url.PathEscape(string(workspaceID)) + "/console/inventory"
+	if request.URL.EscapedPath() != wantPath {
+		return "", hubfleet.InventorySearchRequest{}, false
+	}
+	values, err := url.ParseQuery(request.URL.RawQuery)
+	if err != nil || len(values) < 1 || len(values) > 3 || values.Encode() != request.URL.RawQuery {
+		return "", hubfleet.InventorySearchRequest{}, false
+	}
+	for key, entries := range values {
+		if (key != "kind" && key != "name" && key != "namespace") || len(entries) != 1 {
+			return "", hubfleet.InventorySearchRequest{}, false
+		}
+	}
+	if len(values["kind"]) != 1 || values.Get("kind") == "" ||
+		(len(values["name"]) == 1 && values.Get("name") == "") ||
+		(len(values["namespace"]) == 1 && values.Get("namespace") == "") {
+		return "", hubfleet.InventorySearchRequest{}, false
+	}
+	inventoryRequest := hubfleet.InventorySearchRequest{
+		ResourceKind: values.Get("kind"), Namespace: values.Get("namespace"), Name: values.Get("name"), Limit: consoleInventoryReadLimit,
+	}
+	if inventoryRequest.Validate() != nil {
+		return "", hubfleet.InventorySearchRequest{}, false
+	}
+	return workspaceID, inventoryRequest, true
+}
+
 func projectConsoleCorrelation(
 	result fleet.QueryResult,
 	workspaceID tenancy.WorkspaceID,
@@ -385,7 +484,7 @@ func projectConsoleCorrelation(
 			validateConsoleProjectionText(fact.Ref.Kind, 128, false) != nil ||
 			validateConsoleProjectionText(fact.Ref.Name, 256, false) != nil ||
 			validateConsoleProjectionText(fact.Ref.Namespace, 256, true) != nil ||
-			validateConsoleProjectionText(fact.StaleFor, 128, true) != nil || fact.Stale != (fact.StaleFor != "") {
+			validateConsoleProjectionText(fact.StaleFor, 128, true) != nil || !validConsoleStaleFor(fact.Stale, fact.StaleFor) {
 			return consoleCorrelationResponse{}, fmt.Errorf("project console correlation: invalid stored fact")
 		}
 		health, err := decodeConsoleHealth(fact.Observed)
@@ -403,6 +502,163 @@ func projectConsoleCorrelation(
 		})
 	}
 	return consoleCorrelationResponse{Matches: matches, Coverage: coverage, Assessment: coverage.Assessment()}, nil
+}
+
+func projectConsoleInventory(
+	result fleet.QueryResult,
+	workspaceID tenancy.WorkspaceID,
+	request hubfleet.InventorySearchRequest,
+) (consoleInventoryResponse, error) {
+	if workspaceID == "" || len(result.Facts) > consoleInventoryMaxRecords {
+		return consoleInventoryResponse{}, fmt.Errorf("project console inventory: invalid result bounds")
+	}
+	coverage, err := projectConsoleCoverage(result.Coverage)
+	if err != nil {
+		return consoleInventoryResponse{}, err
+	}
+	records := make([]consoleInventoryRecord, 0, len(result.Facts))
+	seen := make(map[string]struct{}, len(result.Facts))
+	for _, fact := range result.Facts {
+		if fact.Workspace != string(workspaceID) || fact.Kind != fleet.FactInventory || fact.Ref.SourceKind != hubfleet.SourceKind ||
+			fact.Source != fact.Ref.Scope || fact.Ref.Kind != request.ResourceKind ||
+			(request.Namespace != "" && fact.Ref.Namespace != request.Namespace) ||
+			(request.Name != "" && fact.Ref.Name != request.Name) || fact.ObservedAt.IsZero() ||
+			len(fact.Ref.Attributes) != 0 || len(fact.Display) != 0 ||
+			fact.Provenance.Adapter != hubfleet.SourceKind || fact.Provenance.ProtocolV != "1.0.0" ||
+			fact.Provenance.NativeID != "" || fact.Provenance.DeepLink != "" || fact.Provenance.Collector != "" ||
+			validateConsoleProjectionText(fact.Ref.Scope, 256, false) != nil ||
+			validateConsoleProjectionText(fact.Ref.Kind, 128, false) != nil ||
+			validateConsoleProjectionText(fact.Ref.Name, 256, false) != nil ||
+			validateConsoleProjectionText(fact.Ref.Namespace, 256, true) != nil ||
+			validateConsoleProjectionText(fact.StaleFor, 128, true) != nil || !validConsoleStaleFor(fact.Stale, fact.StaleFor) {
+			return consoleInventoryResponse{}, fmt.Errorf("project console inventory: invalid stored fact")
+		}
+		identity := strings.Join([]string{fact.Ref.Scope, fact.Ref.Kind, fact.Ref.Namespace, fact.Ref.Name}, "\x00")
+		if _, exists := seen[identity]; exists {
+			return consoleInventoryResponse{}, fmt.Errorf("project console inventory: duplicate stored fact")
+		}
+		seen[identity] = struct{}{}
+		record, err := decodeConsoleInventory(fact.Observed, fact.Ref.Kind)
+		if err != nil {
+			return consoleInventoryResponse{}, fmt.Errorf("project console inventory: invalid stored observation")
+		}
+		record.Scope = fact.Ref.Scope
+		record.ResourceKind = fact.Ref.Kind
+		record.Namespace = fact.Ref.Namespace
+		record.Name = fact.Ref.Name
+		record.ObservedAt = fact.ObservedAt.UTC()
+		record.Stale = fact.Stale
+		record.StaleFor = fact.StaleFor
+		records = append(records, record)
+	}
+	return consoleInventoryResponse{Records: records, Coverage: coverage, Assessment: coverage.Assessment()}, nil
+}
+
+func decodeConsoleInventory(payload json.RawMessage, kind string) (consoleInventoryRecord, error) {
+	if err := rejectConsoleDuplicateJSONMembers(payload); err != nil {
+		return consoleInventoryRecord{}, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	var observation struct {
+		Resource          string          `json:"resource"`
+		Replicas          *int64          `json:"replicas"`
+		AvailableReplicas *int64          `json:"available_replicas"`
+		Ready             *int64          `json:"ready"`
+		Generation        *int64          `json:"generation"`
+		ImageDigests      json.RawMessage `json:"image_digests"`
+	}
+	if err := decoder.Decode(&observation); err != nil {
+		return consoleInventoryRecord{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF || observation.Resource != kind || observation.Generation == nil ||
+		*observation.Generation < 0 || *observation.Generation > consoleMaximumSafeInteger {
+		return consoleInventoryRecord{}, fmt.Errorf("inventory observation has an invalid envelope")
+	}
+	record := consoleInventoryRecord{Generation: *observation.Generation}
+	switch kind {
+	case "Deployment", "Rollout":
+		if observation.Replicas == nil || observation.AvailableReplicas == nil || observation.Ready != nil || len(observation.ImageDigests) != 0 ||
+			!validConsoleCount(*observation.Replicas) || !validConsoleCount(*observation.AvailableReplicas) {
+			return consoleInventoryRecord{}, fmt.Errorf("workload inventory observation is invalid")
+		}
+		replicas, available := *observation.Replicas, *observation.AvailableReplicas
+		record.Replicas = &replicas
+		record.AvailableReplicas = &available
+	case "Pod":
+		if observation.Replicas != nil || observation.AvailableReplicas != nil || observation.Ready == nil ||
+			(*observation.Ready != 0 && *observation.Ready != 1) {
+			return consoleInventoryRecord{}, fmt.Errorf("pod inventory observation is invalid")
+		}
+		ready := *observation.Ready == 1
+		record.Ready = &ready
+		if len(observation.ImageDigests) != 0 {
+			var digests []string
+			if err := json.Unmarshal(observation.ImageDigests, &digests); err != nil || len(digests) == 0 || len(digests) > 64 {
+				return consoleInventoryRecord{}, fmt.Errorf("pod inventory image digests are invalid")
+			}
+			for index, digest := range digests {
+				if fleet.ValidateImageDigest(digest) != nil || (index > 0 && digests[index-1] >= digest) {
+					return consoleInventoryRecord{}, fmt.Errorf("pod inventory image digests are invalid")
+				}
+			}
+		}
+	default:
+		return consoleInventoryRecord{}, fmt.Errorf("inventory resource kind is unsupported")
+	}
+	return record, nil
+}
+
+func rejectConsoleDuplicateJSONMembers(payload json.RawMessage) error {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	first, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if delimiter, ok := first.(json.Delim); !ok || delimiter != '{' {
+		return fmt.Errorf("inventory observation must be an object")
+	}
+	seen := make(map[string]struct{})
+	for decoder.More() {
+		member, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		name, ok := member.(string)
+		if !ok {
+			return fmt.Errorf("inventory observation member is invalid")
+		}
+		if _, exists := seen[name]; exists {
+			return fmt.Errorf("inventory observation contains a duplicate member")
+		}
+		seen[name] = struct{}{}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return err
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return fmt.Errorf("inventory observation contains trailing data")
+	}
+	return nil
+}
+
+func validConsoleCount(value int64) bool {
+	return value >= 0 && value <= consoleMaximumSafeInteger
+}
+
+func validConsoleStaleFor(stale bool, value string) bool {
+	if !stale {
+		return value == ""
+	}
+	if value == "collection failed" {
+		return true
+	}
+	duration, err := time.ParseDuration(value)
+	return err == nil && duration >= time.Second && duration.String() == value
 }
 
 func projectConsoleCoverage(coverage fleet.Coverage) (fleet.Coverage, error) {
