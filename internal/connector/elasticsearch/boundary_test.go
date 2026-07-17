@@ -97,6 +97,31 @@ func functionDeclarationKey(declaration *ast.FuncDecl) string {
 	return "method:" + identifier.Name + "." + declaration.Name.Name
 }
 
+func projectLogCausesHasExpectedSignature(declaration *ast.FuncDecl) bool {
+	if declaration.Recv != nil || declaration.Type.TypeParams != nil || declaration.Type.Params == nil ||
+		len(declaration.Type.Params.List) != 1 || declaration.Type.Results == nil ||
+		len(declaration.Type.Results.List) != 2 {
+		return false
+	}
+	parameter := declaration.Type.Params.List[0]
+	if len(parameter.Names) != 1 || parameter.Names[0].Name != "input" || !isIdentifier(parameter.Type, "Projection") {
+		return false
+	}
+	firstResult, ok := declaration.Type.Results.List[0].Type.(*ast.ArrayType)
+	return ok && firstResult.Len == nil && isSelector(firstResult.Elt, "fleet", "GraphFact") &&
+		isIdentifier(declaration.Type.Results.List[1].Type, "error")
+}
+
+func isIdentifier(expression ast.Expr, name string) bool {
+	identifier, ok := expression.(*ast.Ident)
+	return ok && identifier.Name == name
+}
+
+func isSelector(expression ast.Expr, packageName, selectedName string) bool {
+	selector, ok := expression.(*ast.SelectorExpr)
+	return ok && isIdentifier(selector.X, packageName) && selector.Sel.Name == selectedName
+}
+
 func TestProjectorHasNoIOCredentialPersistenceOrMutationSeam(t *testing.T) {
 	t.Parallel()
 	entries, err := os.ReadDir(".")
@@ -116,6 +141,9 @@ func TestProjectorHasNoIOCredentialPersistenceOrMutationSeam(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unquote import: %v", err)
 			}
+			if imported.Name != nil {
+				t.Errorf("projector aliases production import %q as %q", path, imported.Name.Name)
+			}
 			if !allowedProductionImports[path] {
 				t.Fatalf("projector imports unreviewed package %q", path)
 			}
@@ -126,6 +154,9 @@ func TestProjectorHasNoIOCredentialPersistenceOrMutationSeam(t *testing.T) {
 				key := functionDeclarationKey(declaration)
 				if !allowedProductionDeclarations[key] {
 					t.Errorf("projector declares unreviewed function or method %s", key)
+				}
+				if key == "func:ProjectLogCauses" && !projectLogCausesHasExpectedSignature(declaration) {
+					t.Errorf("ProjectLogCauses must retain the reviewed pure-projector signature")
 				}
 			case *ast.GenDecl:
 				for _, specification := range declaration.Specs {
@@ -147,8 +178,13 @@ func TestProjectorHasNoIOCredentialPersistenceOrMutationSeam(t *testing.T) {
 			}
 		}
 		ast.Inspect(file, func(node ast.Node) bool {
-			if _, ok := node.(*ast.InterfaceType); ok {
+			switch typed := node.(type) {
+			case *ast.InterfaceType:
 				t.Errorf("projector declares an injected interface seam")
+			case *ast.SelectorExpr:
+				if isIdentifier(typed.X, "io") && typed.Sel.Name != "EOF" {
+					t.Errorf("projector uses disallowed io capability io.%s", typed.Sel.Name)
+				}
 			}
 			return true
 		})
@@ -184,5 +220,57 @@ func (Projection) UnmarshalJSON([]byte) error { return nil }
 		if keys[index] != want[index] {
 			t.Fatalf("functionDeclarationKey() key %d = %q; want %q", index, keys[index], want[index])
 		}
+	}
+}
+
+func TestProjectLogCausesSignatureRejectsCapabilitySeams(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		signature string
+		want      bool
+	}{
+		{name: "reviewed", signature: `func ProjectLogCauses(input Projection) ([]fleet.GraphFact, error)`, want: true},
+		{name: "reader parameter", signature: `func ProjectLogCauses(input Projection, reader io.Reader) ([]fleet.GraphFact, error)`},
+		{name: "reader result", signature: `func ProjectLogCauses(input Projection) ([]fleet.GraphFact, io.Reader)`},
+		{name: "interface input", signature: `func ProjectLogCauses(input any) ([]fleet.GraphFact, error)`},
+		{name: "method", signature: `func (Projection) ProjectLogCauses(input Projection) ([]fleet.GraphFact, error)`},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			file, err := parser.ParseFile(token.NewFileSet(), "signature.go", "package example\n"+test.signature+" {}", 0)
+			if err != nil {
+				t.Fatalf("parse signature: %v", err)
+			}
+			declaration := file.Decls[0].(*ast.FuncDecl)
+			if got := projectLogCausesHasExpectedSignature(declaration); got != test.want {
+				t.Fatalf("projectLogCausesHasExpectedSignature() = %t; want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestIOCapabilityGuardAllowsOnlyEOFSentinel(t *testing.T) {
+	t.Parallel()
+	file, err := parser.ParseFile(token.NewFileSet(), "io.go", `package example
+import "io"
+var end = io.EOF
+type seam struct { reader io.Reader }
+`, 0)
+	if err != nil {
+		t.Fatalf("parse io declarations: %v", err)
+	}
+	var rejected []string
+	ast.Inspect(file, func(node ast.Node) bool {
+		selector, ok := node.(*ast.SelectorExpr)
+		if ok && isIdentifier(selector.X, "io") && selector.Sel.Name != "EOF" {
+			rejected = append(rejected, selector.Sel.Name)
+		}
+		return true
+	})
+	if len(rejected) != 1 || rejected[0] != "Reader" {
+		t.Fatalf("io capability guard rejected %v; want [Reader]", rejected)
 	}
 }

@@ -78,6 +78,12 @@ methods by receiver type and has a regression proving identically named methods 
 [T] Post-review focused race tests still pass at 95.7% statement coverage, and native fuzzing
 completed 4,185,770 executions without a failure. The complete post-review matrix is green:
 `make ci`, `make e2e-isolation`, `make e2e-kind` (236.131 seconds), and `make release-check`.
+[T] The follow-up committed-diff review found that allowing the standard `io` package for its EOF
+sentinel also left `io.Reader` available to future fields or parameters. The boundary now rejects
+every `io` selector except `io.EOF`, forbids import aliases, pins the exact public projector
+signature, and includes adversarial regressions for reader parameters, reader results, interface
+inputs, receiver changes, and reader fields. Focused race tests and the full `make ci` gate pass
+after this test-only hardening; production behavior is unchanged.
 [T] `README.md` was reviewed in full. No update is warranted because this slice adds no user-facing
 command, configuration, authentication flow, endpoint, runtime connector, or supported behavior;
 the roadmap and this checkpoint are the correct documentation surfaces.
@@ -95,6 +101,7 @@ Primary compatibility references:
 
 - `2026-07-17/elasticsearch-log-causes#1`
 - `2026-07-17/elasticsearch-log-causes#2`
+- `2026-07-17/elasticsearch-log-causes#3`
 
 ## Open questions
 
