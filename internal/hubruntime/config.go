@@ -113,7 +113,17 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		return nil, fmt.Errorf("construct hub runtime: database is unavailable")
 	}
 	cleanup := func() { database.Close() }
-	durableAuditor, err := newOrderedPolicyAuditor(database, processAuditor)
+	observedDatabaseAuditor, err := pep.NewObservedAuditor(pep.AuditSinkDurable, database, metrics)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("construct hub runtime: durable policy audit observation is invalid")
+	}
+	observedProcessAuditor, err := pep.NewObservedAuditor(pep.AuditSinkProcess, processAuditor, metrics)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("construct hub runtime: process policy audit observation is invalid")
+	}
+	durableAuditor, err := newOrderedPolicyAuditor(observedDatabaseAuditor, observedProcessAuditor)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: durable policy audit configuration is invalid")
