@@ -11,7 +11,7 @@ readonly CLUSTER_PROXY_SHA256="30128f5f211d3c3d6ab1040929e0d1ca7565869935aa60130
 readonly MANAGED_SERVICEACCOUNT_VERSION="0.10.0"
 readonly MANAGED_SERVICEACCOUNT_SHA256="ddd8b7da55667b534102397abd2e61988f9ead8a0e97b942731f869ed0b06dbf"
 readonly GO_VERSION="go1.26.5"
-readonly HELM_VERSION="v4.1.4"
+readonly HELM_VERSION="v4.2.3"
 readonly FIREWALL_CHAIN="SITH_M0_HUB_DENY"
 
 readonly KIND_BIN="${KIND_BIN:-kind}"
@@ -258,7 +258,7 @@ check_tools() {
     die "clusteradm ${CLUSTERADM_VERSION} is required"
 
   helm_version="$(${HELM_BIN} version --short 2>/dev/null)"
-  [[ "${helm_version}" == "${HELM_VERSION}"* ]] ||
+  helm_version_is_pinned_release "${helm_version}" ||
     die "Helm ${HELM_VERSION} is required; got: ${helm_version}"
 
   go_version="$(${GO_BIN} env GOVERSION)"
@@ -267,6 +267,15 @@ check_tools() {
 
   validate_local_docker_endpoint
   "${DOCKER_BIN}" info >/dev/null 2>&1 || die "Docker engine is unavailable"
+}
+
+helm_version_is_pinned_release() {
+  local actual=$1
+  local pattern
+
+  [[ "${HELM_VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  pattern="^${HELM_VERSION//./\\.}(\\+g[0-9a-f]{7,40})?$"
+  [[ "${actual}" =~ ${pattern} ]]
 }
 
 prepare_scratch() {

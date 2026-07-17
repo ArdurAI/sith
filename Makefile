@@ -59,6 +59,7 @@ test: ## Run unit tests with the race detector and report coverage
 	go test -race -count=1 -coverprofile=coverage.out ./...
 
 test-scripts: ## Run focused safety tests for operator-facing shell harnesses
+	bash tests/scripts/helm_tooling_policy_test.sh
 	bash tests/scripts/m0_ocm_falsification_safety_test.sh
 	bash tests/scripts/release_tag_identity_guide_test.sh
 	bash tests/scripts/release_tag_policy_test.sh

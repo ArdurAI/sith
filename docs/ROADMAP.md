@@ -34,6 +34,12 @@ transport/agent scope is deleted; the hub track proceeds to Phase 1.
 > malformed condition, and malformed identity failures remain terminal and do not print response
 > bodies.
 
+> **Pinned Helm alignment (2026-07-16).** #197 aligns CI, the hub chart contract, and the M0
+> falsification runner on the official Helm `v4.2.3` patch release and its verified Linux amd64
+> archive checksum. Cross-file policy coverage rejects divergent pins, while both runtime gates
+> reject prefix lookalikes and accept only the exact release or Helm's `+g<hex-commit>` build
+> metadata.
+
 > **Phase-1 ClusterGateway authorization gate (2026-07-13).** M0 proves reverse-tunnel
 > connectivity and scoped-token RBAC; it does **not** authorize a Sith transport to use a
 > ClusterGateway proxy that forwards a hub caller's inbound `Authorization` header. The tracked
