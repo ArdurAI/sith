@@ -21,12 +21,13 @@ type Connector interface {
 
 // Descriptor is static registry, taxonomy, ownership, and version metadata.
 type Descriptor struct {
-	Kind         string        `json:"kind"`
-	ConnKind     ConnectorKind `json:"connector_kind"`
-	ProtocolV    string        `json:"protocol_version"`
-	Owner        string        `json:"owner"`
-	Capabilities []Capability  `json:"capabilities"`
-	Verbs        []intent.Verb `json:"verbs,omitempty"`
+	Kind         string                          `json:"kind"`
+	ConnKind     ConnectorKind                   `json:"connector_kind"`
+	ProtocolV    string                          `json:"protocol_version"`
+	Owner        string                          `json:"owner"`
+	Capabilities []Capability                    `json:"capabilities"`
+	Verbs        []intent.Verb                   `json:"verbs,omitempty"`
+	ArgSchemas   map[intent.Verb]json.RawMessage `json:"arg_schemas,omitempty"`
 }
 
 // ConnectorKind is the closed integration taxonomy.
