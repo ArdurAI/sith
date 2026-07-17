@@ -180,7 +180,11 @@ kubeconfig, endpoint, or token through the Sith collector contract. Only normali
 `health`, and bounded immutable-image `cve` facts are accepted, source-stamped,
 freshness-bounded, and stored behind forced RLS.
 Failed refreshes retain the last snapshot as explicitly stale evidence and record only a closed
-failure category. The pinned direct OCM ClusterProxy adapter reads the exact rotating
+failure category. Concurrent refresh requests are authorized independently and then coalesced only
+within the same validated workspace. The shared refresh runs on a detached, locally traced context,
+so one canceled caller cannot cancel its peers and no request credential, context value, or trace
+identity crosses caller boundaries; completed and panicking refresh flights are removed. The pinned
+direct OCM ClusterProxy adapter reads the exact rotating
 `sith-reader` managed-serviceaccount Secret for a registered spoke, opens a short-lived
 Konnectivity tunnel only to that spoke, and verifies both proxy mTLS and the spoke Kubernetes
 certificate; it never forwards a caller `Authorization` header, stores a credential, disables

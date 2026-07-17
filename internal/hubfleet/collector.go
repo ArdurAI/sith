@@ -133,6 +133,7 @@ type Collector struct {
 	store          Store
 	transport      Transport
 	pep            *pep.Enforcer
+	refreshes      *refreshCoordinator
 	observer       SnapshotObserver
 	tracer         tracing.Observer
 	spokeTimeout   time.Duration
@@ -170,6 +171,7 @@ func NewCollector(config CollectorConfig) (*Collector, error) {
 		store:          config.Store,
 		transport:      config.Transport,
 		pep:            config.PEP,
+		refreshes:      newRefreshCoordinator(),
 		observer:       config.Observer,
 		tracer:         config.TraceObserver,
 		spokeTimeout:   config.SpokeTimeout,
@@ -178,10 +180,10 @@ func NewCollector(config CollectorConfig) (*Collector, error) {
 	}, nil
 }
 
-// Collect refreshes every registered spoke independently and returns honest coverage.
-// A transport or validation failure is recorded as a closed status and does not fail the peer loop.
+// Collect authorizes every caller before joining at most one active refresh for its workspace.
+// Different workspaces remain independent, and callers receive only the closed coverage/error result.
 func (collector *Collector) Collect(ctx context.Context, scope tenancy.Scope) (fleet.Coverage, error) {
-	if collector == nil || collector.store == nil || collector.transport == nil || collector.pep == nil || ctx == nil {
+	if collector == nil || collector.store == nil || collector.transport == nil || collector.pep == nil || collector.refreshes == nil || ctx == nil {
 		return fleet.Coverage{}, fmt.Errorf("collect spoke snapshots: collector, policy enforcer, and context are required")
 	}
 	if err := scope.Authorize(tenancy.ActionRead); err != nil {
@@ -198,6 +200,12 @@ func (collector *Collector) Collect(ctx context.Context, scope tenancy.Scope) (f
 	if err := collector.pep.AuthorizeRead(ctx, scope, pep.NewReadInput(pep.VerbSpokeSnapshotRefresh, nil)); err != nil {
 		return fleet.Coverage{}, fmt.Errorf("collect spoke snapshots: %w", err)
 	}
+	return collector.refreshes.collect(ctx, scope, collector.collectWorkspace)
+}
+
+// collectWorkspace executes one authorized workspace refresh on an internal context that carries
+// no caller cancellation, credentials, request values, or request trace identity.
+func (collector *Collector) collectWorkspace(ctx context.Context, scope tenancy.Scope) (fleet.Coverage, error) {
 	spokes, err := collector.store.RegisteredSpokes(ctx, scope)
 	if err != nil {
 		return fleet.Coverage{}, fmt.Errorf("collect spoke snapshots: list registered spokes: %w", err)
