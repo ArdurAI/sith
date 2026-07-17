@@ -395,6 +395,10 @@ set of regular kubeconfig files for that UI session. It does not replace the sta
 supplied root must be an existing real directory; a file, symlink, or missing root fails before the
 local listener starts. Invalid, oversized, unreadable, or symlinked entries beneath a valid root
 are skipped with safe warnings that do not expose kubeconfig contents or an absolute local path.
+Directory-imported configs must embed certificate-authority, client-certificate, client-key, and
+token data rather than defer those reads to local file paths. Exec credential commands must be a
+PATH-resolved program name, not a relative or absolute path. These constraints keep credential and
+plugin resolution from reopening the directory replacement race after the bounded import completes.
 Each imported source is labeled by its relative filename; contexts with the same name remain
 isolated, and selecting a source in the context rail filters to its contexts. The import is limited
 to 128 traversed filesystem entries (including ignored symlinks and directories), 4 MiB per regular
