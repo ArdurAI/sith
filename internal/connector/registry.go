@@ -3,6 +3,8 @@
 package connector
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -10,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/ArdurAI/sith/internal/intent"
+	"github.com/ArdurAI/sith/internal/intentargs"
 )
 
 // ErrNotRegistered reports a lookup for an unknown connector kind.
@@ -25,6 +28,7 @@ type registryEntry struct {
 	connector  Connector
 	descriptor Descriptor
 	declared   map[Capability]struct{}
+	schemas    map[intent.Verb]*intentargs.Schema
 }
 
 // Registry stores one canonical, capability-checked connector per kind.
@@ -201,6 +205,37 @@ func (registry *Registry) PlannerForVerb(verb intent.Verb) (Planner, error) {
 	return planner, nil
 }
 
+// ValidateArgsForVerb rejects malformed or schema-invalid arguments for a registered verb.
+func (registry *Registry) ValidateArgsForVerb(verb intent.Verb, args json.RawMessage) error {
+	if !verb.Valid() {
+		return fmt.Errorf("%w: unknown action verb", ErrNotRegistered)
+	}
+	registry.mu.RLock()
+	kind, exists := registry.verbs[verb]
+	schema := registry.entries[kind].schemas[verb]
+	registry.mu.RUnlock()
+	if !exists || schema == nil {
+		return fmt.Errorf("%w: action verb %q", ErrNotRegistered, verb)
+	}
+	if err := schema.Validate(args); err != nil {
+		return fmt.Errorf("validate action verb %q: %w", verb, err)
+	}
+	return nil
+}
+
+// Plan validates intent arguments before routing the request to its only registered planner.
+func (registry *Registry) Plan(ctx context.Context, request Intent) (ActionPlan, error) {
+	request.Args = append(json.RawMessage(nil), request.Args...)
+	if err := registry.ValidateArgsForVerb(request.Verb, request.Args); err != nil {
+		return ActionPlan{}, err
+	}
+	planner, err := registry.PlannerForVerb(request.Verb)
+	if err != nil {
+		return ActionPlan{}, err
+	}
+	return planner.Plan(ctx, request)
+}
+
 // ExecutorForVerb returns the only registered executor classified for verb.
 func (registry *Registry) ExecutorForVerb(verb intent.Verb) (Executor, error) {
 	entry, err := registry.entryForVerb(verb, CapExecute)
@@ -312,8 +347,28 @@ func validateConnector(candidate Connector) (registryEntry, error) {
 			}
 			seen[verb] = struct{}{}
 		}
-	} else if len(descriptor.Verbs) != 0 {
-		return registryEntry{}, fmt.Errorf("non-action connector must not declare action verbs")
+		if len(descriptor.ArgSchemas) != len(seen) {
+			return registryEntry{}, fmt.Errorf("typed-action connector must declare exactly one argument schema per verb")
+		}
+		schemas := make(map[intent.Verb]*intentargs.Schema, len(seen))
+		for verb, document := range descriptor.ArgSchemas {
+			if _, declared := seen[verb]; !declared {
+				return registryEntry{}, fmt.Errorf("argument schema belongs to undeclared action verb %q", verb)
+			}
+			compiled, err := intentargs.Compile(document)
+			if err != nil {
+				return registryEntry{}, fmt.Errorf("compile argument schema for action verb %q: %w", verb, err)
+			}
+			schemas[verb] = compiled
+		}
+		for verb := range seen {
+			if schemas[verb] == nil {
+				return registryEntry{}, fmt.Errorf("action verb %q is missing an argument schema", verb)
+			}
+		}
+		return registryEntry{connector: candidate, descriptor: descriptor, declared: declared, schemas: schemas}, nil
+	} else if len(descriptor.Verbs) != 0 || len(descriptor.ArgSchemas) != 0 {
+		return registryEntry{}, fmt.Errorf("non-action connector must not declare action verbs or argument schemas")
 	}
 
 	return registryEntry{connector: candidate, descriptor: descriptor, declared: declared}, nil
@@ -383,5 +438,12 @@ func connectorIsNil(candidate Connector) bool {
 func cloneDescriptor(descriptor Descriptor) Descriptor {
 	descriptor.Capabilities = append([]Capability(nil), descriptor.Capabilities...)
 	descriptor.Verbs = append([]intent.Verb(nil), descriptor.Verbs...)
+	if descriptor.ArgSchemas != nil {
+		schemas := make(map[intent.Verb]json.RawMessage, len(descriptor.ArgSchemas))
+		for verb, schema := range descriptor.ArgSchemas {
+			schemas[verb] = append(json.RawMessage(nil), schema...)
+		}
+		descriptor.ArgSchemas = schemas
+	}
 	return descriptor
 }

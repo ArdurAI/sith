@@ -4,11 +4,14 @@ package connector
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/intent"
+	"github.com/ArdurAI/sith/internal/intentargs"
 )
 
 type testReader struct {
@@ -59,7 +62,9 @@ func (connector identityOnlyConnector) Descriptor() Descriptor {
 }
 
 type testExecutor struct {
-	descriptor Descriptor
+	descriptor  Descriptor
+	planCalls   *atomic.Int64
+	plannedArgs *json.RawMessage
 }
 
 func (connector testExecutor) Kind() string {
@@ -74,7 +79,13 @@ func (connector testExecutor) Descriptor() Descriptor {
 	return cloneDescriptor(connector.descriptor)
 }
 
-func (testExecutor) Plan(_ context.Context, request Intent) (ActionPlan, error) {
+func (connector testExecutor) Plan(_ context.Context, request Intent) (ActionPlan, error) {
+	if connector.planCalls != nil {
+		connector.planCalls.Add(1)
+	}
+	if connector.plannedArgs != nil {
+		*connector.plannedArgs = request.Args
+	}
 	return ActionPlan{IntentID: request.ID, Verb: request.Verb}, nil
 }
 
@@ -181,6 +192,7 @@ func TestRegistryExecutorRequiresTypedAction(t *testing.T) {
 		Owner:        "test",
 		Capabilities: []Capability{CapExecute},
 		Verbs:        []intent.Verb{intent.VerbArgoCDSync},
+		ArgSchemas:   testArgSchemas(intent.VerbArgoCDSync),
 	}}
 	if err := registry.Register(func() (Connector, error) { return executor, nil }); err != nil {
 		t.Fatalf("Register() error = %v", err)
@@ -219,10 +231,12 @@ func TestRegistryRejectsDuplicateVerbOwnershipAtomically(t *testing.T) {
 	first := testExecutor{descriptor: Descriptor{
 		Kind: "first", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test",
 		Capabilities: []Capability{CapExecute}, Verbs: []intent.Verb{intent.VerbGitOpsOpenPR},
+		ArgSchemas: testArgSchemas(intent.VerbGitOpsOpenPR),
 	}}
 	second := testExecutor{descriptor: Descriptor{
 		Kind: "second", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test",
 		Capabilities: []Capability{CapExecute}, Verbs: []intent.Verb{intent.VerbGitOpsOpenPR, intent.VerbArgoCDSync},
+		ArgSchemas: testArgSchemas(intent.VerbGitOpsOpenPR, intent.VerbArgoCDSync),
 	}}
 	if err := registry.Register(func() (Connector, error) { return first, nil }); err != nil {
 		t.Fatalf("first Register() error = %v", err)
@@ -248,6 +262,7 @@ func TestRegistryVerbLookupFailsClosed(t *testing.T) {
 	executor := testExecutor{descriptor: Descriptor{
 		Kind: "git", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test",
 		Capabilities: []Capability{CapExecute}, Verbs: []intent.Verb{intent.VerbGitOpsOpenPR},
+		ArgSchemas: testArgSchemas(intent.VerbGitOpsOpenPR),
 	}}
 	if err := registry.Register(func() (Connector, error) { return executor, nil }); err != nil {
 		t.Fatalf("Register() error = %v", err)
@@ -276,6 +291,7 @@ func TestRegistryVerbLookupRoutesDeclaredCapabilities(t *testing.T) {
 	action := testExecutor{descriptor: Descriptor{
 		Kind: "git", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test",
 		Capabilities: []Capability{CapPlan, CapExecute, CapVerify}, Verbs: []intent.Verb{intent.VerbGitOpsOpenPR},
+		ArgSchemas: testArgSchemas(intent.VerbGitOpsOpenPR),
 	}}
 	if err := registry.Register(func() (Connector, error) { return action, nil }); err != nil {
 		t.Fatalf("Register() error = %v", err)
@@ -294,6 +310,119 @@ func TestRegistryVerbLookupRoutesDeclaredCapabilities(t *testing.T) {
 	}
 }
 
+func TestRegistryRejectsInvalidSchemaOwnershipAtomically(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		schemas map[intent.Verb]json.RawMessage
+	}{
+		{name: "missing schema", schemas: nil},
+		{name: "schema for undeclared verb", schemas: testArgSchemas(intent.VerbGitOpsOpenPR, intent.VerbArgoCDSync)},
+		{name: "invalid schema", schemas: map[intent.Verb]json.RawMessage{intent.VerbGitOpsOpenPR: json.RawMessage(`{"type":"object"}`)}},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			registry := NewRegistry()
+			action := testExecutor{descriptor: Descriptor{
+				Kind: "git", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test",
+				Capabilities: []Capability{CapPlan}, Verbs: []intent.Verb{intent.VerbGitOpsOpenPR}, ArgSchemas: test.schemas,
+			}}
+			if err := registry.Register(func() (Connector, error) { return action, nil }); err == nil {
+				t.Fatal("Register() error = nil, want schema rejection")
+			}
+			if len(registry.Descriptors()) != 0 {
+				t.Fatal("failed schema registration modified registry")
+			}
+			if _, err := registry.PlannerForVerb(intent.VerbGitOpsOpenPR); !errors.Is(err, ErrNotRegistered) {
+				t.Fatalf("failed schema registration modified verb index: %v", err)
+			}
+		})
+	}
+}
+
+func TestRegistryPlanValidatesBeforePlanner(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	planCalls := &atomic.Int64{}
+	plannedArgs := &json.RawMessage{}
+	action := testExecutor{descriptor: Descriptor{
+		Kind: "scale", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test",
+		Capabilities: []Capability{CapPlan}, Verbs: []intent.Verb{intent.VerbDeploymentScale},
+		ArgSchemas: map[intent.Verb]json.RawMessage{intent.VerbDeploymentScale: json.RawMessage(`{
+		  "$schema":"https://json-schema.org/draft/2020-12/schema",
+		  "type":"object",
+		  "properties":{"replicas":{"type":"integer","minimum":0,"maximum":10}},
+		  "required":["replicas"],
+		  "additionalProperties":false
+		}`)},
+	}, planCalls: planCalls, plannedArgs: plannedArgs}
+	if err := registry.Register(func() (Connector, error) { return action, nil }); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	originalArgs := json.RawMessage(`{"replicas":3}`)
+	plan, err := registry.Plan(context.Background(), Intent{
+		ID: "intent-1", Verb: intent.VerbDeploymentScale, Args: originalArgs,
+	})
+	if err != nil || plan.IntentID != "intent-1" || plan.Verb != intent.VerbDeploymentScale {
+		t.Fatalf("Plan() = %#v, %v", plan, err)
+	}
+	if got := planCalls.Load(); got != 1 {
+		t.Fatalf("planner calls after valid intent = %d, want 1", got)
+	}
+	originalArgs[1] = '!'
+	if got := string(*plannedArgs); got != `{"replicas":3}` {
+		t.Fatalf("planner args changed with caller storage: %q", got)
+	}
+	for _, args := range []json.RawMessage{
+		json.RawMessage(`{"replicas":11}`),
+		json.RawMessage(`{"replicas":3,"force":true}`),
+		json.RawMessage(`{"replicas":3,"replicas":4}`),
+		json.RawMessage(`[]`),
+	} {
+		if _, err := registry.Plan(context.Background(), Intent{Verb: intent.VerbDeploymentScale, Args: args}); !errors.Is(err, intentargs.ErrInvalidArgs) {
+			t.Fatalf("Plan(%s) error = %v, want ErrInvalidArgs", args, err)
+		}
+		if got := planCalls.Load(); got != 1 {
+			t.Fatalf("planner calls after invalid intent = %d, want 1", got)
+		}
+	}
+	if _, err := registry.Plan(context.Background(), Intent{Verb: intent.VerbArgoCDSync, Args: json.RawMessage(`{}`)}); !errors.Is(err, ErrNotRegistered) {
+		t.Fatalf("Plan(unregistered) error = %v, want ErrNotRegistered", err)
+	}
+	if got := planCalls.Load(); got != 1 {
+		t.Fatalf("planner calls after unregistered intent = %d, want 1", got)
+	}
+}
+
+func TestRegistryDescriptorsCloneArgumentSchemas(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	action := testExecutor{descriptor: Descriptor{
+		Kind: "git", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test",
+		Capabilities: []Capability{CapPlan}, Verbs: []intent.Verb{intent.VerbGitOpsOpenPR},
+		ArgSchemas: testArgSchemas(intent.VerbGitOpsOpenPR),
+	}}
+	if err := registry.Register(func() (Connector, error) { return action, nil }); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	descriptors := registry.Descriptors()
+	document := descriptors[0].ArgSchemas[intent.VerbGitOpsOpenPR]
+	document[0] = '!'
+	delete(descriptors[0].ArgSchemas, intent.VerbGitOpsOpenPR)
+
+	again := registry.Descriptors()
+	got := again[0].ArgSchemas[intent.VerbGitOpsOpenPR]
+	if len(got) == 0 || got[0] == '!' {
+		t.Fatal("Descriptors() exposed mutable argument schema storage")
+	}
+}
+
 func newTestReader(kind string) testReader {
 	capabilities := []Capability{CapDiscover, CapRead, CapQuery}
 	return testReader{
@@ -306,4 +435,12 @@ func newTestReader(kind string) testReader {
 			Capabilities: capabilities,
 		},
 	}
+}
+
+func testArgSchemas(verbs ...intent.Verb) map[intent.Verb]json.RawMessage {
+	result := make(map[intent.Verb]json.RawMessage, len(verbs))
+	for _, verb := range verbs {
+		result[verb] = json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false}`)
+	}
+	return result
 }
