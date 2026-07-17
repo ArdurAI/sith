@@ -3,7 +3,11 @@
 package elasticsearch
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"os"
@@ -26,6 +30,10 @@ var allowedProductionImports = map[string]bool{
 	"unicode":                                true,
 	"unicode/utf8":                           true,
 	"github.com/ArdurAI/sith/internal/fleet": true,
+}
+
+var allowedProductionFiles = map[string]string{
+	"project.go": "8084eb3558bd7055c4524e3e2fa9c08504bd99662c75b2596bb256b8c2adaa56",
 }
 
 var allowedProductionDeclarations = map[string]bool{
@@ -122,19 +130,93 @@ func isSelector(expression ast.Expr, packageName, selectedName string) bool {
 	return ok && isIdentifier(selector.X, packageName) && selector.Sel.Name == selectedName
 }
 
+func projectionHasExpectedFields(specification *ast.TypeSpec) bool {
+	structure, ok := specification.Type.(*ast.StructType)
+	if !ok || structure.Fields == nil {
+		return false
+	}
+	expected := []struct {
+		name        string
+		identifier  string
+		packageName string
+		selected    string
+		slice       bool
+	}{
+		{name: "Workspace", identifier: "string"},
+		{name: "Scope", identifier: "string"},
+		{name: "Namespace", identifier: "string"},
+		{name: "Pod", identifier: "string"},
+		{name: "Container", identifier: "string"},
+		{name: "WindowStart", packageName: "time", selected: "Time"},
+		{name: "WindowEnd", packageName: "time", selected: "Time"},
+		{name: "ObservedAt", packageName: "time", selected: "Time"},
+		{name: "Response", identifier: "byte", slice: true},
+	}
+	if len(structure.Fields.List) != len(expected) {
+		return false
+	}
+	for index, field := range structure.Fields.List {
+		want := expected[index]
+		if len(field.Names) != 1 || field.Names[0].Name != want.name || field.Tag != nil {
+			return false
+		}
+		if want.slice {
+			slice, ok := field.Type.(*ast.ArrayType)
+			if !ok || slice.Len != nil || !isIdentifier(slice.Elt, want.identifier) {
+				return false
+			}
+			continue
+		}
+		if want.packageName != "" {
+			if !isSelector(field.Type, want.packageName, want.selected) {
+				return false
+			}
+			continue
+		}
+		if !isIdentifier(field.Type, want.identifier) {
+			return false
+		}
+	}
+	return true
+}
+
+func productionStructureFingerprint(fileSet *token.FileSet, file *ast.File) (string, error) {
+	var document bytes.Buffer
+	if err := format.Node(&document, fileSet, file); err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(document.Bytes())
+	return hex.EncodeToString(digest[:]), nil
+}
+
 func TestProjectorHasNoIOCredentialPersistenceOrMutationSeam(t *testing.T) {
 	t.Parallel()
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read elasticsearch package: %v", err)
 	}
+	seenFiles := make(map[string]bool, len(allowedProductionFiles))
+	seenDeclarations := make(map[string]bool, len(allowedProductionDeclarations))
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".go" || strings.HasSuffix(entry.Name(), "_test.go") {
 			continue
 		}
-		file, err := parser.ParseFile(token.NewFileSet(), entry.Name(), nil, 0)
+		expectedFingerprint, allowed := allowedProductionFiles[entry.Name()]
+		if !allowed {
+			t.Errorf("projector contains unreviewed production file %s", entry.Name())
+		}
+		seenFiles[entry.Name()] = true
+		fileSet := token.NewFileSet()
+		file, err := parser.ParseFile(fileSet, entry.Name(), nil, 0)
 		if err != nil {
 			t.Fatalf("parse %s: %v", entry.Name(), err)
+		}
+		fingerprint, err := productionStructureFingerprint(fileSet, file)
+		if err != nil {
+			t.Fatalf("fingerprint %s: %v", entry.Name(), err)
+		}
+		if fingerprint != expectedFingerprint {
+			t.Errorf("projector production structure changed for %s: got %s", entry.Name(), fingerprint)
 		}
 		for _, imported := range file.Imports {
 			path, err := strconv.Unquote(imported.Path.Value)
@@ -155,6 +237,10 @@ func TestProjectorHasNoIOCredentialPersistenceOrMutationSeam(t *testing.T) {
 				if !allowedProductionDeclarations[key] {
 					t.Errorf("projector declares unreviewed function or method %s", key)
 				}
+				if seenDeclarations[key] {
+					t.Errorf("projector repeats reviewed declaration %s", key)
+				}
+				seenDeclarations[key] = true
 				if key == "func:ProjectLogCauses" && !projectLogCausesHasExpectedSignature(declaration) {
 					t.Errorf("ProjectLogCauses must retain the reviewed pure-projector signature")
 				}
@@ -166,12 +252,23 @@ func TestProjectorHasNoIOCredentialPersistenceOrMutationSeam(t *testing.T) {
 						if !allowedProductionDeclarations[key] {
 							t.Errorf("projector declares unreviewed type %s", key)
 						}
+						if seenDeclarations[key] {
+							t.Errorf("projector repeats reviewed declaration %s", key)
+						}
+						seenDeclarations[key] = true
+						if key == "type:Projection" && !projectionHasExpectedFields(typed) {
+							t.Errorf("Projection must retain the reviewed value-only fields")
+						}
 					case *ast.ValueSpec:
 						for _, name := range typed.Names {
 							key := "value:" + name.Name
 							if !allowedProductionDeclarations[key] {
 								t.Errorf("projector declares unreviewed value %s", key)
 							}
+							if seenDeclarations[key] {
+								t.Errorf("projector repeats reviewed declaration %s", key)
+							}
+							seenDeclarations[key] = true
 						}
 					}
 				}
@@ -188,6 +285,16 @@ func TestProjectorHasNoIOCredentialPersistenceOrMutationSeam(t *testing.T) {
 			}
 			return true
 		})
+	}
+	for name := range allowedProductionFiles {
+		if !seenFiles[name] {
+			t.Errorf("projector is missing reviewed production file %s", name)
+		}
+	}
+	for key := range allowedProductionDeclarations {
+		if !seenDeclarations[key] {
+			t.Errorf("projector is missing reviewed declaration %s", key)
+		}
 	}
 }
 
@@ -247,6 +354,47 @@ func TestProjectLogCausesSignatureRejectsCapabilitySeams(t *testing.T) {
 			declaration := file.Decls[0].(*ast.FuncDecl)
 			if got := projectLogCausesHasExpectedSignature(declaration); got != test.want {
 				t.Fatalf("projectLogCausesHasExpectedSignature() = %t; want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestProjectionFieldsRejectCapabilitySeams(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		fields string
+		want   bool
+	}{
+		{
+			name: "reviewed",
+			fields: `Workspace string
+Scope string
+Namespace string
+Pod string
+Container string
+WindowStart time.Time
+WindowEnd time.Time
+ObservedAt time.Time
+Response []byte`,
+			want: true,
+		},
+		{name: "callback hook", fields: `Workspace string; Hook func()`},
+		{name: "reader", fields: `Workspace string; Reader io.Reader`},
+		{name: "extra response", fields: `Workspace string; Response []byte; Extra []byte`},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			source := "package example\ntype Projection struct {\n" + test.fields + "\n}"
+			file, err := parser.ParseFile(token.NewFileSet(), "projection.go", source, 0)
+			if err != nil {
+				t.Fatalf("parse Projection: %v", err)
+			}
+			specification := file.Decls[0].(*ast.GenDecl).Specs[0].(*ast.TypeSpec)
+			if got := projectionHasExpectedFields(specification); got != test.want {
+				t.Fatalf("projectionHasExpectedFields() = %t; want %t", got, test.want)
 			}
 		})
 	}

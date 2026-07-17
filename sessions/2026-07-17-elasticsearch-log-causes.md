@@ -84,6 +84,13 @@ every `io` selector except `io.EOF`, forbids import aliases, pins the exact publ
 signature, and includes adversarial regressions for reader parameters, reader results, interface
 inputs, receiver changes, and reader fields. Focused race tests and the full `make ci` gate pass
 after this test-only hardening; production behavior is unchanged.
+[T] A second follow-up review showed that a one-way declaration-name allowlist could still miss
+deletions or structural changes such as a callback added to `Projection`. The boundary is now
+bidirectional: the exact production file and declaration sets must exist, the complete
+comment-independent production AST must match its reviewed SHA-256 fingerprint, and Projection's
+nine value-only fields are independently shape-checked for readable failures. Regressions reject
+callback, reader, and extra-response fields. Focused race tests and `make ci` pass after this
+test-only change.
 [T] `README.md` was reviewed in full. No update is warranted because this slice adds no user-facing
 command, configuration, authentication flow, endpoint, runtime connector, or supported behavior;
 the roadmap and this checkpoint are the correct documentation surfaces.
@@ -102,6 +109,7 @@ Primary compatibility references:
 - `2026-07-17/elasticsearch-log-causes#1`
 - `2026-07-17/elasticsearch-log-causes#2`
 - `2026-07-17/elasticsearch-log-causes#3`
+- `2026-07-17/elasticsearch-log-causes#4`
 
 ## Open questions
 
