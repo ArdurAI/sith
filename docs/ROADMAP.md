@@ -140,6 +140,9 @@ always-green slices, each leaving the binary more useful than the last:
 > #196 anchors kubeconfig directory traversal and file reads to `os.Root`, rejects root or file
 > identity replacement before parsing, refuses deferred local credential/plugin paths, and keeps
 > all race diagnostics relative and content-free.
+> #193 reads persisted cluster state and facts inside one workspace-scoped PostgreSQL
+> `REPEATABLE READ, READ ONLY` transaction, so coverage and staleness always describe the same
+> fact snapshot while transaction-local RLS remains the backstop.
 
 **Exit criteria.**
 - First run to a populated cross-cluster answer in **< 10 minutes**, offline.

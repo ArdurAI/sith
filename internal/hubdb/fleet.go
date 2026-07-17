@@ -212,6 +212,21 @@ func (database *AppDB) QueryFleet(
 	freshness time.Duration,
 	now time.Time,
 ) (fleet.QueryResult, error) {
+	return database.queryFleet(ctx, scope, query, freshness, now, queryFleetHooks{})
+}
+
+type queryFleetHooks struct {
+	afterClusterStates func(pgx.Tx) error
+}
+
+func (database *AppDB) queryFleet(
+	ctx context.Context,
+	scope tenancy.Scope,
+	query fleet.Query,
+	freshness time.Duration,
+	now time.Time,
+	hooks queryFleetHooks,
+) (fleet.QueryResult, error) {
 	if err := requireReadScope(scope); err != nil {
 		return fleet.QueryResult{}, fmt.Errorf("query federated fleet: %w", err)
 	}
@@ -222,16 +237,22 @@ func (database *AppDB) QueryFleet(
 	if err := validateFreshness(freshness, now); err != nil {
 		return fleet.QueryResult{}, fmt.Errorf("query federated fleet: %w", err)
 	}
-	states, requested, err := database.clusterStates(ctx, scope, requestedScopes)
-	if err != nil {
-		return fleet.QueryResult{}, fmt.Errorf("query federated fleet: %w", err)
-	}
-	result := fleet.QueryResult{Coverage: coverageFor(states, requested, freshness, now), Facts: []fleet.Fact{}}
-	err = database.InWorkspace(ctx, scope, func(tx pgx.Tx) error {
+	var result fleet.QueryResult
+	err = database.inWorkspaceReadSnapshot(ctx, scope, func(tx pgx.Tx) error {
+		states, requested, err := readClusterStates(ctx, tx, scope.WorkspaceID(), requestedScopes)
+		if err != nil {
+			return err
+		}
+		if hooks.afterClusterStates != nil {
+			if err := hooks.afterClusterStates(tx); err != nil {
+				return err
+			}
+		}
 		facts, err := queryFacts(ctx, tx, scope.WorkspaceID(), query)
 		if err != nil {
 			return err
 		}
+		result = fleet.QueryResult{Coverage: coverageFor(states, requested, freshness, now), Facts: facts}
 		for index := range facts {
 			state, exists := states[facts[index].Ref.Scope]
 			if !exists {
@@ -240,7 +261,6 @@ func (database *AppDB) QueryFleet(
 			facts[index].Workspace = string(scope.WorkspaceID())
 			facts[index].Stale, facts[index].StaleFor = staleState(state, freshness, now)
 		}
-		result.Facts = facts
 		return nil
 	})
 	if err != nil {
@@ -261,35 +281,53 @@ func (database *AppDB) clusterStates(
 	scope tenancy.Scope,
 	requestedScopes []string,
 ) (map[string]clusterState, []string, error) {
-	states := make(map[string]clusterState)
-	requested := append([]string(nil), requestedScopes...)
+	var (
+		states    map[string]clusterState
+		requested []string
+	)
 	err := database.InWorkspace(ctx, scope, func(tx pgx.Tx) error {
-		query := `SELECT id, managed_cluster_ref, last_seen, COALESCE(last_error_kind, '')
-			FROM sith.clusters WHERE workspace_id = $1`
-		arguments := []any{scope.WorkspaceID()}
-		if len(requestedScopes) > 0 {
-			query += " AND id = ANY($2)"
-			arguments = append(arguments, requestedScopes)
-		}
-		query += " ORDER BY id"
-		rows, err := tx.Query(ctx, query, arguments...)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var state clusterState
-			if err := rows.Scan(&state.id, &state.managedClusterRef, &state.lastSeen, &state.lastErrorKind); err != nil {
-				return err
-			}
-			states[state.id] = state
-			if len(requestedScopes) == 0 {
-				requested = append(requested, state.id)
-			}
-		}
-		return rows.Err()
+		var err error
+		states, requested, err = readClusterStates(ctx, tx, scope.WorkspaceID(), requestedScopes)
+		return err
 	})
 	if err != nil {
+		return nil, nil, err
+	}
+	return states, requested, nil
+}
+
+func readClusterStates(
+	ctx context.Context,
+	tx pgx.Tx,
+	workspaceID tenancy.WorkspaceID,
+	requestedScopes []string,
+) (map[string]clusterState, []string, error) {
+	states := make(map[string]clusterState)
+	requested := append([]string(nil), requestedScopes...)
+	query := `SELECT id, managed_cluster_ref, last_seen, COALESCE(last_error_kind, '')
+		FROM sith.clusters WHERE workspace_id = $1`
+	arguments := []any{workspaceID}
+	if len(requestedScopes) > 0 {
+		query += " AND id = ANY($2)"
+		arguments = append(arguments, requestedScopes)
+	}
+	query += " ORDER BY id"
+	rows, err := tx.Query(ctx, query, arguments...)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var state clusterState
+		if err := rows.Scan(&state.id, &state.managedClusterRef, &state.lastSeen, &state.lastErrorKind); err != nil {
+			return nil, nil, err
+		}
+		states[state.id] = state
+		if len(requestedScopes) == 0 {
+			requested = append(requested, state.id)
+		}
+	}
+	if err := rows.Err(); err != nil {
 		return nil, nil, err
 	}
 	return states, requested, nil

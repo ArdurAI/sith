@@ -70,6 +70,25 @@ func (database *AppDB) Close() {
 
 // InWorkspace runs one callback in an explicit transaction with transaction-local RLS scope.
 func (database *AppDB) InWorkspace(ctx context.Context, scope tenancy.Scope, run func(pgx.Tx) error) error {
+	return database.inWorkspace(ctx, scope, pgx.TxOptions{
+		IsoLevel:   pgx.ReadCommitted,
+		AccessMode: pgx.ReadWrite,
+	}, run)
+}
+
+func (database *AppDB) inWorkspaceReadSnapshot(ctx context.Context, scope tenancy.Scope, run func(pgx.Tx) error) error {
+	return database.inWorkspace(ctx, scope, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	}, run)
+}
+
+func (database *AppDB) inWorkspace(
+	ctx context.Context,
+	scope tenancy.Scope,
+	options pgx.TxOptions,
+	run func(pgx.Tx) error,
+) error {
 	if database == nil || database.pool == nil || ctx == nil {
 		return fmt.Errorf("run workspace transaction: database and context are required")
 	}
@@ -80,10 +99,7 @@ func (database *AppDB) InWorkspace(ctx context.Context, scope tenancy.Scope, run
 	if scope.Subject() == "" || !scope.Role().Valid() || scope.RequireWorkspace(workspaceID) != nil {
 		return fmt.Errorf("run workspace transaction: validated workspace scope is required")
 	}
-	return pgx.BeginTxFunc(ctx, database.pool, pgx.TxOptions{
-		IsoLevel:   pgx.ReadCommitted,
-		AccessMode: pgx.ReadWrite,
-	}, func(tx pgx.Tx) error {
+	return pgx.BeginTxFunc(ctx, database.pool, options, func(tx pgx.Tx) error {
 		if err := setWorkspaceScope(ctx, tx, workspaceID); err != nil {
 			return err
 		}
