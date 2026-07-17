@@ -225,7 +225,12 @@ func (handler *BrowserOIDCHandler) Callback(response http.ResponseWriter, reques
 		Name: browserOIDCSessionCookie, Value: session.AccessToken, Path: "/", Secure: true, HttpOnly: true,
 		SameSite: http.SameSiteStrictMode, Expires: session.ExpiresAt.UTC(), MaxAge: max(1, remaining),
 	})
-	response.WriteHeader(http.StatusNoContent)
+	response.Header().Set("Location", browserConsolePath(transaction.workspaceID))
+	response.WriteHeader(http.StatusSeeOther)
+}
+
+func browserConsolePath(workspaceID tenancy.WorkspaceID) string {
+	return "/v1/workspaces/" + url.PathEscape(string(workspaceID)) + "/console"
 }
 
 func (handler *BrowserOIDCHandler) acceptRequest(response http.ResponseWriter, request *http.Request, login bool) bool {

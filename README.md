@@ -97,7 +97,7 @@ The P1 `sith hub` runtime mounts the session-authenticated fleet read/refresh su
 API-key, raw OIDC-token, and cloud-proof exchange handlers remain intentionally unmounted until
 their ingress and operator lifecycle are composed. The separately configured browser OIDC flow is
 not a raw-token exchange: it completes authorization-code + PKCE server-side and only establishes
-an HttpOnly browser session for the future console boundary.
+an HttpOnly browser session for the Hub console boundary.
 
 Pinned OIDC federation uses the same exchange model. Each endpoint is fixed to one requested
 workspace, and each provider configuration allowlists an exact HTTPS issuer, audience, token type,
@@ -129,9 +129,20 @@ through forced RLS, and returns only a short-lived `__Host-sith-session` cookie 
 transaction cookie is `SameSite=Lax` only so a top-level IdP callback can return; it contains an
 opaque random binding, not a credential. Restart, expiry, replay, malformed/duplicate provider
 JSON, failed PKCE, wrong state/nonce/issuer/audience, or an unavailable provider fails closed. No
-login artifact, token, or proof is persisted or logged. The cookie is deliberately not accepted by
-the bearer fleet API or any generic authentication middleware; a later same-origin read-only
-console adapter needs its own CSRF design.
+login artifact, token, or proof is persisted or logged. On success, the callback redirects only to
+the transaction-bound `GET /v1/workspaces/{workspace}/console` path; it accepts no return URL.
+
+That Hub-only console verifies the HttpOnly session server-side, resolves the workspace from signed
+membership, and reads the existing persisted `hubfleet.Source` through the PEP. Its fixed
+`GET /v1/workspaces/{workspace}/console/fleet` adapter requires a short-lived process-key-signed
+CSRF token bound to the exact session, workspace, and expiry in a custom same-origin header. The
+session JWT never enters HTML, JavaScript, a URL, browser storage, or a log. Both console responses
+are `no-store` and use a restrictive same-origin CSP; the fleet adapter rejects cross-site Fetch
+Metadata. The UI shows reachability, observation times, and stale/unreachable/truncated/unaccounted
+coverage without claiming an empty or partial fleet is healthy. It performs no automatic polling
+and cannot invoke the collector refresh, a connector, local `exec`/edit/log/port-forward operations,
+or any write. The bearer fleet API remains bearer-only, and no generic cookie authentication
+middleware exists.
 
 Cloud-IAM identity starts from the same fail-closed exchange boundary. The foundation accepts only
 a verifier-normalized provider, explicit realm, immutable subject, audience, and bounded lifetime;

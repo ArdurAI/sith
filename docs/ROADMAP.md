@@ -210,6 +210,13 @@ kubeconfigs — the read source is abstracted so hub mode and local mode share o
 > separate from refresh coordination so caller isolation, transport fan-out, and database snapshot
 > consistency can each fail closed independently.
 
+> **P1 operator-console boundary.** #218 adds a separate Hub-only read console rather than mounting
+> the capability-bearing local `sith ui`. Its HttpOnly session is verified server-side and bound to
+> signed workspace membership; a short-lived session/workspace-bound CSRF token gates the one
+> persisted-fleet read. The bearer API stays bearer-only. The view surfaces current, stale,
+> unreachable, truncated, inconsistent, and unaccounted coverage without polling, collector
+> refresh, connector access, local operations, or writes.
+
 **Exit criteria.**
 - A single query returns a correct, tenant-scoped, cross-cluster answer over **≥ 2 spokes**.
 - Per-cluster **staleness is visible** in the result.

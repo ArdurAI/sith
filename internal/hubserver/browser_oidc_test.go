@@ -99,8 +99,8 @@ func TestBrowserOIDCHandlerKeepsTokensOutOfBrowserPayloads(t *testing.T) {
 	callback.AddCookie(transactionCookie)
 	callbackResponse := httptest.NewRecorder()
 	handler.Callback(callbackResponse, callback)
-	if callbackResponse.Code != http.StatusNoContent || callbackResponse.Body.Len() != 0 {
-		t.Fatalf("callback status/body = %d/%q", callbackResponse.Code, callbackResponse.Body.String())
+	if callbackResponse.Code != http.StatusSeeOther || callbackResponse.Header().Get("Location") != "/v1/workspaces/workspace-a/console" || callbackResponse.Body.Len() != 0 {
+		t.Fatalf("callback status/location/body = %d/%q/%q", callbackResponse.Code, callbackResponse.Header().Get("Location"), callbackResponse.Body.String())
 	}
 	sessionCookie := requiredBrowserCookie(t, callbackResponse.Result().Cookies(), browserOIDCSessionCookie)
 	if !sessionCookie.Secure || !sessionCookie.HttpOnly || sessionCookie.Path != "/" || sessionCookie.Domain != "" || sessionCookie.SameSite != http.SameSiteStrictMode || sessionCookie.Value != stub.session.AccessToken {
@@ -170,8 +170,8 @@ func TestBrowserOIDCHandlerCountsEachRequestOnceAtRateLimit(t *testing.T) {
 		callback.AddCookie(transactionCookie)
 		callbackResponse := httptest.NewRecorder()
 		handler.Callback(callbackResponse, callback)
-		if callbackResponse.Code != http.StatusNoContent {
-			t.Fatalf("flow %d callback status = %d", flow, callbackResponse.Code)
+		if callbackResponse.Code != http.StatusSeeOther || callbackResponse.Header().Get("Location") != "/v1/workspaces/workspace-a/console" {
+			t.Fatalf("flow %d callback status/location = %d/%q", flow, callbackResponse.Code, callbackResponse.Header().Get("Location"))
 		}
 		if attempts := browserOIDCAttemptCount(limiter, "192.0.2.20"); attempts != 2*flow {
 			t.Fatalf("flow %d callback attempt count = %d, want %d", flow, attempts, 2*flow)

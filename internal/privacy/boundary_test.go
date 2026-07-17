@@ -25,8 +25,11 @@ var approvedNetworkImports = map[string]map[string]bool{
 	// Browser OIDC is a Hub-only code+PKCE broker. It accepts no local-mode traffic, uses no
 	// caller-controlled endpoint, and keeps all proofs and session JWTs server-side.
 	"internal/hubserver/browser_oidc.go": {"net": true, "net/http": true, "net/url": true},
-	"internal/hubserver/exchange.go":     {"net": true, "net/http": true},
-	"internal/hubserver/fleet.go":        {"net/http": true, "net/url": true},
+	// The Hub console is a fixed same-origin read adapter over the existing tenant-scoped source.
+	// It has no listener, outbound request, connector, local-operation, refresh, or write seam.
+	"internal/hubserver/console.go":  {"net/http": true, "net/url": true},
+	"internal/hubserver/exchange.go": {"net": true, "net/http": true},
+	"internal/hubserver/fleet.go":    {"net/http": true, "net/url": true},
 	// AWS STS egress is endpoint-pinned, SigV4-profiled, redirect-disabled, and never used by local mode.
 	"internal/hubauth/aws_sts.go": {"net/http": true, "net/url": true},
 	"internal/hubauth/oidc.go":    {"net": true, "net/http": true, "net/netip": true, "net/url": true},
