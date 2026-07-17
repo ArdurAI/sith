@@ -160,6 +160,9 @@ func grantApplicationPrivileges(ctx context.Context, tx pgx.Tx, appRole string) 
 		"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA sith TO " + identifier,
 		"ALTER DEFAULT PRIVILEGES IN SCHEMA sith GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO " + identifier,
 		"ALTER DEFAULT PRIVILEGES IN SCHEMA sith GRANT USAGE, SELECT ON SEQUENCES TO " + identifier,
+		"REVOKE UPDATE, DELETE ON sith.policy_audit_entries FROM " + identifier,
+		"REVOKE UPDATE (workspace_id, sequence, format_version, recorded_at, trace_id, actor, role, action, verb, verdict, reason_code, previous_hash, entry_hash) ON sith.policy_audit_entries FROM " + identifier,
+		"REVOKE DELETE ON sith.policy_audit_heads FROM " + identifier,
 	}
 	for _, statement := range statements {
 		if _, err := tx.Exec(ctx, statement); err != nil {

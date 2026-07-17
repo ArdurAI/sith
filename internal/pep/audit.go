@@ -25,8 +25,8 @@ type slogAuditor struct {
 }
 
 func (auditor slogAuditor) Record(ctx context.Context, event AuditEvent) error {
-	if auditor.logger == nil {
-		return fmt.Errorf("record policy audit: logger is required")
+	if auditor.logger == nil || ctx == nil {
+		return fmt.Errorf("record policy audit: logger and context are required")
 	}
 	if err := event.Validate(); err != nil {
 		return fmt.Errorf("record policy audit: %w", err)
@@ -44,11 +44,19 @@ func (auditor slogAuditor) Record(ctx context.Context, event AuditEvent) error {
 		"verdict", event.Verdict,
 		"reason_code", event.ReasonCode,
 	}
+	level := slog.LevelWarn
 	if event.Verdict == VerdictAllow {
-		auditor.logger.InfoContext(ctx, "policy decision", attributes...)
-		return nil
+		level = slog.LevelInfo
 	}
-	auditor.logger.WarnContext(ctx, "policy decision", attributes...)
+	handler := auditor.logger.Handler()
+	if !handler.Enabled(ctx, level) {
+		return fmt.Errorf("record policy audit: structured event level is disabled")
+	}
+	record := slog.NewRecord(time.Now(), level, "policy decision", 0)
+	record.Add(attributes...)
+	if err := handler.Handle(ctx, record); err != nil {
+		return fmt.Errorf("record policy audit: emit structured event: %w", err)
+	}
 	return nil
 }
 

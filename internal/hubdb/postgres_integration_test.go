@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/ArdurAI/sith/internal/hubfleet"
 	"github.com/ArdurAI/sith/internal/pep"
 	"github.com/ArdurAI/sith/internal/tenancy"
+	"github.com/ArdurAI/sith/internal/tracing"
 )
 
 const (
@@ -65,6 +67,27 @@ func TestPostgresRLSBackstop(t *testing.T) {
 	if err := Migrate(ctx, MigrationConfig{OwnerURL: ownerURL, ApplicationRole: appRole, AllowInsecureLocal: true}); err != nil {
 		t.Fatalf("idempotent Migrate() error = %v", err)
 	}
+	if _, err := owner.Exec(ctx, `GRANT UPDATE (actor) ON sith.policy_audit_entries TO `+pgx.Identifier{appRole}.Sanitize()); err != nil {
+		t.Fatalf("grant column-level audit mutation fixture: %v", err)
+	}
+	if err := AuditIsolation(ctx, owner, appRole); err == nil || !strings.Contains(err.Error(), "immutable application privilege contract is invalid") {
+		t.Fatalf("column-level audit mutation escaped catalog audit: %v", err)
+	}
+	if err := Migrate(ctx, MigrationConfig{OwnerURL: ownerURL, ApplicationRole: appRole, AllowInsecureLocal: true}); err != nil {
+		t.Fatalf("Migrate() did not repair column-level audit privilege drift: %v", err)
+	}
+	var canUpdateAuditColumn bool
+	if err := owner.QueryRow(ctx, `
+		SELECT has_any_column_privilege($1, 'sith.policy_audit_entries', 'UPDATE')
+	`, appRole).Scan(&canUpdateAuditColumn); err != nil {
+		t.Fatalf("inspect repaired column-level audit privileges: %v", err)
+	}
+	if canUpdateAuditColumn {
+		t.Fatal("migration retained column-level UPDATE on immutable audit entries")
+	}
+	if err := AuditIsolation(ctx, owner, appRole); err != nil {
+		t.Fatalf("repaired AuditIsolation() error = %v", err)
+	}
 	seedTenantRows(t, ctx, admin)
 
 	if _, err := OpenAppDB(ctx, AppConfig{URL: databaseURL(adminURL, appRole, appPassword)}); err == nil {
@@ -102,7 +125,10 @@ func TestPostgresRLSBackstop(t *testing.T) {
 		t.Fatalf("workspace A query: %v", err)
 	}
 
-	tables := []string{"workspaces", "memberships", "clusters", "fleet_facts", "api_keys", "oidc_bindings", "cloud_identity_bindings"}
+	tables := []string{
+		"workspaces", "memberships", "clusters", "fleet_facts", "api_keys", "oidc_bindings",
+		"cloud_identity_bindings", "policy_audit_heads", "policy_audit_entries",
+	}
 	for _, table := range tables {
 		var count int
 		if err := database.pool.QueryRow(ctx, `SELECT count(*) FROM sith.`+pgx.Identifier{table}.Sanitize()).Scan(&count); err != nil {
@@ -235,6 +261,7 @@ func TestPostgresRLSBackstop(t *testing.T) {
 	assertOIDCStoreIntegration(t, ctx, database)
 	assertCloudIdentityStoreIntegration(t, ctx, database)
 	assertFleetStoreIntegration(t, ctx, database)
+	assertPolicyAuditChainIntegration(t, ctx, database, admin, appRole)
 }
 
 func assertWorkspaceAIsolation(ctx context.Context, database *AppDB, scope tenancy.Scope) error {
@@ -257,6 +284,196 @@ func assertWorkspaceAIsolation(ctx context.Context, database *AppDB, scope tenan
 		}
 		return nil
 	})
+}
+
+func assertPolicyAuditChainIntegration(
+	t *testing.T,
+	ctx context.Context,
+	database *AppDB,
+	admin *pgx.Conn,
+	appRole string,
+) {
+	t.Helper()
+
+	workspaceA := testScope(t, "user:alice", "workspace-a", tenancy.RoleReader)
+	workspaceB := testScope(t, "user:bob", "workspace-b", tenancy.RoleReader)
+	if err := database.Record(ctx, newPolicyAuditEvent(t, workspaceA)); err != nil {
+		t.Fatalf("Record(workspace A) error = %v", err)
+	}
+	if err := database.Record(ctx, newPolicyAuditEvent(t, workspaceB)); err != nil {
+		t.Fatalf("Record(workspace B) error = %v", err)
+	}
+
+	const concurrentAppends = 20
+	errorsByAppend := make(chan error, concurrentAppends)
+	var writers sync.WaitGroup
+	for range concurrentAppends {
+		event := newPolicyAuditEvent(t, workspaceA)
+		writers.Add(1)
+		go func(event pep.AuditEvent) {
+			defer writers.Done()
+			errorsByAppend <- database.Record(ctx, event)
+		}(event)
+	}
+	writers.Wait()
+	close(errorsByAppend)
+	for err := range errorsByAppend {
+		if err != nil {
+			t.Fatalf("concurrent Record() error = %v", err)
+		}
+	}
+
+	for name, scope := range map[string]tenancy.Scope{"workspace A": workspaceA, "workspace B": workspaceB} {
+		if err := database.VerifyPolicyAuditChain(ctx, scope); err != nil {
+			t.Fatalf("VerifyPolicyAuditChain(%s) error = %v", name, err)
+		}
+	}
+	if err := database.InWorkspace(ctx, workspaceA, func(tx pgx.Tx) error {
+		var headCount, entryCount, foreignCount int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM sith.policy_audit_heads`).Scan(&headCount); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM sith.policy_audit_entries`).Scan(&entryCount); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM sith.policy_audit_entries WHERE workspace_id = 'workspace-b'
+		`).Scan(&foreignCount); err != nil {
+			return err
+		}
+		if headCount != 1 || entryCount != concurrentAppends+1 || foreignCount != 0 {
+			return fmt.Errorf("workspace A audit view = heads %d entries %d foreign %d", headCount, entryCount, foreignCount)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("policy audit RLS isolation: %v", err)
+	}
+
+	var canSelect, canInsert, canUpdate, canDelete bool
+	if err := admin.QueryRow(ctx, `
+		SELECT has_table_privilege($1, 'sith.policy_audit_entries', 'SELECT'),
+		       has_table_privilege($1, 'sith.policy_audit_entries', 'INSERT'),
+		       has_any_column_privilege($1, 'sith.policy_audit_entries', 'UPDATE'),
+		       has_table_privilege($1, 'sith.policy_audit_entries', 'DELETE')
+	`, appRole).Scan(&canSelect, &canInsert, &canUpdate, &canDelete); err != nil {
+		t.Fatalf("inspect policy audit privileges: %v", err)
+	}
+	if !canSelect || !canInsert || canUpdate || canDelete {
+		t.Fatalf("immutable audit privileges = select:%t insert:%t update:%t delete:%t", canSelect, canInsert, canUpdate, canDelete)
+	}
+	for name, statement := range map[string]string{
+		"update entry": `UPDATE sith.policy_audit_entries SET actor = 'user:mallory' WHERE sequence = 1`,
+		"delete entry": `DELETE FROM sith.policy_audit_entries WHERE sequence = 1`,
+		"delete head":  `DELETE FROM sith.policy_audit_heads`,
+	} {
+		err := database.InWorkspace(ctx, workspaceA, func(tx pgx.Tx) error {
+			_, execErr := tx.Exec(ctx, statement)
+			return execErr
+		})
+		var postgresErr *pgconn.PgError
+		if !errors.As(err, &postgresErr) || postgresErr.Code != "42501" {
+			t.Fatalf("%s error = %v, want privilege denial 42501", name, err)
+		}
+	}
+
+	var originalPrevious, originalEntryHash, originalHeadHash []byte
+	if err := admin.QueryRow(ctx, `
+		SELECT previous_hash, entry_hash
+		FROM sith.policy_audit_entries
+		WHERE workspace_id = 'workspace-a' AND sequence = 2
+	`).Scan(&originalPrevious, &originalEntryHash); err != nil {
+		t.Fatalf("read policy audit tamper fixture: %v", err)
+	}
+	if err := admin.QueryRow(ctx, `
+		SELECT last_hash FROM sith.policy_audit_heads WHERE workspace_id = 'workspace-a'
+	`).Scan(&originalHeadHash); err != nil {
+		t.Fatalf("read policy audit head fixture: %v", err)
+	}
+
+	assertTamperDetected := func(name, mutate, restore string, mutateArgs, restoreArgs []any) {
+		t.Helper()
+		if _, err := admin.Exec(ctx, mutate, mutateArgs...); err != nil {
+			t.Fatalf("%s mutation: %v", name, err)
+		}
+		if err := database.VerifyPolicyAuditChain(ctx, workspaceA); err == nil {
+			t.Fatalf("%s was not detected", name)
+		}
+		if _, err := admin.Exec(ctx, restore, restoreArgs...); err != nil {
+			t.Fatalf("%s restore: %v", name, err)
+		}
+		if err := database.VerifyPolicyAuditChain(ctx, workspaceA); err != nil {
+			t.Fatalf("%s restore did not recover chain: %v", name, err)
+		}
+	}
+	assertTamperDetected(
+		"field mutation",
+		`UPDATE sith.policy_audit_entries SET actor = 'user:mallory' WHERE workspace_id = 'workspace-a' AND sequence = 2`,
+		`UPDATE sith.policy_audit_entries SET actor = 'user:alice' WHERE workspace_id = 'workspace-a' AND sequence = 2`,
+		nil, nil,
+	)
+	assertTamperDetected(
+		"sequence reordering",
+		`UPDATE sith.policy_audit_entries SET sequence = 100 WHERE workspace_id = 'workspace-a' AND sequence = 2`,
+		`UPDATE sith.policy_audit_entries SET sequence = 2 WHERE workspace_id = 'workspace-a' AND sequence = 100`,
+		nil, nil,
+	)
+	assertTamperDetected(
+		"previous hash mutation",
+		`UPDATE sith.policy_audit_entries SET previous_hash = decode(repeat('00', 32), 'hex') WHERE workspace_id = 'workspace-a' AND sequence = 2`,
+		`UPDATE sith.policy_audit_entries SET previous_hash = $1 WHERE workspace_id = 'workspace-a' AND sequence = 2`,
+		nil, []any{originalPrevious},
+	)
+	assertTamperDetected(
+		"entry hash mutation",
+		`UPDATE sith.policy_audit_entries SET entry_hash = decode(repeat('00', 32), 'hex') WHERE workspace_id = 'workspace-a' AND sequence = 2`,
+		`UPDATE sith.policy_audit_entries SET entry_hash = $1 WHERE workspace_id = 'workspace-a' AND sequence = 2`,
+		nil, []any{originalEntryHash},
+	)
+	assertTamperDetected(
+		"head mismatch",
+		`UPDATE sith.policy_audit_heads SET last_hash = decode(repeat('00', 32), 'hex') WHERE workspace_id = 'workspace-a'`,
+		`UPDATE sith.policy_audit_heads SET last_hash = $1 WHERE workspace_id = 'workspace-a'`,
+		nil, []any{originalHeadHash},
+	)
+	if _, err := admin.Exec(ctx, `
+		DELETE FROM sith.policy_audit_entries WHERE workspace_id = 'workspace-a' AND sequence = 2
+	`); err != nil {
+		t.Fatalf("delete retained policy audit entry: %v", err)
+	}
+	if err := database.VerifyPolicyAuditChain(ctx, workspaceA); err == nil {
+		t.Fatal("deleted retained policy audit entry was not detected")
+	}
+}
+
+func testScope(
+	t *testing.T,
+	subject string,
+	workspaceID tenancy.WorkspaceID,
+	role tenancy.Role,
+) tenancy.Scope {
+	t.Helper()
+	principal, err := tenancy.NewPrincipal(subject, map[tenancy.WorkspaceID]tenancy.Role{workspaceID: role})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := principal.Scope(workspaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope
+}
+
+func newPolicyAuditEvent(t *testing.T, scope tenancy.Scope) pep.AuditEvent {
+	t.Helper()
+	traceID, err := tracing.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pep.AuditEvent{
+		At: time.Now().UTC(), TraceID: traceID, WorkspaceID: scope.WorkspaceID(), Actor: scope.Subject(),
+		Role: scope.Role(), Action: tenancy.ActionRead, Verb: pep.VerbFleetRead,
+		Verdict: pep.VerdictAllow, ReasonCode: "phase-1-read",
+	}
 }
 
 func startPostgres(t *testing.T) string {

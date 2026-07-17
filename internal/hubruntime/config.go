@@ -74,7 +74,7 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 	if err != nil {
 		return nil, fmt.Errorf("construct hub runtime: session verification configuration is invalid")
 	}
-	auditor, err := pep.NewSlogAuditor(logger)
+	processAuditor, err := pep.NewSlogAuditor(logger)
 	if err != nil {
 		return nil, fmt.Errorf("construct hub runtime: policy audit configuration is invalid")
 	}
@@ -87,11 +87,6 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 	if err != nil {
 		return nil, fmt.Errorf("construct hub runtime: metrics configuration is invalid")
 	}
-	enforcer, err := pep.NewEnforcer(pep.Config{Hook: pep.AllowReadHook{}, Auditor: auditor, Observer: metrics, TraceObserver: tracer})
-	if err != nil {
-		return nil, fmt.Errorf("construct hub runtime: policy configuration is invalid")
-	}
-
 	inClusterConfig, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, fmt.Errorf("construct hub runtime: in-cluster Kubernetes identity is required")
@@ -118,6 +113,18 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		return nil, fmt.Errorf("construct hub runtime: database is unavailable")
 	}
 	cleanup := func() { database.Close() }
+	durableAuditor, err := newOrderedPolicyAuditor(database, processAuditor)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("construct hub runtime: durable policy audit configuration is invalid")
+	}
+	enforcer, err := pep.NewEnforcer(pep.Config{
+		Hook: pep.AllowReadHook{}, Auditor: durableAuditor, Observer: metrics, TraceObserver: tracer,
+	})
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("construct hub runtime: policy configuration is invalid")
+	}
 	authObserver, err := auditdelivery.NewProcessObserver(auditdelivery.Config{Drops: metrics})
 	if err != nil {
 		cleanup()

@@ -301,6 +301,17 @@ actor, spoke, endpoint, resource, selector, argument digest, credential, raw err
 data in trace events. This is not a telemetry exporter: it adds no OpenTelemetry SDK, listener,
 network egress, queue, trace store, persistence, or action-intent protocol.
 
+The PEP decision record itself is durable. Before an allowed governed operation can proceed, the
+hub appends the privacy-minimized decision to a workspace-scoped PostgreSQL hash chain, then emits
+the structured process log. The application role can insert and read immutable audit entries but
+cannot update or delete them; forced RLS isolates both entries and their per-workspace chain heads.
+Either database or structured-process-log delivery failure blocks the operation, so production
+database and logging availability and latency are part of the governed-read availability budget.
+Chain verification detects retained-row edits,
+deletion, reordering, broken links, and head mismatch. It does not make a WORM or non-repudiation
+claim: detecting wholesale replacement by a privileged database owner requires a later externally
+anchored checkpoint or immutable copy.
+
 Before a signed scope exists, the authentication gate emits one local WARN record for every
 refusal with only the fixed `hub-auth` surface and `refused` outcome. It deliberately does not
 distinguish credential failure modes or carry a trace/correlation ID, token, header, path, client
@@ -341,8 +352,10 @@ Run `sith hub migrate` as a short-lived deployment Job before starting `sith hub
 `SITH_HUB_MIGRATION_OWNER_DATABASE_URL` and `SITH_HUB_APPLICATION_DATABASE_ROLE`; mount the owner
 database URL from the deployment secret provider and set the application role explicitly. The
 command requires TLS for any non-local database target, applies the checksum-locked serializable
-migration ledger, audits forced RLS, attempts to close its one owner connection, and exits. It never opens the
-hub listener, creates a Kubernetes client, or starts collection.
+migration ledger, creates the tenant-scoped policy-audit chain, narrows the application role's
+audit-table privileges, audits forced RLS and the immutable-entry privilege contract, attempts to
+close its one owner connection, and exits. It never opens the hub listener, creates a Kubernetes
+client, or starts collection.
 
 The normal hub process continues to use only `SITH_HUB_DATABASE_URL` for the non-owner application
 role. Do not reuse the migration-owner credential in the hub Deployment or place either database
