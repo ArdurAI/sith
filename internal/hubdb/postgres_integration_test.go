@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -79,7 +80,7 @@ func TestPostgresRLSBackstop(t *testing.T) {
 	}
 
 	database, err := OpenAppDB(ctx, AppConfig{
-		URL: databaseURL(adminURL, appRole, appPassword), MaxConns: 1, AllowInsecure: true,
+		URL: databaseURL(adminURL, appRole, appPassword), MaxConns: 2, AllowInsecure: true,
 	})
 	if err != nil {
 		t.Fatalf("OpenAppDB() error = %v", err)
@@ -587,6 +588,7 @@ func assertFleetStoreIntegration(t *testing.T, ctx context.Context, database *Ap
 	if err != nil || len(queryResult.Facts) != 1 || queryResult.Facts[0].Workspace != "workspace-a" || queryResult.Facts[0].Stale {
 		t.Fatalf("workspace-a health query = %#v, error = %v", queryResult, err)
 	}
+	assertFleetQuerySnapshotIsolation(t, ctx, database, scope)
 	if err := database.InWorkspace(ctx, scope, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO sith.clusters(workspace_id, id, managed_cluster_ref)
 			VALUES ($1, $2, $3)`, scope.WorkspaceID(), "cluster-a2", "ocm/cluster-a2")
@@ -728,6 +730,107 @@ func assertFleetStoreIntegration(t *testing.T, ctx context.Context, database *Ap
 	if err != nil || len(staleResult.Facts) != 5 || !staleResult.Facts[0].Stale || staleResult.Facts[0].StaleFor != "collection failed" ||
 		staleResult.Coverage.Reachable != 0 || len(staleResult.Coverage.Unreachable) != 1 || len(staleResult.Coverage.Stale) != 1 {
 		t.Fatalf("retained stale query = %#v, error = %v", staleResult, err)
+	}
+}
+
+func assertFleetQuerySnapshotIsolation(t *testing.T, ctx context.Context, database *AppDB, scope tenancy.Scope) {
+	t.Helper()
+	spoke := hubfleet.Spoke{ID: "cluster-snapshot", ManagedClusterRef: "ocm/cluster-snapshot"}
+	if err := database.InWorkspace(ctx, scope, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO sith.clusters(workspace_id, id, managed_cluster_ref)
+			VALUES ($1, $2, $3)`, scope.WorkspaceID(), spoke.ID, spoke.ManagedClusterRef)
+		return err
+	}); err != nil {
+		t.Fatalf("register snapshot-isolation spoke: %v", err)
+	}
+
+	newObserved := time.Date(2026, time.July, 12, 17, 0, 0, 0, time.UTC)
+	oldObserved := newObserved.Add(-2 * time.Hour)
+	snapshot := func(observed time.Time, generation int) hubfleet.Snapshot {
+		return hubfleet.Snapshot{ObservedAt: observed, Facts: []fleet.Evidence{{
+			Ref: fleet.ResourceRef{
+				SourceKind: hubfleet.SourceKind,
+				Scope:      spoke.ID,
+				Kind:       "Deployment",
+				Namespace:  "payments",
+				Name:       "snapshot-proof",
+			},
+			Kind:       fleet.FactInventory,
+			Observed:   []byte(fmt.Sprintf(`{"generation":%d}`, generation)),
+			ObservedAt: observed,
+			Source:     spoke.ID,
+			Provenance: fleet.Provenance{Adapter: hubfleet.SourceKind, ProtocolV: "1.0.0"},
+		}}}
+	}
+	if err := database.ReplaceSnapshot(ctx, scope, spoke, snapshot(oldObserved, 1), oldObserved); err != nil {
+		t.Fatalf("store old snapshot: %v", err)
+	}
+
+	replaced := false
+	result, err := database.queryFleet(ctx, scope, fleet.Query{
+		Kinds:  []fleet.FactKind{fleet.FactInventory},
+		Scopes: []string{spoke.ID},
+	}, 30*time.Minute, newObserved, queryFleetHooks{
+		afterClusterStates: func(tx pgx.Tx) error {
+			var isolation, readOnly, configuredWorkspace string
+			if err := tx.QueryRow(ctx, `SHOW transaction_isolation`).Scan(&isolation); err != nil {
+				return err
+			}
+			if err := tx.QueryRow(ctx, `SHOW transaction_read_only`).Scan(&readOnly); err != nil {
+				return err
+			}
+			if err := tx.QueryRow(ctx, `SELECT current_setting('sith.workspace_id', true)`).Scan(&configuredWorkspace); err != nil {
+				return err
+			}
+			if isolation != "repeatable read" || readOnly != "on" || configuredWorkspace != string(scope.WorkspaceID()) {
+				return fmt.Errorf("query transaction = isolation %q, read only %q, workspace %q", isolation, readOnly, configuredWorkspace)
+			}
+			var foreignClusters int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM sith.clusters WHERE workspace_id = 'workspace-b'`).Scan(&foreignClusters); err != nil {
+				return err
+			}
+			if foreignClusters != 0 {
+				return fmt.Errorf("query snapshot exposed %d foreign clusters", foreignClusters)
+			}
+			if err := database.ReplaceSnapshot(ctx, scope, spoke, snapshot(newObserved, 2), newObserved); err != nil {
+				return err
+			}
+			replaced = true
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("query during committed replacement: %v", err)
+	}
+	if !replaced || len(result.Facts) != 1 || result.Coverage.Requested != 1 || result.Coverage.Reachable != 1 ||
+		len(result.Coverage.Unreachable) != 0 {
+		t.Fatalf("snapshot query = %#v, replacement committed = %t", result, replaced)
+	}
+	var payload struct {
+		Generation int `json:"generation"`
+	}
+	if err := json.Unmarshal(result.Facts[0].Observed, &payload); err != nil {
+		t.Fatalf("decode snapshot generation: %v", err)
+	}
+	oldPair := payload.Generation == 1 && result.Facts[0].ObservedAt.Equal(oldObserved) && result.Facts[0].Stale &&
+		len(result.Coverage.Stale) == 1 && result.Coverage.Stale[0] == spoke.ID
+	newPair := payload.Generation == 2 && result.Facts[0].ObservedAt.Equal(newObserved) && !result.Facts[0].Stale &&
+		len(result.Coverage.Stale) == 0
+	if !oldPair && !newPair {
+		t.Fatalf("mixed cluster state and fact snapshot: generation = %d, result = %#v", payload.Generation, result)
+	}
+
+	if err := database.InWorkspace(ctx, scope, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `DELETE FROM sith.clusters WHERE workspace_id = $1 AND id = $2`, scope.WorkspaceID(), spoke.ID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("deleted %d snapshot-isolation spokes", tag.RowsAffected())
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("remove snapshot-isolation spoke: %v", err)
 	}
 }
 
