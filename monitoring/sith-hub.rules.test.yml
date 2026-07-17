@@ -1,0 +1,149 @@
+# SPDX-License-Identifier: Apache-2.0
+
+rule_files:
+  - sith-hub.rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: policy audit failure aggregates hostile source labels and honors the hold window
+    interval: 1m
+    input_series:
+      - series: 'sith_policy_audit_attempts_total{sink="durable",outcome="error",job="hub-a",instance="10.0.0.1:9090",workspace="must-not-propagate"}'
+        values: '0 1+0x12'
+      - series: 'sith_policy_audit_attempts_total{sink="process",outcome="error",job="hub-b",instance="10.0.0.2:9090",trace="must-not-propagate"}'
+        values: '0+0x13'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: SithHubPolicyAuditFailure
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: SithHubPolicyAuditFailure
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: critical
+            exp_annotations:
+              summary: Sith hub is refusing governed reads because policy-audit delivery failed
+              description: At least one durable or process policy-audit sink failed during the last five minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubpolicyauditfailure
+
+  - name: policy audit counter reset does not fabricate a failure
+    interval: 1m
+    input_series:
+      - series: 'sith_policy_audit_attempts_total{sink="durable",outcome="error"}'
+        values: '100+0x5 0+0x10'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: SithHubPolicyAuditFailure
+        exp_alerts: []
+
+  - name: missing policy audit series stays quiet
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SithHubPolicyAuditFailure
+        exp_alerts: []
+
+  - name: authentication refusal delivery drop aggregates source labels and honors the hold window
+    interval: 1m
+    input_series:
+      - series: 'sith_auth_refusal_delivery_drops_total{job="hub-a",instance="10.0.0.1:9090",actor="must-not-propagate"}'
+        values: '0 1+0x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SithHubAuthRefusalDeliveryDrop
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: SithHubAuthRefusalDeliveryDrop
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub dropped structured authentication-refusal evidence
+              description: At least one bounded authentication-refusal record could not be delivered during the last ten minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubauthrefusaldeliverydrop
+
+  - name: sustained snapshot failures fire only after ratio volume and hold guards
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_spoke_snapshot_attempts_total{outcome="success",job="hub-a",instance="10.0.0.1:9090",spoke="must-not-propagate"}'
+        values: '0+2x35'
+      - series: 'sith_federation_spoke_snapshot_attempts_total{outcome="transport",job="hub-b",instance="10.0.0.2:9090",endpoint="must-not-propagate"}'
+        values: '0+0.2x35'
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: SithHubFederationSnapshotFailureRatioHigh
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SithHubFederationSnapshotFailureRatioHigh
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub federation snapshot failures are sustained
+              description: More than five percent of at least twenty aggregate spoke snapshot attempts failed over fifteen minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubfederationsnapshotfailureratiohigh
+
+  - name: snapshot ratio above threshold stays quiet below minimum volume
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_spoke_snapshot_attempts_total{outcome="success"}'
+        values: '0+0.4x35'
+      - series: 'sith_federation_spoke_snapshot_attempts_total{outcome="deadline"}'
+        values: '0+0.1x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubFederationSnapshotFailureRatioHigh
+        exp_alerts: []
+
+  - name: snapshot volume above minimum stays quiet below failure threshold
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_spoke_snapshot_attempts_total{outcome="success"}'
+        values: '0+2x35'
+      - series: 'sith_federation_spoke_snapshot_attempts_total{outcome="store-error"}'
+        values: '0+0.05x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubFederationSnapshotFailureRatioHigh
+        exp_alerts: []
+
+  - name: snapshot ratio exactly at five percent stays quiet
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_spoke_snapshot_attempts_total{outcome="success"}'
+        values: '0+19x35'
+      - series: 'sith_federation_spoke_snapshot_attempts_total{outcome="invalid-snapshot"}'
+        values: '0+1x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubFederationSnapshotFailureRatioHigh
+        exp_alerts: []
+
+  - name: snapshot volume exactly at twenty satisfies the inclusive guard
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_spoke_snapshot_attempts_total{outcome="canceled"}'
+        values: '0+0x14 20+0x20'
+    promql_expr_test:
+      - expr: sum(increase(sith_federation_spoke_snapshot_attempts_total[15m]))
+        eval_time: 25m
+        exp_samples:
+          - labels: '{}'
+            value: 20
+    alert_rule_test:
+      - eval_time: 24m
+        alertname: SithHubFederationSnapshotFailureRatioHigh
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: SithHubFederationSnapshotFailureRatioHigh
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub federation snapshot failures are sustained
+              description: More than five percent of at least twenty aggregate spoke snapshot attempts failed over fifteen minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubfederationsnapshotfailureratiohigh

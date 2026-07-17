@@ -328,6 +328,13 @@ appears after a durable success. Operators can build failure-rate and latency si
 `histogram_quantile(0.95, sum by (le, sink)
 (rate(sith_policy_audit_duration_seconds_bucket[5m])))`. These fixed series add no listener,
 exporter, persistence, or tenant-proportional cardinality beyond the existing opt-in metrics path.
+The portable [hub alert rules](monitoring/sith-hub.rules.yml) turn the established audit, auth-log
+delivery, and aggregate snapshot failure signals into three bounded, fixture-tested alerts; the
+[runbook](docs/runbooks/hub-alerts.md) documents installation and response. Load the rule file only
+after arranging an operator-owned same-Pod scrape/forwarding path. Sith does not render a Service,
+ServiceMonitor, PrometheusRule, Alertmanager receiver, exporter, or remote-write configuration.
+These rules are an F10.4a baseline, not read-freshness, dispatch-success, or PDP-latency SLOs or
+error budgets; those require production signals that do not exist yet.
 Chain verification detects retained-row edits,
 deletion, reordering, broken links, and head mismatch. It does not make a WORM or non-repudiation
 claim: detecting wholesale replacement by a privileged database owner requires a later externally

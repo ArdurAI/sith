@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: Apache-2.0
+
+groups:
+  - name: sith-hub.failure-signals
+    interval: 1m
+    limit: 3
+    rules:
+      - alert: SithHubPolicyAuditFailure
+        expr: sum(increase(sith_policy_audit_attempts_total{outcome="error"}[5m])) > 0
+        for: 2m
+        labels:
+          component: sith-hub
+          severity: critical
+        annotations:
+          summary: Sith hub is refusing governed reads because policy-audit delivery failed
+          description: At least one durable or process policy-audit sink failed during the last five minutes.
+          runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubpolicyauditfailure
+
+      - alert: SithHubAuthRefusalDeliveryDrop
+        expr: sum(increase(sith_auth_refusal_delivery_drops_total[10m])) > 0
+        for: 5m
+        labels:
+          component: sith-hub
+          severity: warning
+        annotations:
+          summary: Sith hub dropped structured authentication-refusal evidence
+          description: At least one bounded authentication-refusal record could not be delivered during the last ten minutes.
+          runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubauthrefusaldeliverydrop
+
+      - alert: SithHubFederationSnapshotFailureRatioHigh
+        expr: |
+          (
+            sum(increase(sith_federation_spoke_snapshot_attempts_total{outcome!="success"}[15m]))
+            /
+            clamp_min(sum(increase(sith_federation_spoke_snapshot_attempts_total[15m])), 1)
+          ) > 0.05
+          and
+          sum(increase(sith_federation_spoke_snapshot_attempts_total[15m])) >= 20
+        for: 10m
+        labels:
+          component: sith-hub
+          severity: warning
+        annotations:
+          summary: Sith hub federation snapshot failures are sustained
+          description: More than five percent of at least twenty aggregate spoke snapshot attempts failed over fifteen minutes.
+          runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubfederationsnapshotfailureratiohigh
