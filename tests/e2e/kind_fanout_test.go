@@ -255,6 +255,18 @@ func TestKindFleetFanout(t *testing.T) {
 		t.Fatalf("generic server-column text/error = %q/%v", genericText, err)
 	}
 
+	bootstrapCtx, bootstrapCancel := context.WithCancel(ctx)
+	bootstrapEvents, err := adapter.Watch(bootstrapCtx, "ConfigMap")
+	if err != nil {
+		bootstrapCancel()
+		t.Fatalf("open paginated ConfigMap watch: %v", err)
+	}
+	waitForWatchSnapshotFact(
+		ctx, t, bootstrapEvents, "ConfigMap", "kind-"+clusterNames[0], "sith-table-page-259",
+	)
+	bootstrapCancel()
+	waitForWatchClose(ctx, t, bootstrapEvents)
+
 	watchStore := fleetcache.New()
 	watchHydrator, err := hydrate.New(adapter, watchStore, hydrate.WithResyncInterval(10*time.Minute))
 	if err != nil {
@@ -263,7 +275,7 @@ func TestKindFleetFanout(t *testing.T) {
 	watchCtx, watchCancel := context.WithCancel(ctx)
 	watchDone := make(chan error, 1)
 	go func() { watchDone <- watchHydrator.Run(watchCtx) }()
-	waitForCacheRecord(ctx, t, watchStore, "kind-"+clusterNames[0], "sith-vuln-sample", true)
+	waitForCacheRecord(ctx, t, watchStore, "Pod", "kind-"+clusterNames[0], "sith-vuln-sample", true)
 	watchClient := dynamicClientForContext(t, kubeconfigPath, "kind-"+clusterNames[0])
 	watchPod := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1",
@@ -277,12 +289,12 @@ func TestKindFleetFanout(t *testing.T) {
 		Namespace("default").Create(ctx, watchPod, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create watched pod: %v", err)
 	}
-	waitForCacheRecord(ctx, t, watchStore, "kind-"+clusterNames[0], "sith-watch-sample", true)
+	waitForCacheRecord(ctx, t, watchStore, "Pod", "kind-"+clusterNames[0], "sith-watch-sample", true)
 	if err := watchClient.Resource(schema.GroupVersionResource{Version: "v1", Resource: "pods"}).
 		Namespace("default").Delete(ctx, "sith-watch-sample", metav1.DeleteOptions{}); err != nil {
 		t.Fatalf("delete watched pod: %v", err)
 	}
-	waitForCacheRecord(ctx, t, watchStore, "kind-"+clusterNames[0], "sith-watch-sample", false)
+	waitForCacheRecord(ctx, t, watchStore, "Pod", "kind-"+clusterNames[0], "sith-watch-sample", false)
 	watchCancel()
 	if err := <-watchDone; err != nil {
 		t.Fatalf("watch hydrator shutdown: %v", err)
@@ -804,7 +816,7 @@ func waitForCacheRecord(
 	ctx context.Context,
 	t *testing.T,
 	store *fleetcache.Store,
-	cluster, name string,
+	kind, cluster, name string,
 	want bool,
 ) {
 	t.Helper()
@@ -814,7 +826,7 @@ func waitForCacheRecord(
 	defer deadline.Stop()
 	for {
 		found := false
-		for _, record := range store.Query(fleet.LocalWorkspace, fleetcache.Query{Kind: "Pod"}).Records {
+		for _, record := range store.Query(fleet.LocalWorkspace, fleetcache.Query{Kind: kind}).Records {
 			if record.Cluster == cluster && record.Name == name {
 				found = true
 				break
@@ -829,6 +841,62 @@ func waitForCacheRecord(
 		case <-deadline.C:
 			t.Fatalf("cached record %s/%s presence = %t, want %t", cluster, name, found, want)
 		case <-ticker.C:
+		}
+	}
+}
+
+func waitForWatchSnapshotFact(
+	ctx context.Context,
+	t *testing.T,
+	events <-chan connector.WatchEvent,
+	kind, cluster, name string,
+) {
+	t.Helper()
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case event, open := <-events:
+			if !open {
+				t.Fatalf("watch closed before %s/%s appeared in %s snapshot", cluster, name, kind)
+			}
+			if event.Kind != kind || event.Scope != cluster {
+				continue
+			}
+			if event.Type == connector.WatchError {
+				t.Fatalf("watch bootstrap for %s/%s failed: %v", kind, cluster, event.Err)
+			}
+			if event.Type != connector.WatchSnapshot {
+				continue
+			}
+			for _, fact := range event.Facts {
+				if fact.Ref.Name == name {
+					return
+				}
+			}
+			t.Fatalf("%s snapshot for %s omitted late-page object %s", kind, cluster, name)
+		case <-ctx.Done():
+			t.Fatalf("wait for %s snapshot in %s: %v", kind, cluster, ctx.Err())
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for %s snapshot in %s", kind, cluster)
+		}
+	}
+}
+
+func waitForWatchClose(ctx context.Context, t *testing.T, events <-chan connector.WatchEvent) {
+	t.Helper()
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case _, open := <-events:
+			if !open {
+				return
+			}
+		case <-ctx.Done():
+			t.Fatalf("wait for watch shutdown: %v", ctx.Err())
+		case <-deadline.C:
+			t.Fatal("watch did not close after cancellation")
 		}
 	}
 }

@@ -382,6 +382,11 @@ or missing required lens downgrades the dependent verdict rather than being trea
 evidence. Identical unhealthy image digests on two or more contexts produce a fleet-wide verdict
 ahead of per-cluster findings. Advisory output never executes or dispatches anything.
 
+Initial list-watch hydration is a complete, consistent snapshot rather than a bounded prefix: each
+scope and kind uses 250-object pages under one request deadline, with hard limits of 10,000 objects
+and 128 pages. Sith emits a watch error and does not open the stream when a continuation fails,
+the collection changes resource version between pages, or either budget is exceeded.
+
 The TUI opens only when stdin and stdout are terminals; redirected bare invocations remain
 script-safe and print help. Tier-1 lenses are Pods, Deployments, Events, and Nodes. Use `:` for
 lens/context commands (including `:<kind>` for an API-discovered generic resource rendered with
