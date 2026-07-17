@@ -35,16 +35,19 @@ type Config struct {
 // All label normalization occurs before a metric is created, so caller-controlled values cannot
 // increase cardinality or cross the privacy boundary.
 type Metrics struct {
-	gatherer          prometheus.Gatherer
-	policyDecisions   *prometheus.CounterVec
-	policyDuration    *prometheus.HistogramVec
-	snapshotAttempts  *prometheus.CounterVec
-	snapshotDuration  *prometheus.HistogramVec
-	authDeliveryDrops prometheus.Counter
+	gatherer            prometheus.Gatherer
+	policyDecisions     *prometheus.CounterVec
+	policyDuration      *prometheus.HistogramVec
+	policyAuditAttempts *prometheus.CounterVec
+	policyAuditDuration *prometheus.HistogramVec
+	snapshotAttempts    *prometheus.CounterVec
+	snapshotDuration    *prometheus.HistogramVec
+	authDeliveryDrops   prometheus.Counter
 }
 
 var (
 	_ pep.DecisionObserver      = (*Metrics)(nil)
+	_ pep.AuditObserver         = (*Metrics)(nil)
 	_ hubfleet.SnapshotObserver = (*Metrics)(nil)
 )
 
@@ -69,6 +72,14 @@ func New(config Config) (*Metrics, error) {
 			Namespace: "sith", Subsystem: "policy", Name: "decision_duration_seconds",
 			Help: "Duration of completed Sith policy-read decisions by closed verb and outcome.",
 		}, []string{"verb", "outcome"}),
+		policyAuditAttempts: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "sith", Subsystem: "policy", Name: "audit_attempts_total",
+			Help: "Total completed Sith policy-audit sink attempts by closed sink and outcome.",
+		}, []string{"sink", "outcome"}),
+		policyAuditDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "sith", Subsystem: "policy", Name: "audit_duration_seconds",
+			Help: "Duration of completed Sith policy-audit sink attempts by closed sink and outcome.",
+		}, []string{"sink", "outcome"}),
 		snapshotAttempts: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "sith", Subsystem: "federation", Name: "spoke_snapshot_attempts_total",
 			Help: "Total completed Sith federated spoke snapshot attempts by closed outcome.",
@@ -91,7 +102,7 @@ func New(config Config) (*Metrics, error) {
 	})
 	buildInfo.Set(1)
 
-	registered := make([]prometheus.Collector, 0, 8)
+	registered := make([]prometheus.Collector, 0, 10)
 	for _, collector := range []struct {
 		name      string
 		collector prometheus.Collector
@@ -101,6 +112,8 @@ func New(config Config) (*Metrics, error) {
 		{name: "build info", collector: buildInfo},
 		{name: "policy decisions", collector: metrics.policyDecisions},
 		{name: "policy duration", collector: metrics.policyDuration},
+		{name: "policy audit attempts", collector: metrics.policyAuditAttempts},
+		{name: "policy audit duration", collector: metrics.policyAuditDuration},
 		{name: "snapshot attempts", collector: metrics.snapshotAttempts},
 		{name: "snapshot duration", collector: metrics.snapshotDuration},
 		{name: "authentication-refusal delivery drops", collector: metrics.authDeliveryDrops},
@@ -112,6 +125,12 @@ func New(config Config) (*Metrics, error) {
 			return nil, fmt.Errorf("register %s metrics: %w", collector.name, err)
 		}
 		registered = append(registered, collector.collector)
+	}
+	for _, sink := range []pep.AuditSink{pep.AuditSinkDurable, pep.AuditSinkProcess} {
+		for _, outcome := range []pep.AuditOutcome{pep.AuditOutcomeSuccess, pep.AuditOutcomeError} {
+			metrics.policyAuditAttempts.WithLabelValues(string(sink), string(outcome))
+			metrics.policyAuditDuration.WithLabelValues(string(sink), string(outcome))
+		}
 	}
 
 	return metrics, nil
@@ -137,6 +156,18 @@ func (metrics *Metrics) ObserveDecision(verb pep.Verb, outcome pep.DecisionOutco
 	outcomeLabel := normalizedDecisionOutcome(outcome)
 	metrics.policyDecisions.WithLabelValues(verbLabel, outcomeLabel).Inc()
 	metrics.policyDuration.WithLabelValues(verbLabel, outcomeLabel).Observe(normalizedDuration(duration))
+}
+
+// ObservePolicyAudit records one completed policy-audit sink attempt using only closed sink and
+// outcome vocabularies. Invalid values are discarded instead of creating a caller-controlled
+// series.
+func (metrics *Metrics) ObservePolicyAudit(sink pep.AuditSink, outcome pep.AuditOutcome, duration time.Duration) {
+	if metrics == nil || metrics.policyAuditAttempts == nil || metrics.policyAuditDuration == nil ||
+		!sink.Valid() || !outcome.Valid() {
+		return
+	}
+	metrics.policyAuditAttempts.WithLabelValues(string(sink), string(outcome)).Inc()
+	metrics.policyAuditDuration.WithLabelValues(string(sink), string(outcome)).Observe(normalizedDuration(duration))
 }
 
 // ObserveSpokeSnapshot records one completed federated snapshot attempt using only a fixed outcome

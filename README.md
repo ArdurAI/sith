@@ -307,6 +307,17 @@ the structured process log. The application role can insert and read immutable a
 cannot update or delete them; forced RLS isolates both entries and their per-workspace chain heads.
 Either database or structured-process-log delivery failure blocks the operation, so production
 database and logging availability and latency are part of the governed-read availability budget.
+The optional loopback metrics surface exposes that boundary as
+`sith_policy_audit_attempts_total{sink,outcome}` and
+`sith_policy_audit_duration_seconds{sink,outcome}`. `sink` is only `durable` or `process`, and
+`outcome` is only `success` or `error`; invalid observations are discarded, and no tenant, actor,
+intent, trace, policy argument, or raw error becomes a label. A durable error intentionally has no
+matching process attempt because the database append must succeed first. A process error therefore
+appears after a durable success. Operators can build failure-rate and latency signals from
+`rate(sith_policy_audit_attempts_total{outcome="error"}[5m])` and
+`histogram_quantile(0.95, sum by (le, sink)
+(rate(sith_policy_audit_duration_seconds_bucket[5m])))`. These fixed series add no listener,
+exporter, persistence, or tenant-proportional cardinality beyond the existing opt-in metrics path.
 Chain verification detects retained-row edits,
 deletion, reordering, broken links, and head mismatch. It does not make a WORM or non-repudiation
 claim: detecting wholesale replacement by a privileged database owner requires a later externally

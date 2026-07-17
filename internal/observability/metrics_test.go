@@ -23,6 +23,9 @@ func TestMetricsExposeOnlyBoundedSelfObservability(t *testing.T) {
 	}
 	metrics.ObserveDecision(pep.VerbFleetRead, pep.DecisionOutcomeAllow, 125*time.Millisecond)
 	metrics.ObserveDecision(pep.Verb("workspace-a/token=secret"), pep.DecisionOutcome("untrusted"), -time.Second)
+	metrics.ObservePolicyAudit(pep.AuditSinkDurable, pep.AuditOutcomeSuccess, 15*time.Millisecond)
+	metrics.ObservePolicyAudit(pep.AuditSinkProcess, pep.AuditOutcomeError, -time.Second)
+	metrics.ObservePolicyAudit(pep.AuditSink("workspace-a/token=secret"), pep.AuditOutcome("untrusted"), time.Second)
 	metrics.ObserveSpokeSnapshot(hubfleet.SnapshotOutcomeSuccess, 25*time.Millisecond)
 	metrics.ObserveSpokeSnapshot(hubfleet.SnapshotOutcome("spoke-a/token=secret"), -time.Second)
 	metrics.ObserveAuthRefusalDeliveryDrop()
@@ -37,6 +40,12 @@ func TestMetricsExposeOnlyBoundedSelfObservability(t *testing.T) {
 		"sith_build_info",
 		"sith_policy_decisions_total",
 		"sith_policy_decision_duration_seconds",
+		"sith_policy_audit_attempts_total",
+		"sith_policy_audit_duration_seconds",
+		`sith_policy_audit_attempts_total{outcome="success",sink="durable"} 1`,
+		`sith_policy_audit_attempts_total{outcome="error",sink="durable"} 0`,
+		`sith_policy_audit_attempts_total{outcome="success",sink="process"} 0`,
+		`sith_policy_audit_attempts_total{outcome="error",sink="process"} 1`,
 		"sith_federation_spoke_snapshot_attempts_total",
 		"sith_federation_spoke_snapshot_duration_seconds",
 		"sith_auth_refusal_delivery_drops_total 1",
@@ -46,6 +55,8 @@ func TestMetricsExposeOnlyBoundedSelfObservability(t *testing.T) {
 		`outcome="error"`,
 		`outcome="success"`,
 		`outcome="store-error"`,
+		`sink="durable"`,
+		`sink="process"`,
 	} {
 		if !strings.Contains(body, metric) {
 			t.Fatalf("metrics output missing %q: %s", metric, body)
@@ -86,10 +97,10 @@ func TestMetricsUseIndependentRegistriesAndNormalizeBuildLabels(t *testing.T) {
 
 func TestMetricsRejectDuplicateRegistrations(t *testing.T) {
 	registry := prometheus.NewPedanticRegistry()
-	conflicting := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "sith", Subsystem: "policy", Name: "decisions_total",
-		Help: "Total completed Sith policy-read decisions by closed verb and outcome.",
-	}, []string{"verb", "outcome"})
+	conflicting := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "sith", Subsystem: "policy", Name: "audit_duration_seconds",
+		Help: "Duration of completed Sith policy-audit sink attempts by closed sink and outcome.",
+	}, []string{"sink", "outcome"})
 	if err := registry.Register(conflicting); err != nil {
 		t.Fatal(err)
 	}
@@ -124,6 +135,8 @@ func assertSithMetricLabels(t *testing.T, metrics *Metrics) {
 		"sith_build_info":                                 {"commit": true, "version": true},
 		"sith_policy_decisions_total":                     {"outcome": true, "verb": true},
 		"sith_policy_decision_duration_seconds":           {"outcome": true, "verb": true},
+		"sith_policy_audit_attempts_total":                {"outcome": true, "sink": true},
+		"sith_policy_audit_duration_seconds":              {"outcome": true, "sink": true},
 		"sith_federation_spoke_snapshot_attempts_total":   {"outcome": true},
 		"sith_federation_spoke_snapshot_duration_seconds": {"outcome": true},
 		"sith_auth_refusal_delivery_drops_total":          {},
