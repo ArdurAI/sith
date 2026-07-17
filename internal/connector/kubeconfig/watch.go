@@ -115,7 +115,7 @@ func (adapter *Adapter) watchScope(
 				}
 				return
 			}
-			display, err = table(ctx, spec, "", "", "")
+			display, err = table(ctx, spec, tableRequest{rowBudget: len(list.Items)})
 			if err != nil {
 				if !adapter.reportWatchError(ctx, events, kind, scope, err) || !waitForWatchRetry(ctx, backoff) {
 					return
@@ -206,7 +206,10 @@ func (adapter *Adapter) consumeWatch(
 			switch event.Type {
 			case watch.Added, watch.Modified:
 				if generic {
-					display, tableErr := table(ctx, spec, object.GetNamespace(), object.GetName(), "")
+					display, tableErr := table(ctx, spec, tableRequest{
+						namespace: object.GetNamespace(),
+						name:      object.GetName(),
+					})
 					if tableErr != nil {
 						return tableErr
 					}

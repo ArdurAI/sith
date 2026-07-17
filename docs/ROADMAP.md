@@ -144,8 +144,11 @@ always-green slices, each leaving the binary more useful than the last:
 
 > **Local fan-out hardening evidence (2026-07-16).** #181 contains client-go operations that
 > outlive cancellation; #185 paginates Kubernetes resource lists within a deterministic
-> fleet-wide materialization budget and reports incomplete scopes explicitly. #190 tracks the
-> remaining generic server-table response bound so that path is not misrepresented as complete.
+> fleet-wide materialization budget and reports incomplete scopes explicitly. #190 applies the
+> same opaque-continuation discipline to generic server Tables, caps each response page at 4 MiB
+> and each request at 16 MiB, rejects ignored limits and continuation cycles, and retains display
+> fields only for selected facts. Unit adversarial coverage and a real second-page kind fixture
+> prove that the presentation path remains bounded without dropping late-page server columns.
 > #187 workspace-qualifies fleet-cache record identity, coverage, sync/pause/error state, and
 > change notifications; missing or mixed-workspace replace/watch mutations fail closed, with
 > race, fuzz, and real two-cluster kind coverage proving identical resource identities remain

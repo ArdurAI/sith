@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -220,6 +221,7 @@ func TestKindFleetFanout(t *testing.T) {
 		"kind-" + clusterNames[0]: false,
 		"kind-" + clusterNames[1]: false,
 	}
+	paginatedDisplay := false
 	for _, record := range genericSnapshot.Records {
 		if record.Kind == "ConfigMap" && record.Name == "sith-generic-sample" {
 			for _, field := range record.Display {
@@ -228,11 +230,22 @@ func TestKindFleetFanout(t *testing.T) {
 				}
 			}
 		}
+		if record.Kind == "ConfigMap" && record.Cluster == "kind-"+clusterNames[0] &&
+			record.Name == "sith-table-page-259" {
+			for _, field := range record.Display {
+				if field.Name == "Data" {
+					paginatedDisplay = true
+				}
+			}
+		}
 	}
 	for scope, seen := range genericScopes {
 		if !seen {
 			t.Errorf("generic lens did not return a ConfigMap from %s", scope)
 		}
+	}
+	if !paginatedDisplay {
+		t.Error("generic lens did not retain server columns from the second bounded Table page")
 	}
 	if genericSnapshot.Coverage.Reachable != 2 || !strings.Contains(genericStderr, "warning: covered 2/3 clusters") {
 		t.Fatalf("generic coverage/stderr = %#v/%q, want partial two-of-three", genericSnapshot.Coverage, genericStderr)
@@ -611,6 +624,9 @@ func seedKindResources(ctx context.Context, t *testing.T, kubeconfigPath string,
 			Namespace("default").Create(ctx, configMap, metav1.CreateOptions{}); err != nil {
 			t.Fatalf("create configmap in %s: %v", contextName, err)
 		}
+		if index == 0 {
+			seedPaginatedTableResources(ctx, t, client, contextName)
+		}
 		replicas := int64(index)
 		deployment := &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "apps/v1",
@@ -630,6 +646,51 @@ func seedKindResources(ctx context.Context, t *testing.T, kubeconfigPath string,
 		if _, err := client.Resource(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}).
 			Namespace("default").Create(ctx, deployment, metav1.CreateOptions{}); err != nil {
 			t.Fatalf("create deployment in %s: %v", contextName, err)
+		}
+	}
+}
+
+func seedPaginatedTableResources(
+	ctx context.Context,
+	t *testing.T,
+	client dynamic.Interface,
+	contextName string,
+) {
+	t.Helper()
+	const count = 260
+	const concurrency = 16
+	semaphore := make(chan struct{}, concurrency)
+	errors := make(chan error, count)
+	var waitGroup sync.WaitGroup
+	for index := range count {
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			case <-ctx.Done():
+				errors <- ctx.Err()
+				return
+			}
+			name := fmt.Sprintf("sith-table-page-%03d", index)
+			configMap := &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": "v1",
+				"kind":       "ConfigMap",
+				"metadata":   map[string]any{"name": name, "namespace": "default"},
+				"data":       map[string]any{"page": name},
+			}}
+			if _, err := client.Resource(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}).
+				Namespace("default").Create(ctx, configMap, metav1.CreateOptions{}); err != nil {
+				errors <- fmt.Errorf("create paginated table fixture %s in %s: %w", name, contextName, err)
+			}
+		}()
+	}
+	waitGroup.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
 		}
 	}
 }
