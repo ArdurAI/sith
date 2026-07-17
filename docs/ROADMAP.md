@@ -27,6 +27,13 @@ executable evidence and dependency caveats are in
 [`experiments/M0-ocm-falsification.md`](experiments/M0-ocm-falsification.md). The bespoke
 transport/agent scope is deleted; the hub track proceeds to Phase 1.
 
+> **Lifecycle-safe add-on convergence (2026-07-16).** #198 replaces the creation poll plus
+> one-shot availability wait with one absolute deadline and current-object checks. Transient
+> NotFound and delete/recreate transitions remain retryable, but the runner accepts availability
+> only after the same current UID reports `Available=True` twice. Authorization, API, duplicate or
+> malformed condition, and malformed identity failures remain terminal and do not print response
+> bodies.
+
 > **Phase-1 ClusterGateway authorization gate (2026-07-13).** M0 proves reverse-tunnel
 > connectivity and scoped-token RBAC; it does **not** authorize a Sith transport to use a
 > ClusterGateway proxy that forwards a hub caller's inbound `Authorization` header. The tracked
