@@ -80,7 +80,7 @@ e2e-oci: ## Build and inspect the local immutable OCI image contract for linux/a
 
 e2e-kind: ## Exercise adapter and binary against two real kind clusters
 	KIND_BIN="$(KIND)" KIND_NODE_IMAGE="$(KIND_NODE_IMAGE)" \
-		go test -race -count=1 -timeout=15m -tags='e2e kind' -run '^Test(KindFleetFanout|KindOCIImageContract)$$' ./tests/e2e
+		go test -race -count=1 -timeout=15m -tags='e2e kind' -run '^Test(KindFleetFanout|KindOCIImageContract|KindArgoApplicationProjection)$$' ./tests/e2e
 
 e2e-ocm: ## Prove direct ClusterProxy transport in the pinned two-spoke M0 lab
 	@set -euo pipefail; \
