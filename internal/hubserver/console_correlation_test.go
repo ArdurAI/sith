@@ -62,6 +62,22 @@ func consoleTestInventory(t *testing.T, querier hubfleet.FleetQuerier, enforcer 
 	return searcher
 }
 
+func noopConsoleCVE(t *testing.T) *hubfleet.CVESearcher {
+	t.Helper()
+	return consoleTestCVE(t, consoleFleetQuerierFunc(func(context.Context, tenancy.Scope, fleet.Query, time.Duration, time.Time) (fleet.QueryResult, error) {
+		return fleet.QueryResult{}, nil
+	}), fleetTestPEP(t, pep.AllowReadHook{}))
+}
+
+func consoleTestCVE(t *testing.T, querier hubfleet.FleetQuerier, enforcer *pep.Enforcer) *hubfleet.CVESearcher {
+	t.Helper()
+	searcher, err := hubfleet.NewCVESearcher(hubfleet.CVESearcherConfig{Querier: querier, PEP: enforcer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return searcher
+}
+
 func TestConsoleCorrelationUsesPurposeProofPEPAndMinimalProjection(t *testing.T) {
 	now := time.Date(2026, 7, 17, 15, 0, 0, 0, time.UTC)
 	verifier, privateKey := fleetTestVerifier(t, now)
@@ -106,8 +122,8 @@ func TestConsoleCorrelationUsesPurposeProofPEPAndMinimalProjection(t *testing.T)
 		Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
 			return fleet.FleetResult{}, nil
 		}),
-		Correlator: correlator, Inventory: noopConsoleInventory(t), PEP: enforcer, Now: func() time.Time { return now },
-		Random: bytes.NewReader(bytes.Repeat([]byte{0x72}, 128)),
+		Correlator: correlator, Inventory: noopConsoleInventory(t), CVE: noopConsoleCVE(t), PEP: enforcer, Now: func() time.Time { return now },
+		Random: bytes.NewReader(bytes.Repeat([]byte{0x72}, 192)),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -157,8 +173,8 @@ func TestConsoleCorrelationRejectsUnsafeRequestsBeforeQuery(t *testing.T) {
 			Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
 				return fleet.FleetResult{}, nil
 			}),
-			Correlator: correlator, Inventory: noopConsoleInventory(t), PEP: enforcer, Now: func() time.Time { return consoleNow },
-			Random: bytes.NewReader(bytes.Repeat([]byte{fill}, 128)),
+			Correlator: correlator, Inventory: noopConsoleInventory(t), CVE: noopConsoleCVE(t), PEP: enforcer, Now: func() time.Time { return consoleNow },
+			Random: bytes.NewReader(bytes.Repeat([]byte{fill}, 192)),
 		})
 		if err != nil {
 			t.Fatal(err)

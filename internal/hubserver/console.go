@@ -41,11 +41,14 @@ const (
 	consoleFleetCSRFDomain              = "sith-hub-console-fleet/v1"
 	consoleCorrelationDomain            = "sith-hub-console-correlation/v1"
 	consoleInventoryDomain              = "sith-hub-console-inventory/v1"
+	consoleCVEIdentifierDomain          = "sith-hub-console-cve-identifier/v1"
 	consoleCorrelationReadLimit         = 257
 	consoleCorrelationMaxMatches        = 256
 	consoleCorrelationMaxCoverageScopes = 1_000
 	consoleInventoryReadLimit           = 257
 	consoleInventoryMaxRecords          = 256
+	consoleCVEReadLimit                 = 257
+	consoleCVEMaxRecords                = 256
 	consoleMaximumSafeInteger           = int64(9_007_199_254_740_991)
 	defaultConsoleCSRFLifetime          = 5 * time.Minute
 	maximumConsoleCSRFLifetime          = 10 * time.Minute
@@ -61,6 +64,7 @@ type ConsoleHandlerConfig struct {
 	Reader       hubfleet.FleetReader
 	Correlator   *hubfleet.Correlator
 	Inventory    *hubfleet.InventorySearcher
+	CVE          *hubfleet.CVESearcher
 	PEP          *pep.Enforcer
 	CSRFLifetime time.Duration
 	Now          func() time.Time
@@ -74,6 +78,7 @@ type ConsoleHandler struct {
 	reader       hubfleet.FleetReader
 	correlator   *hubfleet.Correlator
 	inventory    *hubfleet.InventorySearcher
+	cve          *hubfleet.CVESearcher
 	pep          *pep.Enforcer
 	csrfLifetime time.Duration
 	now          func() time.Time
@@ -89,6 +94,7 @@ type consolePageData struct {
 	FleetCSRFToken       string
 	CorrelationCSRFToken string
 	InventoryCSRFToken   string
+	CVECSRFToken         string
 }
 
 type consoleFleetResponse struct {
@@ -133,11 +139,27 @@ type consoleInventoryResponse struct {
 	Assessment fleet.CoverageAssessment `json:"assessment"`
 }
 
+type consoleCVERecord struct {
+	Scope       string    `json:"scope"`
+	ImageDigest string    `json:"image_digest"`
+	Identifier  string    `json:"identifier"`
+	Severity    string    `json:"severity"`
+	ObservedAt  time.Time `json:"observed_at"`
+	Stale       bool      `json:"stale"`
+	StaleFor    string    `json:"stale_for,omitempty"`
+}
+
+type consoleCVEResponse struct {
+	Records    []consoleCVERecord       `json:"records"`
+	Coverage   fleet.Coverage           `json:"coverage"`
+	Assessment fleet.CoverageAssessment `json:"assessment"`
+}
+
 // NewConsoleHandler constructs a separate cookie-authenticated read surface. It does not alter
 // bearer API authentication and exposes no refresh, connector, local-operation, or write seam.
 func NewConsoleHandler(config ConsoleHandlerConfig) (*ConsoleHandler, error) {
-	if config.Verifier == nil || config.Reader == nil || config.Correlator == nil || config.Inventory == nil || config.PEP == nil {
-		return nil, fmt.Errorf("construct Hub console: verifier, reader, correlator, inventory searcher, and policy enforcer are required")
+	if config.Verifier == nil || config.Reader == nil || config.Correlator == nil || config.Inventory == nil || config.CVE == nil || config.PEP == nil {
+		return nil, fmt.Errorf("construct Hub console: verifier, reader, correlator, inventory searcher, CVE searcher, and policy enforcer are required")
 	}
 	if config.CSRFLifetime == 0 {
 		config.CSRFLifetime = defaultConsoleCSRFLifetime
@@ -160,7 +182,7 @@ func NewConsoleHandler(config ConsoleHandlerConfig) (*ConsoleHandler, error) {
 		return nil, fmt.Errorf("construct Hub console: page template is invalid")
 	}
 	handler := &ConsoleHandler{
-		verifier: config.Verifier, authObserver: config.AuthObserver, reader: config.Reader, correlator: config.Correlator, inventory: config.Inventory, pep: config.PEP,
+		verifier: config.Verifier, authObserver: config.AuthObserver, reader: config.Reader, correlator: config.Correlator, inventory: config.Inventory, cve: config.CVE, pep: config.PEP,
 		csrfLifetime: config.CSRFLifetime, now: config.Now, random: config.Random, page: page, assets: assets,
 	}
 	if _, err := io.ReadFull(handler.random, handler.csrfKey[:]); err != nil {
@@ -196,9 +218,14 @@ func (handler *ConsoleHandler) ServePage(response http.ResponseWriter, request *
 		writeConsoleError(response, http.StatusServiceUnavailable, "console_unavailable")
 		return
 	}
+	cveCSRFToken, err := handler.newCSRFToken(rawSession, scope.WorkspaceID(), consoleCVEIdentifierDomain)
+	if err != nil {
+		writeConsoleError(response, http.StatusServiceUnavailable, "console_unavailable")
+		return
+	}
 	var rendered bytes.Buffer
 	if err := handler.page.Execute(&rendered, consolePageData{
-		Workspace: string(scope.WorkspaceID()), FleetCSRFToken: fleetCSRFToken, CorrelationCSRFToken: correlationCSRFToken, InventoryCSRFToken: inventoryCSRFToken,
+		Workspace: string(scope.WorkspaceID()), FleetCSRFToken: fleetCSRFToken, CorrelationCSRFToken: correlationCSRFToken, InventoryCSRFToken: inventoryCSRFToken, CVECSRFToken: cveCSRFToken,
 	}); err != nil {
 		writeConsoleError(response, http.StatusServiceUnavailable, "console_unavailable")
 		return
@@ -295,6 +322,37 @@ func (handler *ConsoleHandler) ServeInventory(response http.ResponseWriter, requ
 	projected, err := projectConsoleInventory(result, scope.WorkspaceID(), inventoryRequest)
 	if err != nil {
 		writeConsoleError(response, http.StatusServiceUnavailable, "inventory_unavailable")
+		return
+	}
+	writeConsoleJSON(response, http.StatusOK, projected)
+}
+
+// ServeCVEIdentifier answers one explicit canonical CVE question through the existing
+// tenant-scoped PEP service, then projects immutable runtime-image evidence to a closed response.
+func (handler *ConsoleHandler) ServeCVEIdentifier(response http.ResponseWriter, request *http.Request) {
+	setConsoleSecurityHeaders(response.Header())
+	workspaceID, cveRequest, ok := canonicalConsoleCVEIdentifierRequest(request)
+	if !ok {
+		writeConsoleError(response, http.StatusNotFound, "not_found")
+		return
+	}
+	scope, rawSession, ok := handler.authorize(response, request, workspaceID)
+	if !ok {
+		return
+	}
+	if !sameOriginFetch(request.Header.Values("Sec-Fetch-Site")) ||
+		!handler.validCSRFToken(request.Header.Values(consoleCSRFHeader), rawSession, scope.WorkspaceID(), consoleCVEIdentifierDomain) {
+		writeConsoleError(response, http.StatusForbidden, "forbidden")
+		return
+	}
+	result, err := handler.cve.SearchByIdentifier(request.Context(), scope, cveRequest)
+	if err != nil {
+		writeConsoleError(response, http.StatusServiceUnavailable, "cve_evidence_unavailable")
+		return
+	}
+	projected, err := projectConsoleCVEIdentifier(result, scope.WorkspaceID(), cveRequest)
+	if err != nil {
+		writeConsoleError(response, http.StatusServiceUnavailable, "cve_evidence_unavailable")
 		return
 	}
 	writeConsoleJSON(response, http.StatusOK, projected)
@@ -462,6 +520,34 @@ func canonicalConsoleInventoryRequest(request *http.Request) (tenancy.WorkspaceI
 	return workspaceID, inventoryRequest, true
 }
 
+func canonicalConsoleCVEIdentifierRequest(request *http.Request) (tenancy.WorkspaceID, hubfleet.CVEIdentifierSearchRequest, bool) {
+	if request == nil || request.Method != http.MethodGet || request.URL == nil || request.URL.Fragment != "" ||
+		request.URL.RawQuery == "" || len(request.URL.RawQuery) > 96 {
+		return "", hubfleet.CVEIdentifierSearchRequest{}, false
+	}
+	workspaceID := tenancy.WorkspaceID(request.PathValue("workspace"))
+	if tenancy.ValidateWorkspaceID(workspaceID) != nil {
+		return "", hubfleet.CVEIdentifierSearchRequest{}, false
+	}
+	wantPath := "/v1/workspaces/" + url.PathEscape(string(workspaceID)) + "/console/cves"
+	if request.URL.EscapedPath() != wantPath {
+		return "", hubfleet.CVEIdentifierSearchRequest{}, false
+	}
+	values, err := url.ParseQuery(request.URL.RawQuery)
+	if err != nil || len(values) != 1 || len(values["identifier"]) != 1 || values.Encode() != request.URL.RawQuery {
+		return "", hubfleet.CVEIdentifierSearchRequest{}, false
+	}
+	identifier := values.Get("identifier")
+	if len(identifier) > 64 {
+		return "", hubfleet.CVEIdentifierSearchRequest{}, false
+	}
+	canonical, err := fleet.NormalizeCVEIdentifier(identifier)
+	if err != nil || canonical != identifier {
+		return "", hubfleet.CVEIdentifierSearchRequest{}, false
+	}
+	return workspaceID, hubfleet.CVEIdentifierSearchRequest{Identifier: identifier, Limit: consoleCVEReadLimit}, true
+}
+
 func projectConsoleCorrelation(
 	result fleet.QueryResult,
 	workspaceID tenancy.WorkspaceID,
@@ -552,6 +638,63 @@ func projectConsoleInventory(
 		records = append(records, record)
 	}
 	return consoleInventoryResponse{Records: records, Coverage: coverage, Assessment: coverage.Assessment()}, nil
+}
+
+func projectConsoleCVEIdentifier(
+	result fleet.QueryResult,
+	workspaceID tenancy.WorkspaceID,
+	request hubfleet.CVEIdentifierSearchRequest,
+) (consoleCVEResponse, error) {
+	if workspaceID == "" || len(result.Facts) > consoleCVEMaxRecords {
+		return consoleCVEResponse{}, fmt.Errorf("project console CVE evidence: invalid result bounds")
+	}
+	coverage, err := projectConsoleCoverage(result.Coverage)
+	if err != nil {
+		return consoleCVEResponse{}, err
+	}
+	records := make([]consoleCVERecord, 0, len(result.Facts))
+	seen := make(map[string]struct{}, len(result.Facts))
+	for _, fact := range result.Facts {
+		if fact.Workspace != string(workspaceID) || fact.Kind != fleet.FactCVE || fact.Ref.SourceKind != hubfleet.SourceKind ||
+			fact.Source != fact.Ref.Scope || fact.Ref.Kind != "Image" || fact.Ref.Namespace != "" ||
+			len(fact.Ref.Attributes) != 0 || len(fact.Display) != 0 || fact.ObservedAt.IsZero() ||
+			fact.Provenance.Adapter != hubfleet.SourceKind || fact.Provenance.ProtocolV != "1.0.0" ||
+			fact.Provenance.NativeID != "" || fact.Provenance.DeepLink != "" || fact.Provenance.Collector != "" ||
+			validateConsoleProjectionText(fact.Ref.Scope, 256, false) != nil ||
+			validateConsoleProjectionText(fact.StaleFor, 128, true) != nil || !validConsoleStaleFor(fact.Stale, fact.StaleFor) {
+			return consoleCVEResponse{}, fmt.Errorf("project console CVE evidence: invalid stored fact")
+		}
+		if err := rejectConsoleDuplicateJSONMembers(fact.Observed); err != nil {
+			return consoleCVEResponse{}, fmt.Errorf("project console CVE evidence: invalid stored observation")
+		}
+		decoder := json.NewDecoder(bytes.NewReader(fact.Observed))
+		decoder.DisallowUnknownFields()
+		var observation fleet.CVEObservation
+		if err := decoder.Decode(&observation); err != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+			fleet.ValidateCVEObservation(observation) != nil || observation.Image != fact.Ref.Name {
+			return consoleCVEResponse{}, fmt.Errorf("project console CVE evidence: invalid stored observation")
+		}
+		found := false
+		for _, identifier := range observation.IDs {
+			if identifier == request.Identifier {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return consoleCVEResponse{}, fmt.Errorf("project console CVE evidence: stored observation does not match selector")
+		}
+		identity := fact.Ref.Scope + "\x00" + observation.Image + "\x00" + request.Identifier
+		if _, exists := seen[identity]; exists {
+			return consoleCVEResponse{}, fmt.Errorf("project console CVE evidence: duplicate stored fact")
+		}
+		seen[identity] = struct{}{}
+		records = append(records, consoleCVERecord{
+			Scope: fact.Ref.Scope, ImageDigest: observation.Image, Identifier: request.Identifier, Severity: observation.Severity,
+			ObservedAt: fact.ObservedAt.UTC(), Stale: fact.Stale, StaleFor: fact.StaleFor,
+		})
+	}
+	return consoleCVEResponse{Records: records, Coverage: coverage, Assessment: coverage.Assessment()}, nil
 }
 
 func decodeConsoleInventory(payload json.RawMessage, kind string) (consoleInventoryRecord, error) {

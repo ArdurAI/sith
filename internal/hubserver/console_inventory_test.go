@@ -63,8 +63,8 @@ func TestConsoleInventoryUsesPurposeProofPEPAndMinimalProjection(t *testing.T) {
 		Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
 			return fleet.FleetResult{}, nil
 		}),
-		Correlator: noopConsoleCorrelator(t), Inventory: inventory, PEP: enforcer, Now: func() time.Time { return now },
-		Random: bytes.NewReader(bytes.Repeat([]byte{0x73}, 128)),
+		Correlator: noopConsoleCorrelator(t), Inventory: inventory, CVE: noopConsoleCVE(t), PEP: enforcer, Now: func() time.Time { return now },
+		Random: bytes.NewReader(bytes.Repeat([]byte{0x73}, 192)),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -115,8 +115,8 @@ func TestConsoleInventoryRejectsUnsafeRequestsBeforeQuery(t *testing.T) {
 			Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
 				return fleet.FleetResult{}, nil
 			}),
-			Correlator: noopConsoleCorrelator(t), Inventory: inventory, PEP: enforcer, Now: func() time.Time { return consoleNow },
-			Random: bytes.NewReader(bytes.Repeat([]byte{fill}, 128)),
+			Correlator: noopConsoleCorrelator(t), Inventory: inventory, CVE: noopConsoleCVE(t), PEP: enforcer, Now: func() time.Time { return consoleNow },
+			Random: bytes.NewReader(bytes.Repeat([]byte{fill}, 192)),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -238,8 +238,8 @@ func TestConsoleInventoryHidesServiceErrors(t *testing.T) {
 		Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
 			return fleet.FleetResult{}, nil
 		}),
-		Correlator: noopConsoleCorrelator(t), Inventory: inventory, PEP: enforcer, Now: func() time.Time { return now },
-		Random: bytes.NewReader(bytes.Repeat([]byte{0x65}, 128)),
+		Correlator: noopConsoleCorrelator(t), Inventory: inventory, CVE: noopConsoleCVE(t), PEP: enforcer, Now: func() time.Time { return now },
+		Random: bytes.NewReader(bytes.Repeat([]byte{0x65}, 192)),
 	})
 	if err != nil {
 		t.Fatal(err)

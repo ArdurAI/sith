@@ -153,17 +153,27 @@ availability/readiness counts. Pod image digests, raw observations, display hint
 workspace fields, attributes, and provenance remain behind the evidence boundary; malformed or
 over-bound stored results fail closed.
 
+The separate `GET /v1/workspaces/{workspace}/console/cves` adapter accepts one canonical uppercase
+CVE identifier and reuses the existing tenant-scoped `hubfleet.CVESearcher` with its dedicated
+`fleet.cve.identifier.search` PEP verb. Its fourth non-interchangeable session/workspace proof and
+same-origin Fetch Metadata gate precede one 257-row-sentinel persisted read. The browser receives at
+most 256 records containing only the cluster scope, immutable image digest, exact identifier,
+canonical severity, observation time, and derived staleness. Raw observations, the complete
+identifier list, display hints, source payloads, workspace fields, attributes, and provenance stay
+behind the evidence boundary; mutable image references, selector mismatches, malformed or duplicate
+stored facts, and over-bound results fail closed.
+
 The session JWT never enters HTML, JavaScript, a URL, browser storage, or a log. All console
 responses are `no-store` and use a restrictive same-origin CSP; all data adapters reject
-cross-site Fetch Metadata. The UI shows reachability, observation times, non-Healthy matches, and
-normalized inventory beside stale/unreachable/truncated/unaccounted coverage without claiming an
-empty or partial answer is healthy or complete. Correlation and inventory run only after explicit
-submit. The console performs no automatic
+cross-site Fetch Metadata. The UI shows reachability, observation times, non-Healthy matches,
+normalized inventory, and runtime CVE evidence beside stale/unreachable/truncated/unaccounted
+coverage without claiming an empty or partial answer is healthy, complete, or CVE-free.
+Correlation, inventory, and CVE lookup run only after explicit submit. The console performs no automatic
 polling and cannot invoke collector refresh, a connector, local `exec`/edit/log/port-forward
 operations, or any write. The bearer fleet API remains bearer-only, and no generic cookie
 authentication middleware exists. Query identities are ordinary resource metadata, not secrets;
-they may appear in access logs. Each submit adds one bounded Hub database read and no cloud or
-spoke egress.
+they may appear in access logs. Each submit adds one bounded Hub database read and no cloud,
+scanner, or spoke egress.
 
 Cloud-IAM identity starts from the same fail-closed exchange boundary. The foundation accepts only
 a verifier-normalized provider, explicit realm, immutable subject, audience, and bounded lifetime;

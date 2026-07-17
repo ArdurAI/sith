@@ -93,6 +93,8 @@ func TestConsoleProductionBoundaryIsReadOnlyAndStructurallyPinned(t *testing.T) 
 		`Correlator: consoleCorrelator`,
 		`hubfleet.NewInventorySearcher(hubfleet.InventorySearcherConfig{Querier: database, PEP: enforcer})`,
 		`Inventory: consoleInventory`,
+		`consoleCVE, err := hubfleet.NewCVESearcher(hubfleet.CVESearcherConfig{Querier: database, PEP: enforcer})`,
+		`CVE: consoleCVE`,
 	} {
 		if strings.Count(string(runtimeSource), dependency) != 1 {
 			t.Fatalf("Hub runtime does not compose exact console dependency %q once", dependency)
@@ -103,6 +105,7 @@ func TestConsoleProductionBoundaryIsReadOnlyAndStructurallyPinned(t *testing.T) 
 		`mux.Handle("GET /v1/workspaces/{workspace}/console/fleet", http.HandlerFunc(consoleHandler.ServeFleet))`,
 		`mux.Handle("GET /v1/workspaces/{workspace}/console/correlate", http.HandlerFunc(consoleHandler.ServeCorrelation))`,
 		`mux.Handle("GET /v1/workspaces/{workspace}/console/inventory", http.HandlerFunc(consoleHandler.ServeInventory))`,
+		`mux.Handle("GET /v1/workspaces/{workspace}/console/cves", http.HandlerFunc(consoleHandler.ServeCVEIdentifier))`,
 		`mux.Handle("GET /v1/console/assets/console.css", http.HandlerFunc(consoleHandler.ServeCSS))`,
 		`mux.Handle("GET /v1/console/assets/console.js", http.HandlerFunc(consoleHandler.ServeJavaScript))`,
 	} {
