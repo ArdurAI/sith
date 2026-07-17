@@ -5,6 +5,7 @@
   const csrfToken = document.querySelector('meta[name="sith-csrf"]')?.content || "";
   const correlationCSRFToken = document.querySelector('meta[name="sith-correlation-csrf"]')?.content || "";
   const inventoryCSRFToken = document.querySelector('meta[name="sith-inventory-csrf"]')?.content || "";
+  const cveCSRFToken = document.querySelector('meta[name="sith-cve-csrf"]')?.content || "";
   const rail = document.getElementById("coverage-rail");
   const summary = document.getElementById("coverage-summary");
   const details = document.getElementById("coverage-details");
@@ -34,6 +35,15 @@
   const inventoryTime = document.getElementById("inventory-time");
   const inventoryGaps = document.getElementById("inventory-gaps");
   const inventoryList = document.getElementById("inventory-list");
+  const cveForm = document.getElementById("cve-form");
+  const cveIdentifier = document.getElementById("cve-identifier");
+  const cveButton = document.getElementById("run-cve");
+  const cveState = document.getElementById("cve-state");
+  const cveAnswer = document.getElementById("cve-answer");
+  const cveSummary = document.getElementById("cve-summary");
+  const cveTime = document.getElementById("cve-time");
+  const cveGaps = document.getElementById("cve-gaps");
+  const cveList = document.getElementById("cve-list");
 
   const setState = (message, error = false) => {
     state.hidden = false;
@@ -63,6 +73,14 @@
     inventoryList.replaceChildren();
   };
 
+  const clearCVE = () => {
+    cveAnswer.hidden = true;
+    cveSummary.textContent = "";
+    cveTime.textContent = "No CVE read yet";
+    cveGaps.replaceChildren();
+    cveList.replaceChildren();
+  };
+
   const setCorrelationState = (message, error = false, visuallyHidden = false) => {
     correlationState.hidden = false;
     correlationState.classList.toggle("error", error);
@@ -77,6 +95,14 @@
     inventoryState.classList.toggle("visually-hidden", visuallyHidden);
     inventoryState.replaceChildren(document.createElement("p"));
     inventoryState.firstElementChild.textContent = message;
+  };
+
+  const setCVEState = (message, error = false, visuallyHidden = false) => {
+    cveState.hidden = false;
+    cveState.classList.toggle("error", error);
+    cveState.classList.toggle("visually-hidden", visuallyHidden);
+    cveState.replaceChildren(document.createElement("p"));
+    cveState.firstElementChild.textContent = message;
   };
 
   const setSessionExpired = () => {
@@ -100,6 +126,8 @@
     setCorrelationState("The session expired. Sign in again before running a correlation.", true);
     clearInventory();
     setInventoryState("The session expired. Sign in again before reading inventory.", true);
+    clearCVE();
+    setCVEState("The session expired. Sign in again before reading CVE evidence.", true);
   };
 
   const setProofExpired = () => {
@@ -122,6 +150,77 @@
   };
 
   const stringSet = (values) => new Set(Array.isArray(values) ? values.filter((value) => typeof value === "string") : []);
+
+  const hasOnlyKeys = (value, required, optional = []) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const keys = Object.keys(value);
+    return required.every((key) => Object.hasOwn(value, key)) &&
+      keys.every((key) => required.includes(key) || optional.includes(key));
+  };
+
+  const validProjectedText = (value, maximum) => typeof value === "string" && value.length > 0 &&
+    value.length <= maximum && value.trim() === value && !/[\u0000-\u001f\u007f]/.test(value);
+
+  const validCoverageScopes = (values) => {
+    if (values === undefined) return [];
+    if (!Array.isArray(values) || values.length > 1000 || values.some((value) => !validProjectedText(value, 256))) return null;
+    const sorted = [...values].sort((left, right) => left.localeCompare(right));
+    return new Set(sorted).size === sorted.length ? sorted : null;
+  };
+
+  const expectedCoverageAssessment = (coverage) => {
+    if (!hasOnlyKeys(coverage, ["requested", "reachable"], ["unreachable", "stale", "truncated"]) ||
+      !Number.isSafeInteger(coverage.requested) || coverage.requested < 0 ||
+      !Number.isSafeInteger(coverage.reachable) || coverage.reachable < 0) return null;
+    const unreachable = validCoverageScopes(coverage.unreachable);
+    const stale = validCoverageScopes(coverage.stale);
+    const truncated = validCoverageScopes(coverage.truncated);
+    if (!unreachable || !stale || !truncated || unreachable.length + stale.length + truncated.length > 1000) return null;
+    let inconsistent = coverage.reachable > coverage.requested || stale.length > coverage.requested ||
+      truncated.length > coverage.reachable || unreachable.some((scope) => truncated.includes(scope));
+    let unaccounted = 0;
+    if (!inconsistent) {
+      const remaining = coverage.requested - coverage.reachable;
+      if (unreachable.length > remaining) inconsistent = true;
+      else if (unreachable.length < remaining) unaccounted = remaining - unreachable.length;
+    }
+    const gaps = [];
+    if (inconsistent) gaps.push("inconsistent");
+    if (unreachable.length > 0) gaps.push("unreachable");
+    if (stale.length > 0) gaps.push("stale");
+    if (truncated.length > 0) gaps.push("truncated");
+    if (unaccounted > 0) gaps.push("unaccounted");
+    return { complete: gaps.length === 0, gaps, unreachable, stale, truncated, unaccounted, inconsistent };
+  };
+
+  const validCVEResponse = (payload, expectedIdentifier) => {
+    if (!hasOnlyKeys(payload, ["records", "coverage", "assessment"]) || !Array.isArray(payload.records) ||
+      payload.records.length > 256 || !/^CVE-[0-9]{4}-[0-9]{4,}$/.test(expectedIdentifier)) return false;
+    const identities = new Set();
+    for (const record of payload.records) {
+      if (!hasOnlyKeys(record, ["scope", "image_digest", "identifier", "severity", "observed_at", "stale"], ["stale_for"]) ||
+        !validProjectedText(record.scope, 256) || !/^sha256:[0-9a-f]{64}$/.test(record.image_digest) ||
+        record.identifier !== expectedIdentifier || !["critical", "high", "medium", "low", "unknown"].includes(record.severity) ||
+        typeof record.observed_at !== "string" || Number.isNaN(Date.parse(record.observed_at)) || typeof record.stale !== "boolean" ||
+        (record.stale ? !validProjectedText(record.stale_for, 128) : record.stale_for !== undefined)) return false;
+      const identity = `${record.scope}\u0000${record.image_digest}\u0000${record.identifier}`;
+      if (identities.has(identity)) return false;
+      identities.add(identity);
+    }
+    const expected = expectedCoverageAssessment(payload.coverage);
+    if (!expected || !hasOnlyKeys(payload.assessment, ["complete", "inconsistent"], ["gaps", "unreachable", "stale", "truncated", "unaccounted"]) ||
+      typeof payload.assessment.complete !== "boolean" || typeof payload.assessment.inconsistent !== "boolean") return false;
+    const actual = {
+      complete: payload.assessment.complete,
+      gaps: payload.assessment.gaps === undefined ? [] : payload.assessment.gaps,
+      unreachable: payload.assessment.unreachable === undefined ? [] : payload.assessment.unreachable,
+      stale: payload.assessment.stale === undefined ? [] : payload.assessment.stale,
+      truncated: payload.assessment.truncated === undefined ? [] : payload.assessment.truncated,
+      unaccounted: payload.assessment.unaccounted === undefined ? 0 : payload.assessment.unaccounted,
+      inconsistent: payload.assessment.inconsistent,
+    };
+    return JSON.stringify(actual) === JSON.stringify(expected);
+  };
 
   const clusterState = (cluster, coverage) => {
     const name = typeof cluster?.name === "string" ? cluster.name : "";
@@ -378,6 +477,127 @@
     }
   };
 
+  const setCVEProofExpired = () => {
+    clearCVE();
+    cveState.hidden = false;
+    cveState.classList.add("error");
+    cveState.classList.remove("visually-hidden");
+    const message = document.createElement("p");
+    message.append("The CVE evidence proof expired or workspace access changed. ");
+    const reloadPage = document.createElement("a");
+    reloadPage.className = "session-link";
+    reloadPage.href = window.location.pathname;
+    reloadPage.textContent = "Reload console";
+    message.append(reloadPage, " before reading again.");
+    cveState.replaceChildren(message);
+  };
+
+  const renderCVE = (payload) => {
+    const records = Array.isArray(payload.records) ? payload.records : [];
+    const coverage = payload.coverage || {};
+    const assessment = payload.assessment || {};
+    cveList.replaceChildren();
+    records.forEach((record, index) => {
+      const row = document.createElement("li");
+      row.className = "cve-row";
+
+      const sequence = document.createElement("span");
+      sequence.className = "cluster-sequence";
+      sequence.textContent = String(index + 1).padStart(2, "0");
+
+      const identity = document.createElement("div");
+      const identifier = document.createElement("h3");
+      identifier.className = "cluster-name";
+      identifier.textContent = typeof record?.identifier === "string" ? record.identifier : "CVE evidence";
+      const digest = document.createElement("p");
+      digest.className = "digest-address";
+      digest.textContent = typeof record?.image_digest === "string" ? record.image_digest : "Digest unavailable";
+      const scope = document.createElement("p");
+      scope.className = "cluster-source";
+      scope.textContent = `Cluster ${typeof record?.scope === "string" ? record.scope : "unknown"}`;
+      identity.append(identifier, digest, scope);
+
+      const observed = document.createElement("p");
+      observed.className = "cluster-observed";
+      observed.textContent = observedLabel(record?.observed_at);
+
+      const severity = document.createElement("span");
+      const severityValue = typeof record?.severity === "string" ? record.severity : "unknown";
+      severity.className = `severity-badge ${["critical", "high", "medium", "low", "unknown"].includes(severityValue) ? severityValue : "unknown"}`;
+      severity.textContent = severityValue;
+
+      const freshness = document.createElement("p");
+      freshness.className = "match-freshness";
+      freshness.textContent = record?.stale
+        ? `Stale · ${typeof record?.stale_for === "string" ? record.stale_for : "age unavailable"}`
+        : "Current observation";
+
+      row.append(sequence, identity, observed, severity, freshness);
+      cveList.append(row);
+    });
+
+    const requested = Number.isSafeInteger(coverage.requested) ? coverage.requested : 0;
+    const reachable = Number.isSafeInteger(coverage.reachable) ? coverage.reachable : 0;
+    const gaps = Array.isArray(assessment.gaps) ? assessment.gaps.join(", ") : "unknown";
+    if (requested === 0) {
+      cveSummary.textContent = "No cluster scopes were requested. No CVE-evidence claim can be made.";
+    } else if (assessment.complete && records.length === 0) {
+      cveSummary.textContent = `No matching runtime CVE observation was found across ${reachable} of ${requested} clusters with complete current coverage.`;
+    } else if (assessment.complete) {
+      cveSummary.textContent = `${records.length} runtime CVE observation${records.length === 1 ? "" : "s"} found across complete current coverage (${reachable} of ${requested} clusters).`;
+    } else {
+      cveSummary.textContent = `${records.length} runtime CVE observation${records.length === 1 ? "" : "s"} found; ${reachable} of ${requested} clusters answered. This is not complete evidence: ${gaps || "unclassified gap"}.`;
+    }
+    renderAssessmentDetails(cveGaps, assessment, "No named CVE evidence coverage gaps.");
+    cveTime.textContent = `Read ${new Date().toISOString()}`;
+    setCVEState(`CVE evidence read complete. ${cveSummary.textContent}`, false, true);
+    cveAnswer.hidden = false;
+  };
+
+  const runCVE = async (event) => {
+    event.preventDefault();
+    clearCVE();
+    const identifier = cveIdentifier.value;
+    if (!cveForm.checkValidity() || !/^CVE-[0-9]{4}-[0-9]{4,}$/.test(identifier)) {
+      cveIdentifier.setCustomValidity("Enter a canonical uppercase CVE identifier, for example CVE-2026-0001.");
+      cveForm.reportValidity();
+      cveIdentifier.setCustomValidity("");
+      setCVEState("Enter one canonical uppercase CVE identifier. No evidence read was run.", true);
+      return;
+    }
+    const parameters = new URLSearchParams();
+    parameters.set("identifier", identifier);
+    cveButton.disabled = true;
+    setCVEState("Reading persisted, tenant-scoped runtime CVE evidence.");
+    try {
+      const response = await fetch(`${window.location.pathname}/cves?${parameters.toString()}`, {
+        method: "GET",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { "X-Sith-CSRF": cveCSRFToken },
+      });
+      if (response.status === 401) {
+        setSessionExpired();
+        return;
+      }
+      if (response.status === 403) {
+        setCVEProofExpired();
+        return;
+      }
+      if (!response.ok) throw new Error("CVE evidence request refused");
+      const payload = await response.json();
+      if (!validCVEResponse(payload, identifier)) {
+        throw new Error("invalid CVE evidence response");
+      }
+      renderCVE(payload);
+    } catch (_error) {
+      clearCVE();
+      setCVEState("The persisted CVE evidence could not be read. No scanner refresh, spoke request, or write was attempted.", true);
+    } finally {
+      cveButton.disabled = false;
+    }
+  };
+
   const setCorrelationProofExpired = () => {
     clearCorrelation();
     correlationState.hidden = false;
@@ -545,6 +765,7 @@
 
   reload.addEventListener("click", readFleet);
   inventoryForm.addEventListener("submit", runInventory);
+  cveForm.addEventListener("submit", runCVE);
   correlationForm.addEventListener("submit", runCorrelation);
   readFleet();
 })();

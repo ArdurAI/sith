@@ -8,6 +8,7 @@
   <meta name="sith-csrf" content="{{.FleetCSRFToken}}">
   <meta name="sith-correlation-csrf" content="{{.CorrelationCSRFToken}}">
   <meta name="sith-inventory-csrf" content="{{.InventoryCSRFToken}}">
+  <meta name="sith-cve-csrf" content="{{.CVECSRFToken}}">
   <title>Sith fleet trust console</title>
   <link rel="stylesheet" href="/v1/console/assets/console.css">
   <script src="/v1/console/assets/console.js" defer></script>
@@ -90,6 +91,36 @@
         </div>
         <ul id="inventory-gaps" class="coverage-details inventory-gaps" aria-label="Inventory coverage gaps"></ul>
         <ol id="inventory-list" class="inventory-list" aria-label="Normalized inventory records"></ol>
+      </div>
+    </section>
+
+    <section class="cve-panel" aria-labelledby="cve-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Runtime vulnerability evidence</p>
+          <h2 id="cve-title">Where was this CVE observed?</h2>
+        </div>
+        <p class="query-contract">Maximum 256 records · immutable digests only</p>
+      </div>
+      <p class="cve-intro">Enter one canonical CVE identifier. Sith reports only persisted observations tied to immutable runtime image digests and keeps named coverage gaps beside the evidence.</p>
+      <form id="cve-form" class="cve-form" novalidate>
+        <label for="cve-identifier">
+          <span>CVE identifier</span>
+          <input id="cve-identifier" name="identifier" type="text" required minlength="13" maxlength="64" autocomplete="off" spellcheck="false" placeholder="CVE-2026-0001" aria-describedby="cve-input-help">
+        </label>
+        <p id="cve-input-help" class="input-help">Use uppercase canonical form, for example CVE-2026-0001.</p>
+        <button id="run-cve" class="cve-button" type="submit">Read CVE evidence</button>
+      </form>
+      <div id="cve-state" class="console-state cve-state" role="status" aria-live="polite">
+        <p>No CVE evidence has been read. No absence claim is active.</p>
+      </div>
+      <div id="cve-answer" class="cve-answer" hidden>
+        <div class="answer-heading">
+          <p id="cve-summary" class="correlation-summary"></p>
+          <p id="cve-time" class="snapshot-time">No CVE read yet</p>
+        </div>
+        <ul id="cve-gaps" class="coverage-details" aria-label="CVE evidence coverage gaps"></ul>
+        <ol id="cve-list" class="cve-list" aria-label="Runtime CVE evidence records"></ol>
       </div>
     </section>
 
