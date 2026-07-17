@@ -91,6 +91,8 @@ func TestConsoleProductionBoundaryIsReadOnlyAndStructurallyPinned(t *testing.T) 
 	for _, dependency := range []string{
 		`hubfleet.NewCorrelator(hubfleet.CorrelatorConfig{Querier: database, PEP: enforcer})`,
 		`Correlator: consoleCorrelator`,
+		`hubfleet.NewInventorySearcher(hubfleet.InventorySearcherConfig{Querier: database, PEP: enforcer})`,
+		`Inventory: consoleInventory`,
 	} {
 		if strings.Count(string(runtimeSource), dependency) != 1 {
 			t.Fatalf("Hub runtime does not compose exact console dependency %q once", dependency)
@@ -100,6 +102,7 @@ func TestConsoleProductionBoundaryIsReadOnlyAndStructurallyPinned(t *testing.T) 
 		`mux.Handle("GET /v1/workspaces/{workspace}/console", http.HandlerFunc(consoleHandler.ServePage))`,
 		`mux.Handle("GET /v1/workspaces/{workspace}/console/fleet", http.HandlerFunc(consoleHandler.ServeFleet))`,
 		`mux.Handle("GET /v1/workspaces/{workspace}/console/correlate", http.HandlerFunc(consoleHandler.ServeCorrelation))`,
+		`mux.Handle("GET /v1/workspaces/{workspace}/console/inventory", http.HandlerFunc(consoleHandler.ServeInventory))`,
 		`mux.Handle("GET /v1/console/assets/console.css", http.HandlerFunc(consoleHandler.ServeCSS))`,
 		`mux.Handle("GET /v1/console/assets/console.js", http.HandlerFunc(consoleHandler.ServeJavaScript))`,
 	} {

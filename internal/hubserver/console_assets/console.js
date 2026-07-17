@@ -4,6 +4,7 @@
   const workspace = document.querySelector('meta[name="sith-workspace"]')?.content || "";
   const csrfToken = document.querySelector('meta[name="sith-csrf"]')?.content || "";
   const correlationCSRFToken = document.querySelector('meta[name="sith-correlation-csrf"]')?.content || "";
+  const inventoryCSRFToken = document.querySelector('meta[name="sith-inventory-csrf"]')?.content || "";
   const rail = document.getElementById("coverage-rail");
   const summary = document.getElementById("coverage-summary");
   const details = document.getElementById("coverage-details");
@@ -22,6 +23,17 @@
   const correlationTime = document.getElementById("correlation-time");
   const correlationGaps = document.getElementById("correlation-gaps");
   const correlationList = document.getElementById("correlation-list");
+  const inventoryForm = document.getElementById("inventory-form");
+  const inventoryKind = document.getElementById("inventory-kind");
+  const inventoryNamespace = document.getElementById("inventory-namespace");
+  const inventoryName = document.getElementById("inventory-name");
+  const inventoryButton = document.getElementById("run-inventory");
+  const inventoryState = document.getElementById("inventory-state");
+  const inventoryAnswer = document.getElementById("inventory-answer");
+  const inventorySummary = document.getElementById("inventory-summary");
+  const inventoryTime = document.getElementById("inventory-time");
+  const inventoryGaps = document.getElementById("inventory-gaps");
+  const inventoryList = document.getElementById("inventory-list");
 
   const setState = (message, error = false) => {
     state.hidden = false;
@@ -43,12 +55,28 @@
     correlationList.replaceChildren();
   };
 
+  const clearInventory = () => {
+    inventoryAnswer.hidden = true;
+    inventorySummary.textContent = "";
+    inventoryTime.textContent = "No inventory read yet";
+    inventoryGaps.replaceChildren();
+    inventoryList.replaceChildren();
+  };
+
   const setCorrelationState = (message, error = false, visuallyHidden = false) => {
     correlationState.hidden = false;
     correlationState.classList.toggle("error", error);
     correlationState.classList.toggle("visually-hidden", visuallyHidden);
     correlationState.replaceChildren(document.createElement("p"));
     correlationState.firstElementChild.textContent = message;
+  };
+
+  const setInventoryState = (message, error = false, visuallyHidden = false) => {
+    inventoryState.hidden = false;
+    inventoryState.classList.toggle("error", error);
+    inventoryState.classList.toggle("visually-hidden", visuallyHidden);
+    inventoryState.replaceChildren(document.createElement("p"));
+    inventoryState.firstElementChild.textContent = message;
   };
 
   const setSessionExpired = () => {
@@ -70,6 +98,8 @@
     state.replaceChildren(message);
     clearCorrelation();
     setCorrelationState("The session expired. Sign in again before running a correlation.", true);
+    clearInventory();
+    setInventoryState("The session expired. Sign in again before reading inventory.", true);
   };
 
   const setProofExpired = () => {
@@ -205,6 +235,147 @@
       row.append(sequence, name, source, observed, badge);
       list.append(row);
     });
+  };
+
+  const setInventoryProofExpired = () => {
+    clearInventory();
+    inventoryState.hidden = false;
+    inventoryState.classList.add("error");
+    inventoryState.classList.remove("visually-hidden");
+    const message = document.createElement("p");
+    message.append("The inventory proof expired or workspace access changed. ");
+    const reloadPage = document.createElement("a");
+    reloadPage.className = "session-link";
+    reloadPage.href = window.location.pathname;
+    reloadPage.textContent = "Reload console";
+    message.append(reloadPage, " before reading inventory again.");
+    inventoryState.replaceChildren(message);
+  };
+
+  const appendInventoryMetric = (metrics, label, value) => {
+    const item = document.createElement("div");
+    const term = document.createElement("dt");
+    const description = document.createElement("dd");
+    term.textContent = label;
+    description.textContent = value;
+    item.append(term, description);
+    metrics.append(item);
+  };
+
+  const renderInventory = (payload) => {
+    const records = Array.isArray(payload.records) ? payload.records : [];
+    const coverage = payload.coverage || {};
+    const assessment = payload.assessment || {};
+    inventoryList.replaceChildren();
+    records.forEach((record, index) => {
+      const row = document.createElement("li");
+      row.className = "inventory-row";
+
+      const sequence = document.createElement("span");
+      sequence.className = "cluster-sequence";
+      sequence.textContent = String(index + 1).padStart(2, "0");
+
+      const identity = document.createElement("div");
+      const resource = document.createElement("h3");
+      resource.className = "cluster-name";
+      resource.textContent = typeof record?.resource_kind === "string" ? record.resource_kind : "Resource";
+      const namespace = typeof record?.namespace === "string" && record.namespace ? `${record.namespace}/` : "";
+      const address = document.createElement("p");
+      address.className = "resource-address";
+      address.textContent = `${namespace}${typeof record?.name === "string" ? record.name : ""}`;
+      const scope = document.createElement("p");
+      scope.className = "cluster-source";
+      scope.textContent = `Cluster ${typeof record?.scope === "string" ? record.scope : "unknown"}`;
+      identity.append(resource, address, scope);
+
+      const observed = document.createElement("p");
+      observed.className = "cluster-observed";
+      observed.textContent = observedLabel(record?.observed_at);
+
+      const metrics = document.createElement("dl");
+      metrics.className = "inventory-metrics";
+      appendInventoryMetric(metrics, "Generation", Number.isSafeInteger(record?.generation) ? String(record.generation) : "Unavailable");
+      if (Number.isSafeInteger(record?.replicas) && Number.isSafeInteger(record?.available_replicas)) {
+        appendInventoryMetric(metrics, "Available", `${record.available_replicas} / ${record.replicas}`);
+      }
+      if (typeof record?.ready === "boolean") appendInventoryMetric(metrics, "Ready", record.ready ? "Yes" : "No");
+
+      const freshness = document.createElement("p");
+      freshness.className = `inventory-freshness${record?.stale ? " stale" : ""}`;
+      freshness.textContent = record?.stale
+        ? `Stale · ${typeof record?.stale_for === "string" ? record.stale_for : "age unavailable"}`
+        : "Current";
+
+      row.append(sequence, identity, observed, metrics, freshness);
+      inventoryList.append(row);
+    });
+
+    const requested = Number.isSafeInteger(coverage.requested) ? coverage.requested : 0;
+    const reachable = Number.isSafeInteger(coverage.reachable) ? coverage.reachable : 0;
+    const gaps = Array.isArray(assessment.gaps) ? assessment.gaps.join(", ") : "unknown";
+    if (requested === 0) {
+      inventorySummary.textContent = "No cluster scopes were requested. No inventory-completeness claim can be made.";
+    } else if (assessment.complete && records.length === 0) {
+      inventorySummary.textContent = `No matching inventory record was observed across ${reachable} of ${requested} clusters with complete current coverage.`;
+    } else if (assessment.complete) {
+      inventorySummary.textContent = `${records.length} normalized inventory record${records.length === 1 ? "" : "s"} observed across complete current coverage (${reachable} of ${requested} clusters).`;
+    } else {
+      inventorySummary.textContent = `${records.length} normalized inventory record${records.length === 1 ? "" : "s"} observed; ${reachable} of ${requested} clusters answered. This is not a complete inventory: ${gaps || "unclassified gap"}.`;
+    }
+    renderAssessmentDetails(inventoryGaps, assessment, "No named inventory coverage gaps.");
+    inventoryTime.textContent = `Read ${new Date().toISOString()}`;
+    setInventoryState(`Inventory read complete. ${inventorySummary.textContent}`, false, true);
+    inventoryAnswer.hidden = false;
+  };
+
+  const runInventory = async (event) => {
+    event.preventDefault();
+    clearInventory();
+    if (!inventoryForm.checkValidity()) {
+      inventoryForm.reportValidity();
+      setInventoryState("Choose a supported resource kind. No inventory read was run.", true);
+      return;
+    }
+    const kind = inventoryKind.value;
+    const namespace = inventoryNamespace.value;
+    const name = inventoryName.value;
+    if (!["Deployment", "Pod", "Rollout"].includes(kind) || namespace.trim() !== namespace || name.trim() !== name) {
+      setInventoryState("Use a supported kind and trimmed exact values. No inventory read was run.", true);
+      return;
+    }
+    const parameters = new URLSearchParams();
+    parameters.set("kind", kind);
+    if (name) parameters.set("name", name);
+    if (namespace) parameters.set("namespace", namespace);
+    inventoryButton.disabled = true;
+    setInventoryState("Reading one persisted, tenant-scoped inventory selection.");
+    try {
+      const response = await fetch(`${window.location.pathname}/inventory?${parameters.toString()}`, {
+        method: "GET",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { "X-Sith-CSRF": inventoryCSRFToken },
+      });
+      if (response.status === 401) {
+        setSessionExpired();
+        return;
+      }
+      if (response.status === 403) {
+        setInventoryProofExpired();
+        return;
+      }
+      if (!response.ok) throw new Error("inventory request refused");
+      const payload = await response.json();
+      if (!payload || typeof payload !== "object" || !Array.isArray(payload.records) || !payload.coverage || !payload.assessment) {
+        throw new Error("invalid inventory response");
+      }
+      renderInventory(payload);
+    } catch (_error) {
+      clearInventory();
+      setInventoryState("The persisted inventory could not be read. No connector refresh, local operation, or write was attempted.", true);
+    } finally {
+      inventoryButton.disabled = false;
+    }
   };
 
   const setCorrelationProofExpired = () => {
@@ -373,6 +544,7 @@
   };
 
   reload.addEventListener("click", readFleet);
+  inventoryForm.addEventListener("submit", runInventory);
   correlationForm.addEventListener("submit", runCorrelation);
   readFleet();
 })();

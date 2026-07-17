@@ -194,8 +194,13 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 			cleanup()
 			return nil, fmt.Errorf("construct hub runtime: console correlator configuration is invalid")
 		}
+		consoleInventory, err := hubfleet.NewInventorySearcher(hubfleet.InventorySearcherConfig{Querier: database, PEP: enforcer})
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("construct hub runtime: console inventory configuration is invalid")
+		}
 		consoleHandler, err := hubserver.NewConsoleHandler(hubserver.ConsoleHandlerConfig{
-			Verifier: verifier, AuthObserver: authObserver, Reader: database, Correlator: consoleCorrelator, PEP: enforcer,
+			Verifier: verifier, AuthObserver: authObserver, Reader: database, Correlator: consoleCorrelator, Inventory: consoleInventory, PEP: enforcer,
 		})
 		if err != nil {
 			cleanup()
@@ -207,6 +212,7 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		mux.Handle("GET /v1/workspaces/{workspace}/console", http.HandlerFunc(consoleHandler.ServePage))
 		mux.Handle("GET /v1/workspaces/{workspace}/console/fleet", http.HandlerFunc(consoleHandler.ServeFleet))
 		mux.Handle("GET /v1/workspaces/{workspace}/console/correlate", http.HandlerFunc(consoleHandler.ServeCorrelation))
+		mux.Handle("GET /v1/workspaces/{workspace}/console/inventory", http.HandlerFunc(consoleHandler.ServeInventory))
 		mux.Handle("GET /v1/console/assets/console.css", http.HandlerFunc(consoleHandler.ServeCSS))
 		mux.Handle("GET /v1/console/assets/console.js", http.HandlerFunc(consoleHandler.ServeJavaScript))
 		mux.Handle("/", fleetHandler)

@@ -647,6 +647,17 @@ func assertFleetStoreIntegration(t *testing.T, ctx context.Context, database *Ap
 	if err != nil {
 		t.Fatal(err)
 	}
+	inventorySearcher, err := hubfleet.NewInventorySearcher(hubfleet.InventorySearcherConfig{
+		Querier: database, PEP: postgresReadPEP(t), Freshness: time.Minute, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := inventorySearcher.Search(ctx, scope, hubfleet.InventorySearchRequest{ResourceKind: "Pod", Namespace: "payments"})
+	if err != nil || len(inventory.Facts) != 2 || inventory.Facts[0].Ref.Scope != "cluster-a" || inventory.Facts[1].Ref.Scope != "cluster-a2" ||
+		inventory.Coverage.Requested != 2 || inventory.Coverage.Reachable != 2 || len(inventory.Coverage.Stale) != 0 {
+		t.Fatalf("two-spoke exact inventory search = %#v, error = %v", inventory, err)
+	}
 	images, err := imageSearcher.Search(ctx, scope, hubfleet.ImageSearchRequest{Digest: digest})
 	if err != nil || len(images.Facts) != 2 || images.Facts[0].Ref.Scope != "cluster-a" || images.Facts[1].Ref.Scope != "cluster-a2" ||
 		images.Coverage.Requested != 2 || images.Coverage.Reachable != 2 || len(images.Coverage.Stale) != 0 {
@@ -682,6 +693,10 @@ func assertFleetStoreIntegration(t *testing.T, ctx context.Context, database *Ap
 	})
 	if err != nil || len(foreignCorrelation.Facts) != 0 {
 		t.Fatalf("cross-workspace correlation = %#v, error = %v", foreignCorrelation, err)
+	}
+	foreignInventory, err := inventorySearcher.Search(ctx, foreignScope, hubfleet.InventorySearchRequest{ResourceKind: "Pod", Namespace: "payments"})
+	if err != nil || len(foreignInventory.Facts) != 0 || foreignInventory.Coverage.Requested != 1 || len(foreignInventory.Coverage.Unreachable) != 1 {
+		t.Fatalf("cross-workspace inventory search = %#v, error = %v", foreignInventory, err)
 	}
 	foreignImages, err := imageSearcher.Search(ctx, foreignScope, hubfleet.ImageSearchRequest{Digest: digest})
 	if err != nil || len(foreignImages.Facts) != 0 || foreignImages.Coverage.Requested != 1 || len(foreignImages.Coverage.Unreachable) != 1 {

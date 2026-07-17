@@ -144,11 +144,21 @@ complete. The correlation proof has a distinct HMAC purpose and cannot be replac
 proof. Its response omits raw observations, attributes, workspace fields, provenance, native IDs,
 deep links, and source payloads.
 
+The separate `GET /v1/workspaces/{workspace}/console/inventory` adapter accepts one closed OCM
+inventory kind (`Deployment`, `Pod`, or `Rollout`) plus optional exact namespace and name. It uses
+the dedicated `fleet.inventory.search` PEP verb and its own non-interchangeable session/workspace
+proof, performs one 257-row-sentinel persisted read, and emits at most 256 strictly decoded records.
+The browser receives only resource identity, observation freshness, generation, and typed
+availability/readiness counts. Pod image digests, raw observations, display hints, source payloads,
+workspace fields, attributes, and provenance remain behind the evidence boundary; malformed or
+over-bound stored results fail closed.
+
 The session JWT never enters HTML, JavaScript, a URL, browser storage, or a log. All console
-responses are `no-store` and use a restrictive same-origin CSP; both data adapters reject
+responses are `no-store` and use a restrictive same-origin CSP; all data adapters reject
 cross-site Fetch Metadata. The UI shows reachability, observation times, non-Healthy matches, and
-stale/unreachable/truncated/unaccounted coverage without claiming an empty or partial answer is
-healthy or complete. Correlation runs only after explicit submit. The console performs no automatic
+normalized inventory beside stale/unreachable/truncated/unaccounted coverage without claiming an
+empty or partial answer is healthy or complete. Correlation and inventory run only after explicit
+submit. The console performs no automatic
 polling and cannot invoke collector refresh, a connector, local `exec`/edit/log/port-forward
 operations, or any write. The bearer fleet API remains bearer-only, and no generic cookie
 authentication middleware exists. Query identities are ordinary resource metadata, not secrets;
