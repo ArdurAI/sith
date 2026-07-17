@@ -40,8 +40,23 @@ func TestPEPHasNoNetworkOrDispatchImports(t *testing.T) {
 	}
 }
 
-func TestAuditEventOmitsArgumentDigest(t *testing.T) {
-	if _, exists := reflect.TypeFor[AuditEvent]().FieldByName("ArgumentsDigest"); exists {
-		t.Fatal("audit event must not retain the policy argument digest")
+func TestPolicyBoundaryOmitsRawProposalAndDigestMaterial(t *testing.T) {
+	assertExactFields(t, reflect.TypeFor[AuditEvent](), []string{
+		"At", "TraceID", "WorkspaceID", "Actor", "Role", "Action", "Verb", "Verdict", "ReasonCode",
+	})
+	assertExactFields(t, reflect.TypeFor[ProposalInput](), []string{
+		"intentID", "workspaceID", "actor", "verb", "target", "argumentsDigest", "resolvedDigest",
+	})
+}
+
+func assertExactFields(t *testing.T, value reflect.Type, expected []string) {
+	t.Helper()
+	if value.NumField() != len(expected) {
+		t.Fatalf("%s fields = %d, want exactly %d", value.Name(), value.NumField(), len(expected))
+	}
+	for _, name := range expected {
+		if _, exists := value.FieldByName(name); !exists {
+			t.Fatalf("%s is missing approved field %s", value.Name(), name)
+		}
 	}
 }

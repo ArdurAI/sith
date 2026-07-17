@@ -6,18 +6,32 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 	"unicode"
 
+	"github.com/ArdurAI/sith/internal/fleet"
+	"github.com/ArdurAI/sith/internal/intent"
 	"github.com/ArdurAI/sith/internal/tenancy"
 	"github.com/ArdurAI/sith/internal/tracing"
 )
 
 const (
-	maxActorBytes      = 256
-	maxReasonCodeBytes = 64
+	maxActorBytes           = 256
+	maxIntentIDBytes        = 253
+	maxReasonCodeBytes      = 64
+	maxTargetComponentBytes = 256
+	invalidVerb             = Verb("invalid")
+	proposalDigestDomain    = "sith-pep-proposal/v1"
+)
+
+// Stable policy refusal classes let later approval and action orchestration distinguish a deny
+// from a pending approval without parsing error text. Both remain fail-closed outcomes.
+var (
+	ErrDenied           = errors.New("policy denied request")
+	ErrApprovalRequired = errors.New("policy requires approval")
 )
 
 // Verb identifies one closed PEP operation. New verbs are an explicit policy-boundary change.
@@ -44,19 +58,32 @@ func (verb Verb) Valid() bool {
 	}
 }
 
+func (verb Verb) validForAction(action tenancy.Action) bool {
+	switch action {
+	case tenancy.ActionRead:
+		return verb.Valid()
+	case tenancy.ActionProposeIntent:
+		return intent.Verb(verb).Valid()
+	default:
+		return false
+	}
+}
+
 // Verdict is the PDP-compatible outcome returned at the policy hook.
 type Verdict string
 
-// Supported policy outcomes. A non-allow outcome never reaches the read dependency.
+// Supported policy outcomes. A non-allow outcome never reaches the downstream operation.
 const (
 	VerdictAllow           Verdict = "allow"
 	VerdictDeny            Verdict = "deny"
 	VerdictRequireApproval Verdict = "require-approval"
 )
 
-// Request is the normalized, post-authentication input to the policy hook. Scope identity comes
-// only from a signed tenancy scope; raw credentials, headers, selectors, and result data are never
-// carried into the audit event.
+// Request is the normalized, post-authentication input to the policy hook. For reads,
+// ArgumentsDigest binds canonical validated arguments. For proposals, it binds the complete
+// resolved proposal envelope. Scope identity comes only from a signed tenancy scope; raw
+// credentials, headers, selectors, targets, arguments, and result data are never carried into the
+// hook or audit event.
 type Request struct {
 	WorkspaceID     tenancy.WorkspaceID
 	Actor           string
@@ -73,11 +100,50 @@ type ReadInput struct {
 	ArgumentsDigest string
 }
 
+// ProposalInput is an immutable, privacy-minimizing binding for a validated and resolved typed
+// proposal. Callers construct it only after handler-owned argument validation and target
+// resolution. It retains digests and normalized identifiers, never raw arguments.
+type ProposalInput struct {
+	intentID        string
+	workspaceID     tenancy.WorkspaceID
+	actor           string
+	verb            intent.Verb
+	target          fleet.ResourceRef
+	argumentsDigest string
+	resolvedDigest  string
+}
+
 // NewReadInput hashes canonical typed arguments for the policy hook. Callers must validate their
 // concrete argument schema before constructing this input.
 func NewReadInput(verb Verb, canonicalArguments []byte) ReadInput {
 	digest := sha256.Sum256(canonicalArguments)
 	return ReadInput{Verb: verb, ArgumentsDigest: "sha256:" + hex.EncodeToString(digest[:])}
+}
+
+// NewProposalInput binds one exact resolved proposal. target must be the normalized target
+// returned by planning and argumentsDigest must come from the already schema-validated argument
+// document. The resulting digest changes if any bound identity, verb, target, or argument digest
+// changes.
+func NewProposalInput(
+	intentID string,
+	workspaceID tenancy.WorkspaceID,
+	actor string,
+	verb intent.Verb,
+	target fleet.ResourceRef,
+	argumentsDigest string,
+) (ProposalInput, error) {
+	input := ProposalInput{
+		intentID: intentID, workspaceID: workspaceID, actor: actor, verb: verb,
+		target: target, argumentsDigest: argumentsDigest,
+	}
+	if err := input.validateFields(); err != nil {
+		return ProposalInput{}, fmt.Errorf("construct policy proposal input: %w", err)
+	}
+	// An empty non-nil attributes map is semantically valid but remains caller-mutable. Discard it
+	// so the retained proposal binding cannot be changed or raced after construction.
+	input.target.Attributes = nil
+	input.resolvedDigest = input.digest()
+	return input, nil
 }
 
 // Decision records one PDP-compatible policy result using a safe reason code rather than free text.
@@ -114,7 +180,7 @@ type AuditEvent struct {
 	ReasonCode  string
 }
 
-// Auditor durably records one PEP decision. An audit failure fails closed before a read runs.
+// Auditor durably records one PEP decision. An audit failure fails closed before an operation runs.
 type Auditor interface {
 	Record(context.Context, AuditEvent) error
 }
@@ -136,7 +202,7 @@ type Config struct {
 	Now           func() time.Time
 }
 
-// Enforcer applies the fixed Phase-1 read pipeline and creates one audit record for every decision.
+// Enforcer applies the fixed policy pipeline and creates one audit record for every decision.
 type Enforcer struct {
 	hook     PolicyHook
 	auditor  Auditor
@@ -178,40 +244,62 @@ func (AllowReadHook) Decide(_ context.Context, request Request) (Decision, error
 // hook → audit. A deny, approval requirement, malformed decision, hook error, or audit error blocks
 // the downstream reader.
 func (enforcer *Enforcer) AuthorizeRead(ctx context.Context, scope tenancy.Scope, input ReadInput) error {
+	request := Request{
+		WorkspaceID: scope.WorkspaceID(), Actor: scope.Subject(), Role: scope.Role(), Action: tenancy.ActionRead,
+		Verb: input.Verb, ArgumentsDigest: input.ArgumentsDigest,
+	}
+	return enforcer.authorize(ctx, scope, request, true, "read")
+}
+
+// AuthorizeProposal runs a resolved typed proposal through the same policy hook and mandatory
+// audit boundary as reads. It grants no execution capability: AllowReadHook denies this action, and
+// both deny and require-approval return typed fail-closed errors.
+func (enforcer *Enforcer) AuthorizeProposal(ctx context.Context, scope tenancy.Scope, input ProposalInput) error {
+	request := Request{
+		WorkspaceID: scope.WorkspaceID(), Actor: scope.Subject(), Role: scope.Role(), Action: tenancy.ActionProposeIntent,
+		Verb: Verb(input.verb), ArgumentsDigest: input.resolvedDigest,
+	}
+	inputValid := input.validate() == nil && input.workspaceID == scope.WorkspaceID() && input.actor == scope.Subject()
+	return enforcer.authorize(ctx, scope, request, inputValid, "proposal")
+}
+
+func (enforcer *Enforcer) authorize(
+	ctx context.Context,
+	scope tenancy.Scope,
+	request Request,
+	inputValid bool,
+	operation string,
+) error {
 	if enforcer == nil || enforcer.hook == nil || enforcer.auditor == nil || ctx == nil {
-		return fmt.Errorf("authorize read: enforcer and context are required")
+		return fmt.Errorf("authorize %s: enforcer and context are required", operation)
 	}
 	traceContext, _, err := tracing.Ensure(ctx)
 	if err != nil {
-		return fmt.Errorf("authorize read: establish trace context: %w", err)
+		return fmt.Errorf("authorize %s: establish trace context: %w", operation, err)
 	}
 	ctx = traceContext
 	startedAt := time.Now()
 	outcome := DecisionOutcomeError
 	defer func() {
-		enforcer.observeDecision(input.Verb, outcome, time.Since(startedAt))
+		enforcer.observeDecision(request.Verb, outcome, time.Since(startedAt))
 		enforcer.observeTrace(ctx, outcome, time.Since(startedAt))
 	}()
-	request := Request{
-		WorkspaceID: scope.WorkspaceID(), Actor: scope.Subject(), Role: scope.Role(), Action: tenancy.ActionRead,
-		Verb: input.Verb, ArgumentsDigest: input.ArgumentsDigest,
-	}
-	if err := request.Validate(); err != nil {
+	if !inputValid || request.Validate() != nil {
 		outcome = DecisionOutcomeDeny
-		return enforcer.refuse(ctx, request, VerdictDeny, "invalid-request", "authorize read: invalid policy request")
+		return enforcer.refuse(ctx, request, VerdictDeny, "invalid-request", fmt.Sprintf("authorize %s: invalid policy request", operation), ErrDenied)
 	}
-	if err := scope.Authorize(tenancy.ActionRead); err != nil {
+	if err := scope.Authorize(request.Action); err != nil {
 		outcome = DecisionOutcomeDeny
-		return enforcer.refuse(ctx, request, VerdictDeny, "role-denied", "authorize read: role does not permit read")
+		return enforcer.refuse(ctx, request, VerdictDeny, "role-denied", fmt.Sprintf("authorize %s: role does not permit %s", operation, request.Action), ErrDenied)
 	}
 	decision, err := enforcer.hook.Decide(ctx, request)
 	if err != nil {
 		outcome = DecisionOutcomeError
-		return enforcer.refuse(ctx, request, VerdictDeny, "hook-error", "authorize read: policy hook failed")
+		return enforcer.refuse(ctx, request, VerdictDeny, "hook-error", fmt.Sprintf("authorize %s: policy hook failed", operation), nil)
 	}
 	if err := decision.Validate(); err != nil {
 		outcome = DecisionOutcomeError
-		return enforcer.refuse(ctx, request, VerdictDeny, "invalid-decision", "authorize read: policy hook returned an invalid decision")
+		return enforcer.refuse(ctx, request, VerdictDeny, "invalid-decision", fmt.Sprintf("authorize %s: policy hook returned an invalid decision", operation), nil)
 	}
 	if decision.Verdict != VerdictAllow {
 		if decision.Verdict == VerdictRequireApproval {
@@ -221,16 +309,16 @@ func (enforcer *Enforcer) AuthorizeRead(ctx context.Context, scope tenancy.Scope
 		}
 		if err := enforcer.record(ctx, request, decision); err != nil {
 			outcome = DecisionOutcomeError
-			return fmt.Errorf("authorize read: audit policy refusal: %w", err)
+			return fmt.Errorf("authorize %s: audit policy refusal: %w", operation, err)
 		}
 		if decision.Verdict == VerdictRequireApproval {
-			return fmt.Errorf("authorize read: policy requires approval")
+			return fmt.Errorf("authorize %s: %w", operation, ErrApprovalRequired)
 		}
-		return fmt.Errorf("authorize read: policy denied request")
+		return fmt.Errorf("authorize %s: %w", operation, ErrDenied)
 	}
 	if err := enforcer.record(ctx, request, decision); err != nil {
 		outcome = DecisionOutcomeError
-		return fmt.Errorf("authorize read: audit policy decision: %w", err)
+		return fmt.Errorf("authorize %s: audit policy decision: %w", operation, err)
 	}
 	outcome = DecisionOutcomeAllow
 	return nil
@@ -244,13 +332,13 @@ func (request Request) Validate() error {
 	if err := validateSafeText("policy actor", request.Actor, maxActorBytes); err != nil {
 		return err
 	}
-	if !request.Role.Valid() || request.Action != tenancy.ActionRead || !request.Verb.Valid() || !validDigest(request.ArgumentsDigest) {
+	if !request.Role.Valid() || !request.Verb.validForAction(request.Action) || !validDigest(request.ArgumentsDigest) {
 		return fmt.Errorf("policy request uses an unsupported role, action, or verb")
 	}
 	return nil
 }
 
-// Validate rejects incomplete, unknown, or unsafe PDP responses before they affect a read.
+// Validate rejects incomplete, unknown, or unsafe PDP responses before they affect an operation.
 func (decision Decision) Validate() error {
 	switch decision.Verdict {
 	case VerdictAllow, VerdictDeny, VerdictRequireApproval:
@@ -260,11 +348,38 @@ func (decision Decision) Validate() error {
 	return validateReasonCode(decision.ReasonCode)
 }
 
-func (enforcer *Enforcer) refuse(ctx context.Context, request Request, verdict Verdict, reasonCode, message string) error {
+func (enforcer *Enforcer) refuse(ctx context.Context, request Request, verdict Verdict, reasonCode, message string, classification error) error {
+	request, auditable := normalizedAuditRequest(request)
+	if !auditable {
+		if classification != nil {
+			return fmt.Errorf("%s: %w", message, classification)
+		}
+		return fmt.Errorf("%s", message)
+	}
 	if err := enforcer.record(ctx, request, Decision{Verdict: verdict, ReasonCode: reasonCode}); err != nil {
+		if classification != nil {
+			return fmt.Errorf("%s: %w: audit refusal: %w", message, classification, err)
+		}
 		return fmt.Errorf("%s: audit refusal: %w", message, err)
 	}
+	if classification != nil {
+		return fmt.Errorf("%s: %w", message, classification)
+	}
 	return fmt.Errorf("%s", message)
+}
+
+func normalizedAuditRequest(request Request) (Request, bool) {
+	if tenancy.ValidateWorkspaceID(request.WorkspaceID) != nil || validateSafeText("policy actor", request.Actor, maxActorBytes) != nil ||
+		!request.Role.Valid() || (request.Action != tenancy.ActionRead && request.Action != tenancy.ActionProposeIntent) {
+		return Request{}, false
+	}
+	if !request.Verb.validForAction(request.Action) {
+		request.Verb = invalidVerb
+	}
+	// AuditEvent deliberately has no binding-digest field. Clear it here as defense in depth so a
+	// malformed or caller-supplied value cannot survive refusal normalization into future sinks.
+	request.ArgumentsDigest = ""
+	return request, true
 }
 
 func (enforcer *Enforcer) record(ctx context.Context, request Request, decision Decision) error {
@@ -313,4 +428,48 @@ func validDigest(value string) bool {
 		}
 	}
 	return true
+}
+
+func (input ProposalInput) validate() error {
+	if err := input.validateFields(); err != nil {
+		return err
+	}
+	if !validDigest(input.resolvedDigest) || input.resolvedDigest != input.digest() {
+		return fmt.Errorf("proposal binding digest is invalid")
+	}
+	return nil
+}
+
+func (input ProposalInput) validateFields() error {
+	if validateSafeText("proposal intent identifier", input.intentID, maxIntentIDBytes) != nil ||
+		tenancy.ValidateWorkspaceID(input.workspaceID) != nil ||
+		validateSafeText("proposal actor", input.actor, maxActorBytes) != nil || !input.verb.Valid() ||
+		validateProposalTarget(input.target) != nil || !validDigest(input.argumentsDigest) {
+		return fmt.Errorf("proposal fields are invalid")
+	}
+	return nil
+}
+
+func (input ProposalInput) digest() string {
+	values := []string{
+		proposalDigestDomain, input.intentID, string(input.workspaceID), input.actor, string(input.verb),
+		input.target.SourceKind, input.target.Scope, input.target.Kind, input.target.Namespace, input.target.Name,
+		input.argumentsDigest,
+	}
+	digest := sha256.Sum256([]byte(strings.Join(values, "\x00")))
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func validateProposalTarget(target fleet.ResourceRef) error {
+	if len(target.Attributes) != 0 ||
+		validateSafeText("proposal target source", target.SourceKind, maxTargetComponentBytes) != nil ||
+		validateSafeText("proposal target scope", target.Scope, maxTargetComponentBytes) != nil ||
+		validateSafeText("proposal target kind", target.Kind, maxTargetComponentBytes) != nil ||
+		validateSafeText("proposal target name", target.Name, maxTargetComponentBytes) != nil {
+		return fmt.Errorf("proposal target is invalid")
+	}
+	if target.Namespace != "" && validateSafeText("proposal target namespace", target.Namespace, maxTargetComponentBytes) != nil {
+		return fmt.Errorf("proposal target is invalid")
+	}
+	return nil
 }
