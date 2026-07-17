@@ -12,6 +12,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -25,14 +26,16 @@ const (
 	// SourceKind is the fixed fleet-model source stamp for an OCM-brokered spoke.
 	SourceKind = "ocm-spoke"
 
-	protocolVersion     = "1.0.0"
-	defaultSpokeTimeout = 5 * time.Second
-	defaultSnapshotAge  = 5 * time.Minute
-	maxSpokeTimeout     = 30 * time.Second
-	maxSnapshotAge      = time.Hour
-	maxSnapshotFacts    = 1_100
-	maxObservedBytes    = 256 * 1024
-	maxFutureSkew       = 30 * time.Second
+	protocolVersion         = "1.0.0"
+	defaultSpokeTimeout     = 5 * time.Second
+	defaultSnapshotAge      = 5 * time.Minute
+	defaultSpokeConcurrency = 4
+	maxSpokeTimeout         = 30 * time.Second
+	maxSnapshotAge          = time.Hour
+	maximumSpokeConcurrency = 64
+	maxSnapshotFacts        = 1_100
+	maxObservedBytes        = 256 * 1024
+	maxFutureSkew           = 30 * time.Second
 )
 
 var observedKeys = map[fleet.FactKind]map[string]struct{}{
@@ -118,27 +121,30 @@ type Store interface {
 
 // CollectorConfig defines bounded collection behavior.
 type CollectorConfig struct {
-	Store          Store
-	Transport      Transport
-	PEP            *pep.Enforcer
-	Observer       SnapshotObserver
-	TraceObserver  tracing.Observer
-	SpokeTimeout   time.Duration
-	MaxSnapshotAge time.Duration
-	Now            func() time.Time
+	Store               Store
+	Transport           Transport
+	PEP                 *pep.Enforcer
+	Observer            SnapshotObserver
+	TraceObserver       tracing.Observer
+	SpokeTimeout        time.Duration
+	MaxSnapshotAge      time.Duration
+	MaxConcurrentSpokes int
+	Now                 func() time.Time
 }
 
 // Collector collects independent, per-spoke snapshots without allowing one failure to suppress peers.
 type Collector struct {
-	store          Store
-	transport      Transport
-	pep            *pep.Enforcer
-	refreshes      *refreshCoordinator
-	observer       SnapshotObserver
-	tracer         tracing.Observer
-	spokeTimeout   time.Duration
-	maxSnapshotAge time.Duration
-	now            func() time.Time
+	store               Store
+	transport           Transport
+	pep                 *pep.Enforcer
+	refreshes           *refreshCoordinator
+	observer            SnapshotObserver
+	tracer              tracing.Observer
+	spokeTimeout        time.Duration
+	maxSnapshotAge      time.Duration
+	maxConcurrentSpokes int
+	nowMu               sync.Mutex
+	now                 func() time.Time
 }
 
 // NewCollector constructs a fail-closed collector with bounded per-spoke work.
@@ -158,6 +164,12 @@ func NewCollector(config CollectorConfig) (*Collector, error) {
 	if config.MaxSnapshotAge < time.Second || config.MaxSnapshotAge > maxSnapshotAge {
 		return nil, fmt.Errorf("new spoke collector: maximum snapshot age must be between 1s and %s", maxSnapshotAge)
 	}
+	if config.MaxConcurrentSpokes == 0 {
+		config.MaxConcurrentSpokes = defaultSpokeConcurrency
+	}
+	if config.MaxConcurrentSpokes < 1 || config.MaxConcurrentSpokes > maximumSpokeConcurrency {
+		return nil, fmt.Errorf("new spoke collector: maximum concurrent spokes must be between 1 and %d", maximumSpokeConcurrency)
+	}
 	if config.Now == nil {
 		config.Now = time.Now
 	}
@@ -168,15 +180,16 @@ func NewCollector(config CollectorConfig) (*Collector, error) {
 		config.TraceObserver = tracing.NoopObserver()
 	}
 	return &Collector{
-		store:          config.Store,
-		transport:      config.Transport,
-		pep:            config.PEP,
-		refreshes:      newRefreshCoordinator(),
-		observer:       config.Observer,
-		tracer:         config.TraceObserver,
-		spokeTimeout:   config.SpokeTimeout,
-		maxSnapshotAge: config.MaxSnapshotAge,
-		now:            config.Now,
+		store:               config.Store,
+		transport:           config.Transport,
+		pep:                 config.PEP,
+		refreshes:           newRefreshCoordinator(),
+		observer:            config.Observer,
+		tracer:              config.TraceObserver,
+		spokeTimeout:        config.SpokeTimeout,
+		maxSnapshotAge:      config.MaxSnapshotAge,
+		maxConcurrentSpokes: config.MaxConcurrentSpokes,
+		now:                 config.Now,
 	}, nil
 }
 
@@ -216,56 +229,183 @@ func (collector *Collector) collectWorkspace(ctx context.Context, scope tenancy.
 	}
 
 	coverage := fleet.Coverage{Requested: len(spokes)}
-	for _, spoke := range spokes {
-		if err := ctx.Err(); err != nil {
-			return coverage, fmt.Errorf("collect spoke snapshots: %w", err)
+	if len(spokes) == 0 {
+		return coverage, nil
+	}
+
+	collectionContext, cancel := context.WithCancel(ctx)
+	jobs := make(chan Spoke)
+	results := make(chan spokeCollectionResult)
+	workers := min(collector.maxConcurrentSpokes, len(spokes))
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(workers)
+	for range workers {
+		go func() {
+			defer waitGroup.Done()
+			collector.collectSpokeWorker(collectionContext, scope.WorkspaceID(), jobs, results)
+		}()
+	}
+	active := make(map[string]time.Time, workers)
+	var shutdownOnce sync.Once
+	shutdown := func(observeCanceled bool) {
+		shutdownOnce.Do(func() {
+			cancel()
+			close(jobs)
+			waitGroup.Wait()
+			if observeCanceled {
+				for _, startedAt := range active {
+					collector.observeSnapshot(SnapshotOutcomeCanceled, time.Since(startedAt))
+					collector.observeTrace(ctx, tracing.OutcomeCanceled, time.Since(startedAt))
+				}
+			}
+		})
+	}
+	defer shutdown(true)
+
+	next := 0
+	inFlight := 0
+	for next < len(spokes) || inFlight > 0 {
+		var admission chan<- Spoke
+		var spoke Spoke
+		if next < len(spokes) {
+			admission = jobs
+			spoke = spokes[next]
 		}
-		attemptedAt := collector.now().UTC()
-		startedAt := time.Now()
-		spokeContext, cancel := context.WithTimeout(ctx, collector.spokeTimeout)
-		snapshot, collectionErr := collector.transport.Snapshot(spokeContext, scope.WorkspaceID(), cloneSpoke(spoke))
-		deadlineErr := spokeContext.Err()
-		cancel()
-		if err := ctx.Err(); err != nil {
-			collector.observeSnapshot(SnapshotOutcomeCanceled, time.Since(startedAt))
-			collector.observeTrace(ctx, tracing.OutcomeCanceled, time.Since(startedAt))
-			return coverage, fmt.Errorf("collect spoke snapshots: %w", err)
-		}
-		if collectionErr == nil && deadlineErr != nil {
-			collectionErr = deadlineErr
-		}
-		if collectionErr != nil {
-			if err := collector.recordFailure(ctx, scope, spoke, failureFor(collectionErr), attemptedAt, &coverage); err != nil {
-				collector.observeSnapshot(SnapshotOutcomeStoreError, time.Since(startedAt))
-				collector.observeTrace(ctx, tracing.OutcomeFailure, time.Since(startedAt))
+		select {
+		case <-ctx.Done():
+			shutdown(true)
+			return coverage, fmt.Errorf("collect spoke snapshots: %w", ctx.Err())
+		case admission <- spoke:
+			active[spoke.ID] = time.Now()
+			next++
+			inFlight++
+		case result := <-results:
+			if err := ctx.Err(); err != nil {
+				shutdown(true)
+				return coverage, fmt.Errorf("collect spoke snapshots: %w", err)
+			}
+			delete(active, result.spoke.ID)
+			inFlight--
+			if result.err != nil {
+				shutdown(true)
+				return coverage, result.err
+			}
+			if err := collector.persistSpokeResult(ctx, scope, result, &coverage); err != nil {
+				shutdown(true)
 				return coverage, err
 			}
-			collector.observeSnapshot(snapshotOutcomeForFailure(failureFor(collectionErr)), time.Since(startedAt))
-			collector.observeTrace(ctx, tracing.OutcomeFailure, time.Since(startedAt))
-			continue
 		}
-		if err := validateSnapshot(spoke, snapshot, attemptedAt, collector.maxSnapshotAge); err != nil {
-			if failureErr := collector.recordFailure(ctx, scope, spoke, FailureInvalidSnapshot, attemptedAt, &coverage); failureErr != nil {
-				collector.observeSnapshot(SnapshotOutcomeStoreError, time.Since(startedAt))
-				collector.observeTrace(ctx, tracing.OutcomeFailure, time.Since(startedAt))
-				return coverage, failureErr
-			}
-			collector.observeSnapshot(SnapshotOutcomeInvalidSnapshot, time.Since(startedAt))
-			collector.observeTrace(ctx, tracing.OutcomeFailure, time.Since(startedAt))
-			continue
-		}
-		if err := collector.store.ReplaceSnapshot(ctx, scope, spoke, cloneSnapshot(snapshot), attemptedAt); err != nil {
-			collector.observeSnapshot(SnapshotOutcomeStoreError, time.Since(startedAt))
-			collector.observeTrace(ctx, tracing.OutcomeFailure, time.Since(startedAt))
-			return coverage, fmt.Errorf("collect spoke snapshots: persist %q: %w", spoke.ID, err)
-		}
-		coverage.Reachable++
-		collector.observeSnapshot(SnapshotOutcomeSuccess, time.Since(startedAt))
-		collector.observeTrace(ctx, tracing.OutcomeSuccess, time.Since(startedAt))
 	}
+	shutdown(false)
 	sort.Strings(coverage.Unreachable)
 	sort.Strings(coverage.Stale)
 	return coverage, nil
+}
+
+type spokeCollectionResult struct {
+	spoke       Spoke
+	snapshot    Snapshot
+	failure     FailureKind
+	err         error
+	attemptedAt time.Time
+	startedAt   time.Time
+}
+
+func (collector *Collector) collectSpokeWorker(
+	ctx context.Context,
+	workspaceID tenancy.WorkspaceID,
+	jobs <-chan Spoke,
+	results chan<- spokeCollectionResult,
+) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case spoke, open := <-jobs:
+			if !open {
+				return
+			}
+			result, ok := collector.collectSpoke(ctx, workspaceID, spoke)
+			if !ok {
+				return
+			}
+			select {
+			case results <- result:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+func (collector *Collector) collectSpoke(
+	ctx context.Context,
+	workspaceID tenancy.WorkspaceID,
+	spoke Spoke,
+) (result spokeCollectionResult, ok bool) {
+	result = spokeCollectionResult{spoke: spoke, startedAt: time.Now()}
+	defer func() {
+		if recover() != nil {
+			result.snapshot = Snapshot{}
+			result.failure = ""
+			result.err = errRefreshFlightPanicked
+			ok = true
+		}
+	}()
+	result.attemptedAt = collector.nowUTC()
+	spokeContext, cancel := context.WithTimeout(ctx, collector.spokeTimeout)
+	snapshot, collectionErr := collector.transport.Snapshot(spokeContext, workspaceID, cloneSpoke(spoke))
+	deadlineErr := spokeContext.Err()
+	cancel()
+	if ctx.Err() != nil {
+		return spokeCollectionResult{}, false
+	}
+	if collectionErr == nil && deadlineErr != nil {
+		collectionErr = deadlineErr
+	}
+	if collectionErr != nil {
+		result.failure = failureFor(collectionErr)
+		return result, true
+	}
+	if err := validateSnapshot(spoke, snapshot, result.attemptedAt, collector.maxSnapshotAge); err != nil {
+		result.failure = FailureInvalidSnapshot
+		return result, true
+	}
+	result.snapshot = cloneSnapshot(snapshot)
+	return result, true
+}
+
+func (collector *Collector) persistSpokeResult(
+	ctx context.Context,
+	scope tenancy.Scope,
+	result spokeCollectionResult,
+	coverage *fleet.Coverage,
+) error {
+	if result.failure != "" {
+		if err := collector.recordFailure(ctx, scope, result.spoke, result.failure, result.attemptedAt, coverage); err != nil {
+			collector.observeSnapshot(SnapshotOutcomeStoreError, time.Since(result.startedAt))
+			collector.observeTrace(ctx, tracing.OutcomeFailure, time.Since(result.startedAt))
+			return err
+		}
+		collector.observeSnapshot(snapshotOutcomeForFailure(result.failure), time.Since(result.startedAt))
+		collector.observeTrace(ctx, tracing.OutcomeFailure, time.Since(result.startedAt))
+		return nil
+	}
+	if err := collector.store.ReplaceSnapshot(ctx, scope, result.spoke, cloneSnapshot(result.snapshot), result.attemptedAt); err != nil {
+		collector.observeSnapshot(SnapshotOutcomeStoreError, time.Since(result.startedAt))
+		collector.observeTrace(ctx, tracing.OutcomeFailure, time.Since(result.startedAt))
+		return fmt.Errorf("collect spoke snapshots: persist %q: %w", result.spoke.ID, err)
+	}
+	coverage.Reachable++
+	collector.observeSnapshot(SnapshotOutcomeSuccess, time.Since(result.startedAt))
+	collector.observeTrace(ctx, tracing.OutcomeSuccess, time.Since(result.startedAt))
+	return nil
+}
+
+func (collector *Collector) nowUTC() time.Time {
+	collector.nowMu.Lock()
+	defer collector.nowMu.Unlock()
+	return collector.now().UTC()
 }
 
 func (collector *Collector) recordFailure(

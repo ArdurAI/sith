@@ -195,10 +195,21 @@ func TestCollectorAndSourceRejectUnsafeConfiguration(t *testing.T) {
 	t.Parallel()
 
 	store := &memoryStore{snapshots: make(map[string]Snapshot), failures: make(map[string]FailureKind)}
+	collector, err := NewCollector(CollectorConfig{Store: store, Transport: transportFunc(func(context.Context, tenancy.WorkspaceID, Spoke) (Snapshot, error) {
+		return Snapshot{}, nil
+	}), PEP: testReadPEP(t)})
+	if err != nil || collector.maxConcurrentSpokes != defaultSpokeConcurrency {
+		t.Fatalf("default worker configuration = %d/%v", collector.maxConcurrentSpokes, err)
+	}
 	if _, err := NewCollector(CollectorConfig{Store: store, Transport: transportFunc(func(context.Context, tenancy.WorkspaceID, Spoke) (Snapshot, error) {
 		return Snapshot{}, nil
 	}), PEP: testReadPEP(t), SpokeTimeout: 999 * time.Millisecond}); err == nil {
 		t.Fatal("sub-second collector timeout unexpectedly accepted")
+	}
+	if _, err := NewCollector(CollectorConfig{Store: store, Transport: transportFunc(func(context.Context, tenancy.WorkspaceID, Spoke) (Snapshot, error) {
+		return Snapshot{}, nil
+	}), PEP: testReadPEP(t), MaxConcurrentSpokes: maximumSpokeConcurrency + 1}); err == nil {
+		t.Fatal("oversized collector worker pool unexpectedly accepted")
 	}
 	if _, err := NewSource(SourceConfig{Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
 		return fleet.FleetResult{}, nil
