@@ -136,13 +136,24 @@ That Hub-only console verifies the HttpOnly session server-side, resolves the wo
 membership, and reads the existing persisted `hubfleet.Source` through the PEP. Its fixed
 `GET /v1/workspaces/{workspace}/console/fleet` adapter requires a short-lived process-key-signed
 CSRF token bound to the exact session, workspace, and expiry in a custom same-origin header. The
-session JWT never enters HTML, JavaScript, a URL, browser storage, or a log. Both console responses
-are `no-store` and use a restrictive same-origin CSP; the fleet adapter rejects cross-site Fetch
-Metadata. The UI shows reachability, observation times, and stale/unreachable/truncated/unaccounted
-coverage without claiming an empty or partial fleet is healthy. It performs no automatic polling
-and cannot invoke the collector refresh, a connector, local `exec`/edit/log/port-forward operations,
-or any write. The bearer fleet API remains bearer-only, and no generic cookie authentication
-middleware exists.
+separate `GET /v1/workspaces/{workspace}/console/correlate` adapter accepts only one canonical exact
+non-Secret resource identity and the fixed `health_not=Healthy` condition. It calls the existing
+tenant-scoped `hubfleet.Correlator` once with a 257-row sentinel bound, then emits at most 256
+minimal health matches; an over-bound or malformed stored result fails closed instead of appearing
+complete. The correlation proof has a distinct HMAC purpose and cannot be replaced by the fleet
+proof. Its response omits raw observations, attributes, workspace fields, provenance, native IDs,
+deep links, and source payloads.
+
+The session JWT never enters HTML, JavaScript, a URL, browser storage, or a log. All console
+responses are `no-store` and use a restrictive same-origin CSP; both data adapters reject
+cross-site Fetch Metadata. The UI shows reachability, observation times, non-Healthy matches, and
+stale/unreachable/truncated/unaccounted coverage without claiming an empty or partial answer is
+healthy or complete. Correlation runs only after explicit submit. The console performs no automatic
+polling and cannot invoke collector refresh, a connector, local `exec`/edit/log/port-forward
+operations, or any write. The bearer fleet API remains bearer-only, and no generic cookie
+authentication middleware exists. Query identities are ordinary resource metadata, not secrets;
+they may appear in access logs. Each submit adds one bounded Hub database read and no cloud or
+spoke egress.
 
 Cloud-IAM identity starts from the same fail-closed exchange boundary. The foundation accepts only
 a verifier-normalized provider, explicit realm, immutable subject, audience, and bounded lifetime;

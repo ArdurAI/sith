@@ -2110,7 +2110,12 @@ badges so coverage gaps are visible.
 The first Hub rendering slice (#218) deliberately starts at the bounded `FleetResult` altitude:
 cluster reachability, observation time, and honest coverage gaps. It uses its own cookie/session +
 CSRF adapter over the existing PEP read and cannot mount local operations or trigger collection.
-Inventory records, correlation, and the service picker remain later read-only slices.
+#220 adds the next F8.1 slice: an explicit exact-resource, fixed-not-Healthy query through the
+existing tenant-scoped PEP correlator. The browser receives only cluster scope, resource identity,
+normalized health, observation time, stale state, and coverage assessment; raw fact payloads and
+provenance remain server-side. A 257-row sentinel makes over-bound results unavailable rather than
+silently partial, and a separate session/workspace/purpose proof prevents fleet-proof reuse.
+Inventory records and the service picker remain later read-only slices.
 
 ```mermaid
 flowchart TD

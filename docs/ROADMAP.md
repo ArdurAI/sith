@@ -215,7 +215,10 @@ kubeconfigs — the read source is abstracted so hub mode and local mode share o
 > signed workspace membership; a short-lived session/workspace-bound CSRF token gates the one
 > persisted-fleet read. The bearer API stays bearer-only. The view surfaces current, stale,
 > unreachable, truncated, inconsistent, and unaccounted coverage without polling, collector
-> refresh, connector access, local operations, or writes.
+> refresh, connector access, local operations, or writes. #220 composes the existing PEP-governed
+> `hubfleet.Correlator` into that boundary. One explicit exact-resource submit performs one bounded
+> persisted health query and returns only a fail-closed minimal projection plus named coverage
+> gaps; its purpose-specific proof cannot be replayed as the fleet-snapshot proof.
 
 **Exit criteria.**
 - A single query returns a correct, tenant-scoped, cross-cluster answer over **≥ 2 spokes**.

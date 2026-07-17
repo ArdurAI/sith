@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta name="sith-workspace" content="{{.Workspace}}">
-  <meta name="sith-csrf" content="{{.CSRFToken}}">
+  <meta name="sith-csrf" content="{{.FleetCSRFToken}}">
+  <meta name="sith-correlation-csrf" content="{{.CorrelationCSRFToken}}">
   <title>Sith fleet trust console</title>
   <link rel="stylesheet" href="/v1/console/assets/console.css">
   <script src="/v1/console/assets/console.js" defer></script>
@@ -48,6 +49,43 @@
         <li><span class="legend-mark unknown"></span>Unaccounted</li>
       </ul>
       <ul id="coverage-details" class="coverage-details" aria-label="Named coverage gaps"></ul>
+    </section>
+
+    <section class="correlation-panel" aria-labelledby="correlation-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Exact health correlation</p>
+          <h2 id="correlation-title">Where is this resource not Healthy?</h2>
+        </div>
+        <p class="query-contract">One persisted read · no refresh</p>
+      </div>
+      <p class="correlation-intro">Name one exact non-Secret resource. Sith reports only observed non-Healthy matches and keeps coverage gaps beside the answer.</p>
+      <form id="correlation-form" class="correlation-form" novalidate>
+        <label>
+          <span>Resource kind</span>
+          <input id="correlation-kind" name="kind" type="text" required maxlength="128" autocomplete="off" spellcheck="false" placeholder="Deployment">
+        </label>
+        <label>
+          <span>Exact name</span>
+          <input id="correlation-name" name="name" type="text" required maxlength="256" autocomplete="off" spellcheck="false" placeholder="payments">
+        </label>
+        <label>
+          <span>Namespace <small>optional</small></span>
+          <input id="correlation-namespace" name="namespace" type="text" maxlength="256" autocomplete="off" spellcheck="false" placeholder="payments">
+        </label>
+        <button id="run-correlation" class="correlation-button" type="submit">Correlate health</button>
+      </form>
+      <div id="correlation-state" class="console-state correlation-state" role="status" aria-live="polite">
+        <p>No correlation has been run. No health claim is active.</p>
+      </div>
+      <div id="correlation-answer" class="correlation-answer" hidden>
+        <div class="answer-heading">
+          <p id="correlation-summary" class="correlation-summary"></p>
+          <p id="correlation-time" class="snapshot-time">No correlation read yet</p>
+        </div>
+        <ul id="correlation-gaps" class="coverage-details" aria-label="Correlation coverage gaps"></ul>
+        <ol id="correlation-list" class="correlation-list" aria-label="Non-Healthy resource observations"></ol>
+      </div>
     </section>
 
     <section id="cluster-ledger" class="ledger" aria-labelledby="ledger-title">
