@@ -15,8 +15,11 @@ import (
 )
 
 var approvedNetworkImports = map[string]map[string]bool{
-	"internal/cli/mcp.go":                            {"net": true, "net/http": true},
-	"internal/cli/ui.go":                             {"net": true, "net/http": true},
+	"internal/cli/mcp.go": {"net": true, "net/http": true},
+	"internal/cli/ui.go":  {"net": true, "net/http": true},
+	// This pure projector uses net/url only to remove credentials, queries, and fragments from
+	// already-fetched Argo CD facts. It has no socket, HTTP, or Kubernetes client capability.
+	"internal/connector/argocd/project.go":           {"net/url": true},
 	"internal/connector/kubeconfig/local_streams.go": {"net/http": true, "net/url": true},
 	"internal/hubserver/auth.go":                     {"net/http": true},
 	// Browser OIDC is a Hub-only code+PKCE broker. It accepts no local-mode traffic, uses no
