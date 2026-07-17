@@ -336,6 +336,36 @@ need:**
   Raw messages are classified in memory and discarded.
   Missing cluster identity, partial or failed shards, `_source`, unknown fields, and ambiguous values
   fail closed. This slice adds no HTTP client, index discovery, credentials, persistence, or writes.
+  Issue #216 establishes the AWS autoscaler-evidence contract: one already-fetched EKS
+  `DescribeNodegroup` response becomes a bounded LIVE inventory fact and a bounded LIVE
+  provider-health fact attached to an already-trusted Sith cluster. The response's partition,
+  account, region, cluster, nodegroup, and ARN must agree with the trusted request identity;
+  scaling values, status, capacity type, and health issue codes fail closed against explicit
+  bounds and the AWS API's reviewed taxonomies. Facts retain only nodegroup name, capacity type,
+  min/desired/max counts, provider status, and sorted issue codes. IAM roles, account and region,
+  raw ARNs, Auto Scaling group names, resource IDs, health messages, tags, labels/taints, subnets,
+  launch templates, SSH/security-group data, and unknown fields are discarded. `ACTIVE` with no
+  EKS issues is provider-state evidence only; it does not prove Kubernetes nodes or workloads are
+  healthy.
+
+  A future live AWS caller must enumerate only an explicit region allowlist, keep `ListClusters`
+  on its native-EKS default (connected external clusters are out of scope), exhaust opaque
+  `ListClusters` and `ListNodegroups` tokens with page and loop bounds, and use finite timeouts,
+  bounded concurrency, jittered retries, and API-quota-aware polling. It must use the standard AWS
+  SDK short-lived/federated credential chain rather than persist access keys. Least privilege is
+  `eks:ListClusters` on `Resource: "*"` (AWS exposes no resource type for that action),
+  `eks:DescribeCluster` plus `eks:ListNodegroups` on permitted cluster ARNs, and
+  `eks:DescribeNodegroup` on permitted nodegroup ARNs. CloudWatch, CloudTrail, Kubernetes token
+  minting, network access, credentials, persistence, and writes are not part of this projector.
+  The projector has no AWS-side effect or infrastructure cost; a future caller's polling cadence
+  still consumes EKS API quota and network traffic and must remain bounded. See the primary AWS
+  [ListClusters](https://docs.aws.amazon.com/eks/latest/APIReference/API_ListClusters.html),
+  [ListNodegroups](https://docs.aws.amazon.com/eks/latest/APIReference/API_ListNodegroups.html),
+  [DescribeNodegroup](https://docs.aws.amazon.com/eks/latest/APIReference/API_DescribeNodegroup.html),
+  [health issue](https://docs.aws.amazon.com/eks/latest/APIReference/API_Issue.html),
+  [service authorization](https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonelastickubernetesservice.html),
+  and [credential provider](https://docs.aws.amazon.com/sdkref/latest/guide/standardized-credentials.html)
+  contracts.
 - **W2 — desired-state/diff:** Helm · Kustomize · kubectl-diff (readers, **not** action targets in v1).
 - **W3 — viz/tracing/clouds:** Grafana (deep-link only) · OTel (semconv key backbone) · OpenShift ·
   Azure · GCP.
