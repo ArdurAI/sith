@@ -340,6 +340,8 @@ need:**
   `DescribeNodegroup` response becomes a bounded LIVE inventory fact and a bounded LIVE
   provider-health fact attached to an already-trusted Sith cluster. The response's partition,
   account, region, cluster, nodegroup, and ARN must agree with the trusted request identity;
+  regions fail closed against the EKS endpoints currently documented for the commercial,
+  GovCloud, and China partitions, so an AWS region launch requires an intentional contract update;
   scaling values, status, capacity type, and health issue codes fail closed against explicit
   bounds and the AWS API's reviewed taxonomies. Facts retain only nodegroup name, capacity type,
   min/desired/max counts, provider status, and sorted issue codes. IAM roles, account and region,
@@ -352,7 +354,10 @@ need:**
   on its native-EKS default (connected external clusters are out of scope), exhaust opaque
   `ListClusters` and `ListNodegroups` tokens with page and loop bounds, and use finite timeouts,
   bounded concurrency, jittered retries, and API-quota-aware polling. It must use the standard AWS
-  SDK short-lived/federated credential chain rather than persist access keys. Least privilege is
+  SDK chain only for temporary, refreshable role, workload-identity, or federated credentials.
+  Long-lived static access keys are forbidden even when an environment variable or shared
+  credentials file exposes them; a live caller must fail closed when credentials cannot expire.
+  Least privilege is
   `eks:ListClusters` on `Resource: "*"` (AWS exposes no resource type for that action),
   `eks:DescribeCluster` plus `eks:ListNodegroups` on permitted cluster ARNs, and
   `eks:DescribeNodegroup` on permitted nodegroup ARNs. CloudWatch, CloudTrail, Kubernetes token
@@ -362,6 +367,8 @@ need:**
   [ListClusters](https://docs.aws.amazon.com/eks/latest/APIReference/API_ListClusters.html),
   [ListNodegroups](https://docs.aws.amazon.com/eks/latest/APIReference/API_ListNodegroups.html),
   [DescribeNodegroup](https://docs.aws.amazon.com/eks/latest/APIReference/API_DescribeNodegroup.html),
+  [commercial and GovCloud endpoints](https://docs.aws.amazon.com/general/latest/gr/eks.html),
+  [China availability](https://docs.amazonaws.cn/en_us/aws/latest/userguide/eks.html),
   [health issue](https://docs.aws.amazon.com/eks/latest/APIReference/API_Issue.html),
   [service authorization](https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonelastickubernetesservice.html),
   and [credential provider](https://docs.aws.amazon.com/sdkref/latest/guide/standardized-credentials.html)

@@ -33,7 +33,6 @@ const (
 	maxScalingSize      = 100_000
 	maxWorkspaceBytes   = 253
 	maxScopeBytes       = 253
-	maxRegionBytes      = 32
 	maxClusterNameBytes = 100
 	maxNodegroupBytes   = 63
 	maxARNBytes         = 512
@@ -263,35 +262,26 @@ func validAccount(value string) bool {
 }
 
 func validRegion(partition, value string) bool {
-	if len(value) < 6 || len(value) > maxRegionBytes || strings.HasPrefix(value, "-") || strings.HasSuffix(value, "-") {
-		return false
-	}
-	for _, character := range value {
-		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
-			return false
-		}
-	}
-	parts := strings.Split(value, "-")
-	if len(parts) < 3 || parts[len(parts)-1] == "" {
-		return false
-	}
-	for _, part := range parts {
-		if part == "" {
-			return false
-		}
-	}
-	for _, character := range parts[len(parts)-1] {
-		if character < '0' || character > '9' {
-			return false
-		}
-	}
 	switch partition {
-	case "aws-cn":
-		return strings.HasPrefix(value, "cn-")
-	case "aws-us-gov":
-		return strings.HasPrefix(value, "us-gov-")
 	case "aws":
-		return !strings.HasPrefix(value, "cn-") && !strings.HasPrefix(value, "us-gov-")
+		switch value {
+		case "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+			"af-south-1",
+			"ap-east-1", "ap-east-2", "ap-northeast-1", "ap-northeast-2", "ap-northeast-3",
+			"ap-south-1", "ap-south-2", "ap-southeast-1", "ap-southeast-2", "ap-southeast-3",
+			"ap-southeast-4", "ap-southeast-5", "ap-southeast-6", "ap-southeast-7",
+			"ca-central-1", "ca-west-1",
+			"eu-central-1", "eu-central-2", "eu-north-1", "eu-south-1", "eu-south-2",
+			"eu-west-1", "eu-west-2", "eu-west-3",
+			"il-central-1", "me-central-1", "me-south-1", "mx-central-1", "sa-east-1":
+			return true
+		default:
+			return false
+		}
+	case "aws-us-gov":
+		return value == "us-gov-east-1" || value == "us-gov-west-1"
+	case "aws-cn":
+		return value == "cn-north-1" || value == "cn-northwest-1"
 	default:
 		return false
 	}

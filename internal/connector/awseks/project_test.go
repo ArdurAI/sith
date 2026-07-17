@@ -319,7 +319,7 @@ func TestAWSIdentityValidatorsRejectAmbiguousForms(t *testing.T) {
 		{partition: "aws-cn", region: "cn-north-1", want: true},
 		{partition: "aws-us-gov", region: "us-gov-west-1", want: true},
 		{partition: "aws", region: "short"},
-		{partition: "aws", region: strings.Repeat("a", maxRegionBytes+1)},
+		{partition: "aws", region: "foo-bar-1"},
 		{partition: "aws", region: "-us-west-2"},
 		{partition: "aws", region: "us-west-2-"},
 		{partition: "aws", region: "us_West-2"},
@@ -327,6 +327,12 @@ func TestAWSIdentityValidatorsRejectAmbiguousForms(t *testing.T) {
 		{partition: "aws", region: "us-west-final"},
 		{partition: "aws", region: "us--west-2"},
 		{partition: "aws", region: "cn-north-1"},
+		{partition: "aws", region: "us-gov-west-1"},
+		{partition: "aws", region: "us-iso-east-1"},
+		{partition: "aws", region: "us-isob-east-1"},
+		{partition: "aws", region: "us-isoe-east-1"},
+		{partition: "aws", region: "eu-isoe-west-1"},
+		{partition: "aws", region: "us-isof-south-1"},
 		{partition: "aws-cn", region: "us-west-2"},
 		{partition: "aws-us-gov", region: "us-west-2"},
 		{partition: "unreviewed", region: "us-west-2"},
@@ -362,6 +368,40 @@ func TestAWSIdentityValidatorsRejectAmbiguousForms(t *testing.T) {
 	} {
 		if got := validUUID(test.value); got != test.want {
 			t.Errorf("validUUID(%q) = %t; want %t", test.value, got, test.want)
+		}
+	}
+}
+
+func TestValidRegionPinsCurrentEKSEndpoints(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		partition string
+		regions   []string
+	}{
+		{partition: "aws", regions: []string{
+			"us-east-1", "us-east-2", "us-west-1", "us-west-2",
+			"af-south-1",
+			"ap-east-1", "ap-east-2", "ap-northeast-1", "ap-northeast-2", "ap-northeast-3",
+			"ap-south-1", "ap-south-2", "ap-southeast-1", "ap-southeast-2", "ap-southeast-3",
+			"ap-southeast-4", "ap-southeast-5", "ap-southeast-6", "ap-southeast-7",
+			"ca-central-1", "ca-west-1",
+			"eu-central-1", "eu-central-2", "eu-north-1", "eu-south-1", "eu-south-2",
+			"eu-west-1", "eu-west-2", "eu-west-3",
+			"il-central-1", "me-central-1", "me-south-1", "mx-central-1", "sa-east-1",
+		}},
+		{partition: "aws-us-gov", regions: []string{"us-gov-east-1", "us-gov-west-1"}},
+		{partition: "aws-cn", regions: []string{"cn-north-1", "cn-northwest-1"}},
+	}
+	for _, test := range tests {
+		for _, region := range test.regions {
+			if !validRegion(test.partition, region) {
+				t.Errorf("validRegion(%q, %q) rejected a pinned EKS endpoint", test.partition, region)
+			}
+		}
+	}
+	for _, region := range []string{"foo-bar-1", "us-isoz-east-1", "ap-southeast-99"} {
+		if validRegion("aws", region) {
+			t.Errorf("validRegion(aws, %q) accepted an unreviewed endpoint", region)
 		}
 	}
 }

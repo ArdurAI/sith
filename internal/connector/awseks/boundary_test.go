@@ -33,7 +33,7 @@ var allowedProductionImports = map[string]bool{
 }
 
 var allowedProductionFiles = map[string]string{
-	"project.go": "85d868d6c7837e4eb4a7183229a559bfb86a335831ad60c26bbf47c8367ffaf1",
+	"project.go": "5ba3f13177ed2d4eb5ef316c767bb70199de5540b1500b5f3d4e92bfac51bbb6",
 }
 
 var allowedProductionDeclarations = map[string]bool{
@@ -70,7 +70,6 @@ var allowedProductionDeclarations = map[string]bool{
 	"value:maxHealthIssues":          true,
 	"value:maxJSONDepth":             true,
 	"value:maxNodegroupBytes":        true,
-	"value:maxRegionBytes":           true,
 	"value:maxResponseBytes":         true,
 	"value:maxScalingSize":           true,
 	"value:maxScopeBytes":            true,
