@@ -77,6 +77,7 @@ func TestGenericResourceResolutionIsCached(t *testing.T) {
 		}},
 	)
 	var resolveCalls atomic.Int32
+	var tableRequests []tableRequest
 	adapter, err := New(
 		WithLoadingRules(testLoadingRules(t, testConfig("alpha"))),
 		withProbe(func(_ context.Context, _ *rest.Config) error { return nil }),
@@ -90,8 +91,9 @@ func TestGenericResourceResolutionIsCached(t *testing.T) {
 		}),
 		withTableFactory(func(_ *rest.Config) (tablePrinter, error) {
 			return func(
-				_ context.Context, _ resourceSpec, _, _, _ string,
+				_ context.Context, _ resourceSpec, request tableRequest,
 			) (map[string][]fleet.DisplayField, error) {
+				tableRequests = append(tableRequests, request)
 				return map[string][]fleet.DisplayField{
 					tableObjectKey("apps", "sample"): {{Name: "Name", Value: "sample"}, {Name: "Ready", Value: "1/1"}},
 				}, nil
@@ -115,6 +117,17 @@ func TestGenericResourceResolutionIsCached(t *testing.T) {
 	}
 	if resolveCalls.Load() != 1 {
 		t.Fatalf("resolver calls = %d, want one cached resolution", resolveCalls.Load())
+	}
+	if len(tableRequests) != 2 {
+		t.Fatalf("table requests = %#v, want query-budget retention keys", tableRequests)
+	}
+	for index, request := range tableRequests {
+		if request.rowBudget != 1 || len(request.retainKeys) != 1 {
+			t.Fatalf("table request %d = %#v, want query-budget retention keys", index, request)
+		}
+		if _, ok := request.retainKeys[tableObjectKey("apps", "sample")]; !ok {
+			t.Fatalf("table request %d retain keys = %#v, want only the selected fact", index, request.retainKeys)
+		}
 	}
 
 	evidence, err := adapter.Read(context.Background(), result.Facts[0].Ref)

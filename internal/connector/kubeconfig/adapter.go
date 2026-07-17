@@ -48,10 +48,19 @@ var supportedKinds = []string{
 type probeFunc func(ctx context.Context, config *rest.Config) error
 type dynamicFactory func(config *rest.Config) (dynamic.Interface, error)
 type resourceResolver func(ctx context.Context, config *rest.Config, kind string) (resourceSpec, error)
+
+type tableRequest struct {
+	namespace     string
+	name          string
+	labelSelector string
+	rowBudget     int
+	retainKeys    map[string]struct{}
+}
+
 type tablePrinter func(
 	ctx context.Context,
 	spec resourceSpec,
-	namespace, name, labelSelector string,
+	request tableRequest,
 ) (map[string][]fleet.DisplayField, error)
 type tableFactory func(config *rest.Config) (tablePrinter, error)
 

@@ -310,20 +310,8 @@ func (adapter *Adapter) queryScope(
 		result.facts = []fleet.Fact{}
 		return result
 	}
-	result.facts = make([]fleet.Fact, 0, len(objects))
-	display := map[string][]fleet.DisplayField{}
-	if generic {
-		if table == nil {
-			result.err = fmt.Errorf("server table client is unavailable for %s", name)
-			return result
-		}
-		var err error
-		display, err = table(ctx, spec, query.Selector.Namespace, "", labelSelector)
-		if err != nil {
-			result.err = err
-			return result
-		}
-	}
+	selectedObjects := make([]unstructured.Unstructured, 0, len(objects))
+	retainDisplay := make(map[string]struct{}, len(objects))
 	for _, object := range objects {
 		if query.Selector.Name != "" && object.GetName() != query.Selector.Name {
 			continue
@@ -334,6 +322,29 @@ func (adapter *Adapter) queryScope(
 		if query.Selector.Image != "" && !objectUsesImage(object, query.Selector.Image) {
 			continue
 		}
+		selectedObjects = append(selectedObjects, object)
+		retainDisplay[tableObjectKey(object.GetNamespace(), object.GetName())] = struct{}{}
+	}
+	result.facts = make([]fleet.Fact, 0, len(selectedObjects))
+	display := map[string][]fleet.DisplayField{}
+	if generic {
+		if table == nil {
+			result.err = fmt.Errorf("server table client is unavailable for %s", name)
+			return result
+		}
+		var err error
+		display, err = table(ctx, spec, tableRequest{
+			namespace:     query.Selector.Namespace,
+			labelSelector: labelSelector,
+			rowBudget:     len(objects),
+			retainKeys:    retainDisplay,
+		})
+		if err != nil {
+			result.err = err
+			return result
+		}
+	}
+	for _, object := range selectedObjects {
 		evidence, err := evidenceFromObject(object, spec, name, result.observedAt)
 		if err != nil {
 			result.err = err
