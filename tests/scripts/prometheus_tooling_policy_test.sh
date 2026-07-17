@@ -23,8 +23,14 @@ ci_checksum="$(awk -F '"' '/^  PROMETHEUS_LINUX_AMD64_SHA256: / { print $2 }' "$
 
 rules="${REPO_ROOT}/monitoring/sith-hub.rules.yml"
 [[ "$(grep -c '^[[:space:]]*- alert:' "${rules}")" == 3 ]]
-! grep -Fq '{{' "${rules}"
-! grep -Eq 'kind:[[:space:]]*(ServiceMonitor|PrometheusRule)|apiVersion:[[:space:]]*monitoring\.coreos\.com/' "${rules}"
+if grep -Fq '{{' "${rules}"; then
+  printf '[prometheus-policy] FAIL: dynamic templates are prohibited\n' >&2
+  exit 1
+fi
+if grep -Eq 'kind:[[:space:]]*(ServiceMonitor|PrometheusRule)|apiVersion:[[:space:]]*monitoring\.coreos\.com/' "${rules}"; then
+  printf '[prometheus-policy] FAIL: monitoring CRDs are prohibited\n' >&2
+  exit 1
+fi
 go test -count=1 -run '^TestPortableAlertRulesStayBoundedAndStatic$' ./internal/observability
 
 printf '[prometheus-policy] pinned promtool and static portable-rule boundaries verified\n'

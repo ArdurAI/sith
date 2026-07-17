@@ -67,5 +67,6 @@ operator-owned.
 - CodeRabbit's first complete review produced four applicable test-contract findings: exact
   comparator fixtures, canonical expression locking, complete output-label allowlisting, and
   relative `PROMTOOL` path handling. All were fixed; the second complete review reports zero
-  findings.
+  findings. The GitHub-side linter then identified Bash `! grep`/`errexit` behavior in two negative
+  policy checks; both now use explicit fail-closed branches and pass ShellCheck.
 - Notion checkpoint: https://app.notion.com/p/3a02637edb078115a74ac6cd5deb61f9
