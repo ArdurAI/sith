@@ -325,6 +325,12 @@ need:**
   consistent. Caller-provided repository identity remains authoritative, sensitive response fields
   are discarded, and the event stays unattached until an explicit repository-to-workload relation
   exists. This slice adds no HTTP client, token loading, persistence, or GitHub write capability.
+  Issue #214 establishes the Elasticsearch log-evidence contract: one already-fetched, complete
+  Search API response using the current ECS Kubernetes field profile becomes at most three bounded
+  TELEMETRY cause facts for R3. Cluster, namespace, Pod, optional container, and query-window
+  identity must match the trusted caller; raw messages are classified in memory and discarded.
+  Missing cluster identity, partial or failed shards, `_source`, unknown fields, and ambiguous values
+  fail closed. This slice adds no HTTP client, index discovery, credentials, persistence, or writes.
 - **W2 — desired-state/diff:** Helm · Kustomize · kubectl-diff (readers, **not** action targets in v1).
 - **W3 — viz/tracing/clouds:** Grafana (deep-link only) · OTel (semconv key backbone) · OpenShift ·
   Azure · GCP.
