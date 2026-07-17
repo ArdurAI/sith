@@ -320,6 +320,11 @@ need:**
   alerts become bounded TELEMETRY facts, annotations and unknown labels are discarded, and only one
   unambiguous allowlisted Kubernetes identity can attach a fact to the graph. The endpoint remains
   query-through; this slice adds no network client, series retention, credential loading, or writes.
+  Issue #212 establishes the GitHub merge-event contract: one already-fetched, API-versioned pull
+  request response becomes a bounded TIMELINE fact only when its merge evidence is internally
+  consistent. Caller-provided repository identity remains authoritative, sensitive response fields
+  are discarded, and the event stays unattached until an explicit repository-to-workload relation
+  exists. This slice adds no HTTP client, token loading, persistence, or GitHub write capability.
 - **W2 — desired-state/diff:** Helm · Kustomize · kubectl-diff (readers, **not** action targets in v1).
 - **W3 — viz/tracing/clouds:** Grafana (deep-link only) · OTel (semconv key backbone) · OpenShift ·
   Azure · GCP.
