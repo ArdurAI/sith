@@ -71,7 +71,7 @@ func (response *pullResponse) UnmarshalJSON(document []byte) error {
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(document, &fields); err != nil {
-		return err
+		return fmt.Errorf("pull request response must be a JSON object")
 	}
 	for _, field := range []exactField{
 		{name: "number", target: &response.Number},
@@ -88,7 +88,7 @@ func (response *pullResponse) UnmarshalJSON(document []byte) error {
 			continue
 		}
 		if err := json.Unmarshal(value, field.target); err != nil {
-			return fmt.Errorf("%s: %w", field.name, err)
+			return fmt.Errorf("%s is invalid", field.name)
 		}
 	}
 	return nil
@@ -97,14 +97,14 @@ func (response *pullResponse) UnmarshalJSON(document []byte) error {
 func (commit *pullCommit) UnmarshalJSON(document []byte) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(document, &fields); err != nil {
-		return err
+		return fmt.Errorf("commit must be a JSON object")
 	}
 	value, exists := fields["sha"]
 	if !exists {
 		return nil
 	}
 	if err := json.Unmarshal(value, &commit.SHA); err != nil {
-		return fmt.Errorf("sha: %w", err)
+		return fmt.Errorf("sha is invalid")
 	}
 	return nil
 }

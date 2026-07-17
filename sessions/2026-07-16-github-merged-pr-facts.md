@@ -61,9 +61,14 @@ input budget, graph validity, determinism, abstention, and the no-capability bou
 fact, capability escape, excess fact count, or oversized payload.
 [T] `make ci` passes formatting, vet, pinned lint with zero findings, vulnerability scanning with no
 findings, the full race suite, policy tests, warm-view performance, subprocess E2E, and the build.
-[T] `make e2e-isolation` passes the PostgreSQL/RLS boundary and both 50,000-execution workspace-
-isolation fuzzers. `make e2e-kind` passes the pinned Kubernetes fanout, OCI, and Argo suite in
-236.125 seconds. `make release-check` passes module verification, two reproducible release builds,
+[A] Hosted review found two valid hardening gaps: the initial capability test blacklisted known APIs
+instead of failing closed on any new import or declaration, and wrapped JSON errors could echo an
+attacker-sized numeric literal. The final boundary exact-allowlists every production import, type,
+value, function, and method, rejects injected interfaces, and returns fixed field-level decode
+errors with an explicit overlong-number regression.
+[T] After review hardening, `make ci` and `make e2e-isolation` pass again. The final
+`make e2e-kind` passes the pinned Kubernetes fanout, OCI, and Argo suite in 237.406 seconds.
+`make release-check` passes module verification, two reproducible release builds,
 archive/SPDX SBOM inspection, Homebrew formula generation, and the multi-platform distroless OCI
 layout. The release check used an isolated temporary `GOPATH` because this machine's configured
 GOPATH root contains another `go.mod`.
@@ -79,6 +84,7 @@ Primary compatibility references:
 ## Checkpoint
 
 - `2026-07-16/github-merged-pr-facts#1`
+- `2026-07-16/github-merged-pr-facts#2`
 
 ## Open questions
 

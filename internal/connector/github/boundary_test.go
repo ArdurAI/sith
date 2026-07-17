@@ -13,6 +13,51 @@ import (
 	"testing"
 )
 
+var allowedProductionImports = map[string]bool{
+	"bytes":                                  true,
+	"encoding/json":                          true,
+	"fmt":                                    true,
+	"io":                                     true,
+	"strconv":                                true,
+	"strings":                                true,
+	"time":                                   true,
+	"unicode":                                true,
+	"unicode/utf8":                           true,
+	"github.com/ArdurAI/sith/internal/fleet": true,
+}
+
+var allowedProductionDeclarations = map[string]bool{
+	"APIVersion":               true,
+	"Kind":                     true,
+	"ProtocolVersion":          true,
+	"Projection":               true,
+	"ProjectMergedPullRequest": true,
+	"UnmarshalJSON":            true,
+	"changeObservation":        true,
+	"consumeUniqueJSON":        true,
+	"matchingDelimiter":        true,
+	"maxClockSkew":             true,
+	"maxFactPayloadBytes":      true,
+	"maxHostBytes":             true,
+	"maxJSONDepth":             true,
+	"maxOwnerBytes":            true,
+	"maxRepositoryBytes":       true,
+	"maxResourceName":          true,
+	"maxResponseBytes":         true,
+	"maxWorkspaceBytes":        true,
+	"mergedObservation":        true,
+	"pullCommit":               true,
+	"pullResponse":             true,
+	"rejectDuplicateJSON":      true,
+	"requiredCommitSHA":        true,
+	"validCommitSHA":           true,
+	"validateHost":             true,
+	"validatePathComponent":    true,
+	"validateProjection":       true,
+	"validateResponseIdentity": true,
+	"validateText":             true,
+}
+
 func TestProjectorHasNoIOCredentialPersistenceOrMutationSeam(t *testing.T) {
 	t.Parallel()
 	entries, err := os.ReadDir(".")
@@ -32,20 +77,36 @@ func TestProjectorHasNoIOCredentialPersistenceOrMutationSeam(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unquote import: %v", err)
 			}
-			if path == "os" || path == "os/exec" || path == "syscall" || path == "plugin" ||
-				path == "database/sql" || path == "io/fs" || strings.HasPrefix(path, "net/") || path == "net" ||
-				strings.HasPrefix(path, "google.golang.org/grpc") || strings.HasPrefix(path, "k8s.io/client-go") {
-				t.Fatalf("projector imports I/O, credential, or persistence package %q", path)
+			if !allowedProductionImports[path] {
+				t.Fatalf("projector imports unreviewed package %q", path)
+			}
+		}
+		for _, node := range file.Decls {
+			switch declaration := node.(type) {
+			case *ast.FuncDecl:
+				if !allowedProductionDeclarations[declaration.Name.Name] {
+					t.Errorf("projector declares unreviewed function or method %s", declaration.Name.Name)
+				}
+			case *ast.GenDecl:
+				for _, specification := range declaration.Specs {
+					switch typed := specification.(type) {
+					case *ast.TypeSpec:
+						if !allowedProductionDeclarations[typed.Name.Name] {
+							t.Errorf("projector declares unreviewed type %s", typed.Name.Name)
+						}
+					case *ast.ValueSpec:
+						for _, name := range typed.Names {
+							if !allowedProductionDeclarations[name.Name] {
+								t.Errorf("projector declares unreviewed value %s", name.Name)
+							}
+						}
+					}
+				}
 			}
 		}
 		ast.Inspect(file, func(node ast.Node) bool {
-			declaration, ok := node.(*ast.FuncDecl)
-			if !ok {
-				return true
-			}
-			switch declaration.Name.Name {
-			case "Plan", "Execute", "Verify", "Write", "Delete", "Update", "Create", "Merge", "Persist", "Save", "Load", "Dial":
-				t.Errorf("projector declares forbidden I/O or mutation seam %s", declaration.Name.Name)
+			if _, ok := node.(*ast.InterfaceType); ok {
+				t.Errorf("projector declares an injected interface seam")
 			}
 			return true
 		})

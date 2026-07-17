@@ -290,6 +290,24 @@ func TestProjectMergedPullRequestErrorDoesNotEchoUntrustedValues(t *testing.T) {
 	}
 }
 
+func TestProjectMergedPullRequestReturnsBoundedFieldErrorForOverlongNumber(t *testing.T) {
+	t.Parallel()
+	literal := strings.Repeat("9", 64<<10)
+	input := validProjection(t)
+	input.Response = []byte(`{"number":` + literal + `,"state":"closed","draft":false,"merged":true}`)
+	_, err := ProjectMergedPullRequest(input)
+	if err == nil {
+		t.Fatal("ProjectMergedPullRequest() accepted overlong pull number")
+	}
+	want := "decode GitHub pull request response: number is invalid"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want fixed field error %q", err, want)
+	}
+	if len(err.Error()) > 128 || strings.Contains(err.Error(), literal[:64]) {
+		t.Fatalf("error retained untrusted numeric literal: length=%d error=%q", len(err.Error()), err)
+	}
+}
+
 func validProjection(t *testing.T) Projection {
 	t.Helper()
 	return Projection{
