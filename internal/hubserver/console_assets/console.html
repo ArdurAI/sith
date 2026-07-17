@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="sith-workspace" content="{{.Workspace}}">
+  <meta name="sith-csrf" content="{{.CSRFToken}}">
+  <title>Sith fleet trust console</title>
+  <link rel="stylesheet" href="/v1/console/assets/console.css">
+  <script src="/v1/console/assets/console.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#cluster-ledger">Skip to cluster ledger</a>
+  <main class="console-shell">
+    <header class="masthead" aria-labelledby="console-title">
+      <div>
+        <p class="eyebrow">Sith / fleet evidence</p>
+        <h1 id="console-title">Trust the coverage,<br>then trust the view.</h1>
+      </div>
+      <dl class="workspace-stamp">
+        <div>
+          <dt>Workspace</dt>
+          <dd id="workspace-name">{{.Workspace}}</dd>
+        </div>
+        <div>
+          <dt>Mode</dt>
+          <dd>Hub · read only</dd>
+        </div>
+      </dl>
+    </header>
+
+    <section class="coverage-panel" aria-labelledby="coverage-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Evidence boundary</p>
+          <h2 id="coverage-title">Coverage rail</h2>
+        </div>
+        <button id="reload-fleet" class="reload-button" type="button">Read current snapshot</button>
+      </div>
+      <p id="coverage-summary" class="coverage-summary" aria-live="polite">Reading the signed workspace snapshot…</p>
+      <div id="coverage-rail" class="coverage-rail" role="img" aria-label="Fleet coverage is loading"></div>
+      <ul class="rail-legend" aria-label="Coverage states">
+        <li><span class="legend-mark current"></span>Current</li>
+        <li><span class="legend-mark stale"></span>Stale</li>
+        <li><span class="legend-mark truncated"></span>Partial</li>
+        <li><span class="legend-mark unreachable"></span>Unreachable</li>
+        <li><span class="legend-mark unknown"></span>Unaccounted</li>
+      </ul>
+      <ul id="coverage-details" class="coverage-details" aria-label="Named coverage gaps"></ul>
+    </section>
+
+    <section id="cluster-ledger" class="ledger" aria-labelledby="ledger-title">
+      <div class="section-heading ledger-heading">
+        <div>
+          <p class="eyebrow">Signed workspace only</p>
+          <h2 id="ledger-title">Cluster ledger</h2>
+        </div>
+        <p id="snapshot-time" class="snapshot-time">No snapshot read yet</p>
+      </div>
+      <div id="console-state" class="console-state" role="status" aria-live="polite">
+        <p>Establishing the evidence boundary.</p>
+      </div>
+      <ol id="cluster-list" class="cluster-list" aria-label="Clusters"></ol>
+    </section>
+  </main>
+</body>
+</html>

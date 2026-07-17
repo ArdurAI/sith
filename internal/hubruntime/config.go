@@ -189,9 +189,20 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 			cleanup()
 			return nil, fmt.Errorf("construct hub runtime: browser OIDC handler configuration is invalid")
 		}
+		consoleHandler, err := hubserver.NewConsoleHandler(hubserver.ConsoleHandlerConfig{
+			Verifier: verifier, AuthObserver: authObserver, Reader: database, PEP: enforcer,
+		})
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("construct hub runtime: console handler configuration is invalid")
+		}
 		mux := http.NewServeMux()
 		mux.Handle("GET /v1/workspaces/{workspace}/console/login", http.HandlerFunc(browserHandler.Login))
 		mux.Handle("GET "+browserHandler.CallbackPath(), http.HandlerFunc(browserHandler.Callback))
+		mux.Handle("GET /v1/workspaces/{workspace}/console", http.HandlerFunc(consoleHandler.ServePage))
+		mux.Handle("GET /v1/workspaces/{workspace}/console/fleet", http.HandlerFunc(consoleHandler.ServeFleet))
+		mux.Handle("GET /v1/console/assets/console.css", http.HandlerFunc(consoleHandler.ServeCSS))
+		mux.Handle("GET /v1/console/assets/console.js", http.HandlerFunc(consoleHandler.ServeJavaScript))
 		mux.Handle("/", fleetHandler)
 		handler = mux
 	}

@@ -2107,6 +2107,11 @@ badges so coverage gaps are visible.
 4. The view is read-only and holds no privileged path — it only shows what the API returns for the
    actor's workspace.
 
+The first Hub rendering slice (#218) deliberately starts at the bounded `FleetResult` altitude:
+cluster reachability, observation time, and honest coverage gaps. It uses its own cookie/session +
+CSRF adapter over the existing PEP read and cannot mount local operations or trigger collection.
+Inventory records, correlation, and the service picker remain later read-only slices.
+
 ```mermaid
 flowchart TD
     A["Operator opens fleet view"] --> B["Call read API (tenant-scoped, E2)"]
