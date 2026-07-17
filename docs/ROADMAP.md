@@ -178,6 +178,13 @@ kubeconfigs — the read source is abstracted so hub mode and local mode share o
 - A cross-cluster correlation query (e.g. "every cluster where deployment X is unhealthy").
 - The **policy-hook seam** at the (future) intent boundary, returning "allow" for reads.
 
+> **Hub refresh hardening evidence (2026-07-16).** #195 independently authorizes every caller,
+> coalesces only concurrent refreshes for the same validated workspace, and runs shared work on a
+> detached internal trace so leader/waiter cancellation and request context cannot cross caller
+> boundaries. Completed, failed, and panicking flights are removed; different workspaces remain
+> independent. #193 and #194 separately track database snapshot consistency and bounded parallel
+> spoke collection rather than coupling those concerns into the coordination layer.
+
 **Exit criteria.**
 - A single query returns a correct, tenant-scoped, cross-cluster answer over **≥ 2 spokes**.
 - Per-cluster **staleness is visible** in the result.
