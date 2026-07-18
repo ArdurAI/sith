@@ -2500,7 +2500,8 @@ freshness, intent throughput, refusal and abstention rates, PDP latency.
 
 **How it works.**
 1. The hub exposes metrics for scraping (control-plane health, DB, queue depths).
-2. Federation metrics track per-spoke read freshness and dispatch success.
+2. Federation metrics track bounded aggregate request-time freshness and, once write federation
+   exists, dispatch success without tenant-proportional labels.
 3. Governance metrics track intents proposed/allowed/denied, abstention rate, and approval
    latency.
 4. These describe Sith itself; Sith does not retain other systems' metric series.
@@ -2508,7 +2509,7 @@ freshness, intent throughput, refusal and abstention rates, PDP latency.
 ```mermaid
 flowchart TD
     A["Sith hub"] --> B["Control-plane metrics: liveness, DB, queues"]
-    A --> C["Federation metrics: per-spoke freshness, dispatch success"]
+    A --> C["Federation metrics: aggregate read freshness, future dispatch success"]
     A --> D["Governance metrics: intents allowed/denied, abstention rate, approval latency"]
     B --> E["Exposed for scraping (about Sith itself)"]
     C --> E
@@ -2530,6 +2531,19 @@ mismatch, staleness, unreachability, truncation, and unaccounted scopes collapse
 only an internally consistent zero-scope result is `empty`. The fixed four-series counter has no tenant, spoke,
 resource, selector, identity, trace, age, or raw-error label and uses only the existing opt-in
 loopback scrape boundary. It is SLI substrate, not an SLO target, error budget, or alert.
+
+**Implementation note (F10.1f).** Each authorized persisted fleet read emits the existing coverage
+outcome and one paired request-time freshness outcome: `fresh`, `stale`, `unknown`, `empty`, or
+`error`. `fresh` requires a non-empty complete consistent result in which every returned cluster has
+a unique identity and non-zero observation time. A structurally valid result with a proven stale
+retained scope is `stale`; unobserved, inconsistent, mismatched, or otherwise non-stale degraded
+coverage is `unknown`.
+Only a consistent zero-scope result is `empty`, and a storage failure before a result exists is
+`error`. The five preinitialized series carry no tenant, identity, trace, request, spoke, cluster,
+resource, selector, credential, endpoint, age, or raw-error labels. The pair is validated before
+either counter changes and observer panic remains isolated. This is request-time SLI substrate, not
+continuous monitoring, a per-spoke series, alert, SLO, error budget, dispatch-success signal, or
+PDP-latency signal.
 
 **Implementation note (F10.1e).** Each valid completed Hub database readiness check emits one
 fixed `ready|unavailable` attempt and latency observation through the existing isolated loopback

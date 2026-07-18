@@ -384,6 +384,21 @@ result/coverage count mismatch are always `degraded`, and only a consistent zero
 authorization, carries no workspace, spoke, resource, selector, principal, trace, age, or raw-error
 label, and is panic-isolated from read behavior. This fixed four-series counter is an F10.1d
 coverage-SLI substrate; it is not a read-freshness objective or error-budget policy.
+The same authorized read also increments exactly one
+`sith_federation_fleet_read_freshness_total{outcome}` series. The five closed outcomes are
+`fresh`, `stale`, `unknown`, `empty`, and `error`. `fresh` requires a non-empty, internally
+consistent, complete result where every returned cluster has a unique identity and non-zero
+observation time. A structurally valid result with a proven stale retained scope is `stale`; unseen,
+inconsistent, mismatched, or otherwise non-stale degraded coverage is `unknown`. Only a consistent zero-scope
+result is `empty`, and a storage failure before a result exists is `error`. Coverage and freshness
+are emitted as one validated pair, so an invalid dimension discards both observations rather than
+fabricating a partial result. The fixed series carry no tenant-proportional labels and add no
+listener, storage, exporter, background task, or network path. They are request-time SLI substrate:
+a workspace with no reads emits no events, and this is not continuous snapshot-age monitoring, a
+per-spoke series, an alert, SLO, or error budget. This follows Prometheus guidance to keep label
+cardinality bounded and use counters for completed online-serving requests; see the
+[instrumentation](https://prometheus.io/docs/practices/instrumentation/) and
+[metric naming](https://prometheus.io/docs/practices/naming/) guidance.
 The portable [hub alert rules](monitoring/sith-hub.rules.yml) turn the established audit, auth-log
 delivery, aggregate snapshot failure, eligible fleet-read coverage, database-readiness, and
 traffic-independent build-info presence signals into six bounded,

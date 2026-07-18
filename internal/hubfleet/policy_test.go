@@ -39,7 +39,7 @@ func TestHubReadEntrypointsStopBeforeDependenciesWhenPolicyRefuses(t *testing.T)
 	var readObservations int
 	source, err := NewSource(SourceConfig{
 		Reader: reader, Scope: scope, PEP: refusal.enforcer(t),
-		Observer: fleetReadObserverFunc(func(FleetReadOutcome) { readObservations++ }),
+		Observer: fleetReadObserverFunc(func(FleetReadObservation) { readObservations++ }),
 	})
 	if err != nil {
 		t.Fatal(err)

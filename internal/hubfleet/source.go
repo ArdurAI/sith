@@ -5,6 +5,7 @@ package hubfleet
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ArdurAI/sith/internal/fleet"
@@ -40,10 +41,62 @@ func (outcome FleetReadOutcome) Valid() bool {
 	}
 }
 
+// FleetFreshnessOutcome is the bounded request-time freshness result of one authorized fleet
+// read. It intentionally describes only the aggregate returned view and carries no workspace,
+// spoke, resource, selector, principal, trace, age, or raw error.
+type FleetFreshnessOutcome string
+
+// Closed request-time fleet freshness outcomes.
+const (
+	FleetFreshnessOutcomeFresh   FleetFreshnessOutcome = "fresh"
+	FleetFreshnessOutcomeStale   FleetFreshnessOutcome = "stale"
+	FleetFreshnessOutcomeUnknown FleetFreshnessOutcome = "unknown"
+	FleetFreshnessOutcomeEmpty   FleetFreshnessOutcome = "empty"
+	FleetFreshnessOutcomeError   FleetFreshnessOutcome = "error"
+)
+
+// Valid reports whether the freshness outcome belongs to the closed vocabulary.
+func (outcome FleetFreshnessOutcome) Valid() bool {
+	switch outcome {
+	case FleetFreshnessOutcomeFresh, FleetFreshnessOutcomeStale, FleetFreshnessOutcomeUnknown,
+		FleetFreshnessOutcomeEmpty, FleetFreshnessOutcomeError:
+		return true
+	default:
+		return false
+	}
+}
+
+// FleetReadObservation is one privacy-bounded pair of aggregate coverage and request-time
+// freshness outcomes for an authorized fleet read.
+type FleetReadObservation struct {
+	Outcome   FleetReadOutcome
+	Freshness FleetFreshnessOutcome
+}
+
+// Valid reports whether both dimensions belong to their closed vocabularies.
+func (observation FleetReadObservation) Valid() bool {
+	if !observation.Outcome.Valid() || !observation.Freshness.Valid() {
+		return false
+	}
+	switch observation.Outcome {
+	case FleetReadOutcomeComplete:
+		return observation.Freshness == FleetFreshnessOutcomeFresh
+	case FleetReadOutcomeDegraded:
+		return observation.Freshness == FleetFreshnessOutcomeStale ||
+			observation.Freshness == FleetFreshnessOutcomeUnknown
+	case FleetReadOutcomeEmpty:
+		return observation.Freshness == FleetFreshnessOutcomeEmpty
+	case FleetReadOutcomeError:
+		return observation.Freshness == FleetFreshnessOutcomeError
+	default:
+		return false
+	}
+}
+
 // FleetReadObserver receives one passive result for an authorized fleet read. Implementations
 // must not block or mutate read behavior; Source isolates observer panics defensively.
 type FleetReadObserver interface {
-	ObserveFleetRead(FleetReadOutcome)
+	ObserveFleetRead(FleetReadObservation)
 }
 
 // SourceConfig fixes a signed tenancy scope to a source-abstract hub reader.
@@ -109,27 +162,73 @@ func (source *Source) Fleet(ctx context.Context) (fleet.FleetResult, error) {
 	}
 	result, err := source.reader.ReadFleet(ctx, source.scope, source.freshness, source.now().UTC())
 	if err != nil {
-		source.observeFleetRead(FleetReadOutcomeError)
+		source.observeFleetRead(FleetReadObservation{
+			Outcome: FleetReadOutcomeError, Freshness: FleetFreshnessOutcomeError,
+		})
 		return fleet.FleetResult{}, fmt.Errorf("read OCM spoke fleet: %w", err)
 	}
 	assessment := result.Coverage.Assessment()
+	observation := FleetReadObservation{Freshness: fleetFreshnessOutcome(result, assessment)}
 	switch {
 	case !assessment.Complete || len(result.Clusters) != result.Coverage.Requested:
-		source.observeFleetRead(FleetReadOutcomeDegraded)
+		observation.Outcome = FleetReadOutcomeDegraded
 	case result.Coverage.Requested == 0:
-		source.observeFleetRead(FleetReadOutcomeEmpty)
+		observation.Outcome = FleetReadOutcomeEmpty
 	default:
-		source.observeFleetRead(FleetReadOutcomeComplete)
+		observation.Outcome = FleetReadOutcomeComplete
 	}
+	source.observeFleetRead(observation)
 	return result, nil
 }
 
-func (source *Source) observeFleetRead(outcome FleetReadOutcome) {
-	if source == nil || source.observer == nil || !outcome.Valid() {
+func fleetFreshnessOutcome(result fleet.FleetResult, assessment fleet.CoverageAssessment) FleetFreshnessOutcome {
+	observed, validClusters := observedFleetScopes(result)
+	switch {
+	case assessment.Inconsistent || !validClusters:
+		return FleetFreshnessOutcomeUnknown
+	case len(assessment.Stale) != 0:
+		for _, scope := range assessment.Stale {
+			if observedAt, exists := observed[scope]; !exists || observedAt.IsZero() {
+				return FleetFreshnessOutcomeUnknown
+			}
+		}
+		return FleetFreshnessOutcomeStale
+	case result.Coverage.Requested == 0:
+		return FleetFreshnessOutcomeEmpty
+	case !assessment.Complete:
+		return FleetFreshnessOutcomeUnknown
+	}
+	for _, observedAt := range observed {
+		if observedAt.IsZero() {
+			return FleetFreshnessOutcomeUnknown
+		}
+	}
+	return FleetFreshnessOutcomeFresh
+}
+
+func observedFleetScopes(result fleet.FleetResult) (map[string]time.Time, bool) {
+	if len(result.Clusters) != result.Coverage.Requested {
+		return nil, false
+	}
+	observed := make(map[string]time.Time, len(result.Clusters))
+	for _, cluster := range result.Clusters {
+		if strings.TrimSpace(cluster.Name) == "" {
+			return nil, false
+		}
+		if _, exists := observed[cluster.Name]; exists {
+			return nil, false
+		}
+		observed[cluster.Name] = cluster.ObservedAt
+	}
+	return observed, true
+}
+
+func (source *Source) observeFleetRead(observation FleetReadObservation) {
+	if source == nil || source.observer == nil || !observation.Valid() {
 		return
 	}
 	defer func() {
 		_ = recover()
 	}()
-	source.observer.ObserveFleetRead(outcome)
+	source.observer.ObserveFleetRead(observation)
 }
