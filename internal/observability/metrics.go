@@ -47,6 +47,7 @@ type Metrics struct {
 	fleetReadFreshness  *prometheus.CounterVec
 	readinessChecks     *prometheus.CounterVec
 	readinessDuration   *prometheus.HistogramVec
+	authRefusals        prometheus.Counter
 	authDeliveryDrops   prometheus.Counter
 }
 
@@ -56,6 +57,7 @@ var (
 	_ hubfleet.SnapshotObserver   = (*Metrics)(nil)
 	_ hubfleet.FleetReadObserver  = (*Metrics)(nil)
 	_ hubserver.ReadinessObserver = (*Metrics)(nil)
+	_ hubserver.AuthObserver      = (*Metrics)(nil)
 )
 
 // New constructs metrics against a caller-owned or fresh isolated registry. Registration errors
@@ -111,6 +113,10 @@ func New(config Config) (*Metrics, error) {
 			Namespace: "sith", Subsystem: "hub", Name: "readiness_check_duration_seconds",
 			Help: "Duration of completed Sith Hub database readiness checks by closed outcome.",
 		}, []string{"outcome"}),
+		authRefusals: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "sith", Subsystem: "auth", Name: "refusals_total",
+			Help: "Total authentication requests refused by Sith's sanitized middleware boundary.",
+		}),
 		authDeliveryDrops: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "sith", Subsystem: "auth", Name: "refusal_delivery_drops_total",
 			Help: "Total dropped bounded local authentication-refusal delivery records.",
@@ -125,7 +131,7 @@ func New(config Config) (*Metrics, error) {
 	})
 	buildInfo.Set(1)
 
-	registered := make([]prometheus.Collector, 0, 14)
+	registered := make([]prometheus.Collector, 0, 15)
 	for _, collector := range []struct {
 		name      string
 		collector prometheus.Collector
@@ -143,6 +149,7 @@ func New(config Config) (*Metrics, error) {
 		{name: "fleet read freshness", collector: metrics.fleetReadFreshness},
 		{name: "Hub readiness checks", collector: metrics.readinessChecks},
 		{name: "Hub readiness duration", collector: metrics.readinessDuration},
+		{name: "authentication refusals", collector: metrics.authRefusals},
 		{name: "authentication-refusal delivery drops", collector: metrics.authDeliveryDrops},
 	} {
 		if err := registry.Register(collector.collector); err != nil {
@@ -251,6 +258,16 @@ func (metrics *Metrics) ObserveReadiness(outcome hubserver.ReadinessOutcome, dur
 	}
 	metrics.readinessChecks.WithLabelValues(string(outcome)).Inc()
 	metrics.readinessDuration.WithLabelValues(string(outcome)).Observe(normalizedDuration(duration))
+}
+
+// ObserveAuth records one already-sanitized middleware refusal. The counter is unlabeled because
+// no principal, workspace, correlation, request, credential mode, or failure reason is trusted at
+// this boundary. Invalid events are discarded rather than fabricating an observation.
+func (metrics *Metrics) ObserveAuth(event hubserver.AuthEvent) {
+	if metrics == nil || metrics.authRefusals == nil || event.Validate() != nil {
+		return
+	}
+	metrics.authRefusals.Inc()
 }
 
 // ObserveAuthRefusalDeliveryDrop records one bounded process-local delivery drop. It carries no

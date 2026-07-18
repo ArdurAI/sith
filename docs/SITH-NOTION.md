@@ -2539,7 +2539,8 @@ and alerting · F10.5 crown-jewel hardening.
 ### F10.1 — Metrics
 
 **What it is.** Metrics about Sith's own health and behavior: control-plane liveness, federation
-freshness, intent throughput, refusal and abstention rates, PDP latency.
+freshness, intent throughput, sanitized authentication-refusal counts, and future derived rates
+where trustworthy denominators exist, abstention rates, and PDP latency.
 
 **How it works.**
 1. The hub exposes metrics for scraping (control-plane health, DB, queue depths).

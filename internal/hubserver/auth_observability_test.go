@@ -110,3 +110,42 @@ func TestObserveAuthRejectsUnsafeEventsAndContainsObserverPanics(t *testing.T) {
 		t.Fatalf("status = %d, body = %q", response.Code, response.Body.String())
 	}
 }
+
+func TestAuthObserverFanoutIsolatesEachRequiredDestination(t *testing.T) {
+	var deliveries []string
+	first := AuthObserverFunc(func(AuthEvent) {
+		deliveries = append(deliveries, "first")
+		panic("observer fault")
+	})
+	second := AuthObserverFunc(func(AuthEvent) { deliveries = append(deliveries, "second") })
+	observers := []AuthObserver{first, second}
+	fanout, err := NewAuthObserverFanout(observers...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observers[1] = AuthObserverFunc(func(AuthEvent) { t.Fatal("fanout retained caller-owned slice") })
+
+	ObserveAuth(fanout, AuthEvent{Outcome: AuthOutcomeRefused})
+	if len(deliveries) != 2 || deliveries[0] != "first" || deliveries[1] != "second" {
+		t.Fatalf("fanout deliveries = %#v, want independently isolated order", deliveries)
+	}
+
+	deliveries = nil
+	ObserveAuth(fanout, AuthEvent{Outcome: "token=secret"})
+	if len(deliveries) != 0 {
+		t.Fatalf("unsafe event reached fanout destinations: %#v", deliveries)
+	}
+}
+
+func TestNewAuthObserverFanoutRejectsIncompleteConfiguration(t *testing.T) {
+	observer := AuthObserverFunc(func(AuthEvent) {})
+	for _, observers := range [][]AuthObserver{
+		nil,
+		{observer},
+		{observer, nil},
+	} {
+		if fanout, err := NewAuthObserverFanout(observers...); err == nil || fanout != nil {
+			t.Fatalf("NewAuthObserverFanout(%#v) = %#v, %v", observers, fanout, err)
+		}
+	}
+}

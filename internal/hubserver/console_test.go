@@ -172,6 +172,41 @@ func TestConsoleRoutesResolveWorkspaceThroughServeMux(t *testing.T) {
 	}
 }
 
+func TestConsoleHandlerForwardsUniformAuthRefusalsToConfiguredObserver(t *testing.T) {
+	now := time.Date(2026, 7, 18, 8, 0, 0, 0, time.UTC)
+	verifier, _ := fleetTestVerifier(t, now)
+	var events []AuthEvent
+	handler, err := NewConsoleHandler(ConsoleHandlerConfig{
+		Verifier: verifier, AuthObserver: AuthObserverFunc(func(event AuthEvent) {
+			events = append(events, event)
+		}),
+		Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
+			t.Fatal("unauthenticated request reached reader")
+			return fleet.FleetResult{}, nil
+		}),
+		Correlator: noopConsoleCorrelator(t),
+		Inventory:  noopConsoleInventory(t),
+		CVE:        noopConsoleCVE(t),
+		PEP:        fleetTestPEP(t, pep.AllowReadHook{}),
+		Now:        func() time.Time { return now },
+		Random:     bytes.NewReader(bytes.Repeat([]byte{0x7a}, 192)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, session := range []string{"", "token=secret"} {
+		response := httptest.NewRecorder()
+		handler.ServePage(response, consoleTestRequest(http.MethodGet, "/v1/workspaces/workspace-a/console", "workspace-a", session))
+		if response.Code != http.StatusUnauthorized || response.Body.String() != "{\"error\":\"unauthorized\"}\n" {
+			t.Fatalf("session %q status/body = %d/%q", session, response.Code, response.Body.String())
+		}
+	}
+	if len(events) != 2 || events[0] != (AuthEvent{Outcome: AuthOutcomeRefused}) || events[1] != events[0] {
+		t.Fatalf("console authentication events = %#v, want two uniform refusals", events)
+	}
+}
+
 func TestConsoleHandlerFailsClosedBeforeReader(t *testing.T) {
 	verifierNow := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
 	consoleNow := verifierNow

@@ -135,13 +135,19 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: policy configuration is invalid")
 	}
-	authObserver, err := auditdelivery.NewProcessObserver(auditdelivery.Config{Drops: metrics})
+	processAuthObserver, err := auditdelivery.NewProcessObserver(auditdelivery.Config{Drops: metrics})
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: process authentication audit delivery is unavailable")
 	}
+	authObserver, err := hubserver.NewAuthObserverFanout(processAuthObserver, metrics)
+	if err != nil {
+		_ = processAuthObserver.Close()
+		cleanup()
+		return nil, fmt.Errorf("construct hub runtime: authentication observation is invalid")
+	}
 	cleanup = func() {
-		_ = authObserver.Close()
+		_ = processAuthObserver.Close()
 		database.Close()
 	}
 	collector, err := hubfleet.NewCollector(hubfleet.CollectorConfig{Store: database, Transport: transport, PEP: enforcer, Observer: metrics, TraceObserver: tracer})
@@ -274,7 +280,7 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		return nil, err
 	}
 	cleanup = func() {
-		_ = authObserver.Close()
+		_ = processAuthObserver.Close()
 		if metricsServer != nil {
 			_ = metricsServer.Close()
 		}

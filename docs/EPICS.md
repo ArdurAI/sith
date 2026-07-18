@@ -2496,7 +2496,8 @@ and alerting · F10.5 crown-jewel hardening.
 ### F10.1 — Metrics
 
 **What it is.** Metrics about Sith's own health and behavior: control-plane liveness, federation
-freshness, intent throughput, refusal and abstention rates, PDP latency.
+freshness, intent throughput, sanitized authentication-refusal counts, and future derived rates
+where trustworthy denominators exist, abstention rates, and PDP latency.
 
 **How it works.**
 1. The hub exposes metrics for scraping (control-plane health, DB, queue depths).
@@ -2552,6 +2553,16 @@ collapse to `unavailable`; invalid requests emit nothing and invalid observation
 discarded. The two preinitialized outcome series carry no tenant, spoke, request, endpoint,
 credential, error, or panic detail. Instrumentation is panic-isolated from the body-free probe and
 adds no listener, Service, exporter, persistence, remote write, or cloud resource.
+
+**Implementation note (F10.1g).** Each refusal emitted by the existing sanitized bearer/session
+middleware boundary increments one preinitialized, unlabeled `sith_auth_refusals_total` counter.
+Runtime fanout independently reaches the existing process audit observer and the metric observer;
+observer panics cannot suppress a later destination or alter the uniform HTTP 401 response. The
+counter carries no reason, credential mode, tenant, workspace, actor, principal, token, IP, path,
+request, trace, or correlation label. It does not count successful authentication, OIDC provider
+exchange/callback failures, authorization denials, or every future authentication mode. Without a
+success or attempt denominator it is not a ratio, brute-force detector, alert threshold, SLO,
+error budget, page, or complete security-monitoring control.
 
 ### F10.2 — Distributed tracing
 
