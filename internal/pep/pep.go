@@ -46,12 +46,13 @@ const (
 	VerbFleetCVESearch           Verb = "fleet.cve.search"
 	VerbFleetCVEIdentifierSearch Verb = "fleet.cve.identifier.search"
 	VerbSpokeSnapshotRefresh     Verb = "fleet.snapshot.refresh"
+	VerbAuditExport              Verb = "audit.export"
 )
 
 // Valid reports whether a verb belongs to the currently supported closed vocabulary.
 func (verb Verb) Valid() bool {
 	switch verb {
-	case VerbFleetRead, VerbFleetCorrelate, VerbFleetInventorySearch, VerbFleetImageSearch, VerbFleetCVESearch, VerbFleetCVEIdentifierSearch, VerbSpokeSnapshotRefresh:
+	case VerbFleetRead, VerbFleetCorrelate, VerbFleetInventorySearch, VerbFleetImageSearch, VerbFleetCVESearch, VerbFleetCVEIdentifierSearch, VerbSpokeSnapshotRefresh, VerbAuditExport:
 		return true
 	default:
 		return false
@@ -61,7 +62,9 @@ func (verb Verb) Valid() bool {
 func (verb Verb) validForAction(action tenancy.Action) bool {
 	switch action {
 	case tenancy.ActionRead:
-		return verb.Valid()
+		return verb.Valid() && verb != VerbAuditExport
+	case tenancy.ActionExportAudit:
+		return verb == VerbAuditExport
 	case tenancy.ActionProposeIntent:
 		return intent.Verb(verb).Valid()
 	default:
@@ -274,14 +277,19 @@ func NewEnforcer(config Config) (*Enforcer, error) {
 	return &Enforcer{hook: config.Hook, auditor: config.Auditor, observer: config.Observer, tracer: config.TraceObserver, now: config.Now}, nil
 }
 
-// AllowReadHook is the temporary Phase-1 policy implementation. It allows only the closed read
-// vocabulary; it is intentionally unsuitable for future write verbs.
+// AllowReadHook is the temporary Phase-1 policy implementation. It allows only closed read-only
+// operations, including the separately role-gated audit export; it is intentionally unsuitable for
+// future write verbs.
 type AllowReadHook struct{}
 
 // Decide returns allow only for an already-validated read request.
 func (AllowReadHook) Decide(_ context.Context, request Request) (Decision, error) {
-	if request.Action != tenancy.ActionRead || !request.Verb.Valid() {
+	if (request.Action != tenancy.ActionRead && request.Action != tenancy.ActionExportAudit) ||
+		!request.Verb.validForAction(request.Action) {
 		return Decision{Verdict: VerdictDeny, ReasonCode: "unsupported-read"}, nil
+	}
+	if request.Action == tenancy.ActionExportAudit {
+		return Decision{Verdict: VerdictAllow, ReasonCode: "phase-1-audit-export"}, nil
 	}
 	return Decision{Verdict: VerdictAllow, ReasonCode: "phase-1-read"}, nil
 }
@@ -295,6 +303,17 @@ func (enforcer *Enforcer) AuthorizeRead(ctx context.Context, scope tenancy.Scope
 		Verb: input.Verb, ArgumentsDigest: input.ArgumentsDigest,
 	}
 	return enforcer.authorize(ctx, scope, request, true, "read")
+}
+
+// AuthorizeAuditExport applies a dedicated admin-only policy boundary to disclosure of the retained
+// workspace audit chain. The exact operation has no caller-controlled arguments.
+func (enforcer *Enforcer) AuthorizeAuditExport(ctx context.Context, scope tenancy.Scope) error {
+	input := NewReadInput(VerbAuditExport, nil)
+	request := Request{
+		WorkspaceID: scope.WorkspaceID(), Actor: scope.Subject(), Role: scope.Role(), Action: tenancy.ActionExportAudit,
+		Verb: input.Verb, ArgumentsDigest: input.ArgumentsDigest,
+	}
+	return enforcer.authorize(ctx, scope, request, true, "audit export")
 }
 
 // AuthorizeProposal runs a resolved typed proposal through the same policy hook and mandatory
@@ -416,7 +435,7 @@ func (enforcer *Enforcer) refuse(ctx context.Context, request Request, verdict V
 
 func normalizedAuditRequest(request Request) (Request, bool) {
 	if tenancy.ValidateWorkspaceID(request.WorkspaceID) != nil || validateSafeText("policy actor", request.Actor, maxActorBytes) != nil ||
-		!request.Role.Valid() || (request.Action != tenancy.ActionRead && request.Action != tenancy.ActionProposeIntent) {
+		!request.Role.Valid() || (request.Action != tenancy.ActionRead && request.Action != tenancy.ActionExportAudit && request.Action != tenancy.ActionProposeIntent) {
 		return Request{}, false
 	}
 	if !request.Verb.validForAction(request.Action) {

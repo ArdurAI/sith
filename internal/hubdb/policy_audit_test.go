@@ -6,10 +6,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
+	"io/fs"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ArdurAI/sith/internal/auditrecord"
 	"github.com/ArdurAI/sith/internal/pep"
 	"github.com/ArdurAI/sith/internal/tenancy"
 	"github.com/ArdurAI/sith/internal/tracing"
@@ -125,8 +128,65 @@ func TestPolicyAuditBoundaryRejectsMissingDatabaseAndInvalidScope(t *testing.T) 
 	if err := (*AppDB)(nil).VerifyPolicyAuditChain(context.Background(), tenancy.Scope{}); err == nil {
 		t.Fatal("nil database verified a policy audit chain")
 	}
+	if _, err := (*AppDB)(nil).ExportPolicyAuditChain(context.Background(), tenancy.Scope{}); err == nil {
+		t.Fatal("nil database exported a policy audit chain")
+	}
 	if _, err := auditEventScope(pep.AuditEvent{}); err == nil {
 		t.Fatal("invalid audit event produced a workspace scope")
+	}
+}
+
+func TestPolicyAuditExportProjectionIsPortableAndPrivacyMinimized(t *testing.T) {
+	t.Parallel()
+
+	entry := policyAuditTestEntry()
+	entry.entryHash = policyAuditEntryHash(entry)
+	exported := newPolicyAuditExport("workspace-a", []policyAuditEntry{entry}, 1, entry.entryHash)
+	if exported.Schema != auditrecord.SchemaV1 || exported.WorkspaceID != "workspace-a" ||
+		exported.Chain.HashAlgorithm != auditrecord.HashAlgorithm || exported.Chain.HeadSequence != 1 ||
+		exported.Chain.HeadHash != "sha256:"+hex.EncodeToString(entry.entryHash) || len(exported.Entries) != 1 {
+		t.Fatalf("export = %#v", exported)
+	}
+	record := exported.Entries[0]
+	if record.Sequence != 1 || record.FormatVersion != policyAuditFormatVersion ||
+		record.RecordedAt != entry.recordedAt || record.TraceID != string(entry.traceID) ||
+		record.Action != string(tenancy.ActionRead) || record.Verb != string(pep.VerbFleetRead) ||
+		record.EventKind != policyDecisionEventKind || record.EvidenceDigest != "" ||
+		record.PreviousHash != "sha256:"+strings.Repeat("0", 64) || record.EntryHash != exported.Chain.HeadHash {
+		t.Fatalf("portable record = %#v", record)
+	}
+	encoded, err := json.Marshal(exported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"arguments", "selector", "target", "credential", "token", "payload", "justification"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("portable export leaked forbidden field %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestAuditExportMigrationAddsOnlyClosedAction(t *testing.T) {
+	t.Parallel()
+
+	migration, err := fs.ReadFile(migrationFiles, "migrations/0012_audit_export_action.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(migration)
+	for _, required := range []string{
+		"DROP CONSTRAINT policy_audit_entries_action_valid",
+		"action IN ('read', 'export-audit', 'propose-intent', 'approve-intent')",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("audit export migration is missing %q", required)
+		}
+	}
+	upperText := strings.ToUpper(text)
+	for _, forbidden := range []string{"DISABLE ROW LEVEL SECURITY", "NO FORCE ROW LEVEL SECURITY", "GRANT", "DROP POLICY"} {
+		if strings.Contains(upperText, forbidden) {
+			t.Fatalf("audit export migration contains unsafe boundary change %q", forbidden)
+		}
 	}
 }
 
