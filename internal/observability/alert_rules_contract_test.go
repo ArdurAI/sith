@@ -44,11 +44,11 @@ func TestPortableAlertRulesStayBoundedAndStatic(t *testing.T) {
 		t.Fatalf("rule groups = %d, want 1", len(file.Groups))
 	}
 	group := file.Groups[0]
-	if group.Name != "sith-hub.failure-signals" || group.Interval != "1m" || group.Limit != 8 {
+	if group.Name != "sith-hub.failure-signals" || group.Interval != "1m" || group.Limit != 9 {
 		t.Errorf("rule group contract = %#v", group)
 	}
-	if len(group.Rules) != 8 {
-		t.Fatalf("alert rules = %d, want 8", len(group.Rules))
+	if len(group.Rules) != 9 {
+		t.Fatalf("alert rules = %d, want 9", len(group.Rules))
 	}
 
 	want := map[string]struct {
@@ -71,6 +71,12 @@ func TestPortableAlertRulesStayBoundedAndStatic(t *testing.T) {
 		"SithHubAuthRefusalDeliveryDrop": {
 			severity: "warning", hold: "5m",
 			expr: `sum(increase(sith_auth_refusal_delivery_drops_total[10m])) > 0`,
+		},
+		"SithHubAuthenticationRefusalOnly": {
+			severity: "warning", hold: "10m",
+			expr:        `sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0 and sum(count_over_time(sith_auth_attempts_total{outcome="accepted"}[10m])) > 0`,
+			summary:     "Sith hub authentication traffic is persistently refusal-only",
+			description: "At least twenty aggregate authentication attempts were refused and none were accepted over fifteen minutes; accepted-outcome telemetry was present during the last ten minutes.",
 		},
 		"SithHubFederationSnapshotFailureRatioHigh": {
 			severity: "warning", hold: "10m",
