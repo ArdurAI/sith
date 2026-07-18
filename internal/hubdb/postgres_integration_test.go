@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,6 +27,7 @@ import (
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/hubauth"
 	"github.com/ArdurAI/sith/internal/hubfleet"
+	"github.com/ArdurAI/sith/internal/intent"
 	"github.com/ArdurAI/sith/internal/pep"
 	"github.com/ArdurAI/sith/internal/tenancy"
 	"github.com/ArdurAI/sith/internal/tracing"
@@ -127,7 +129,7 @@ func TestPostgresRLSBackstop(t *testing.T) {
 
 	tables := []string{
 		"workspaces", "memberships", "clusters", "fleet_facts", "api_keys", "oidc_bindings",
-		"cloud_identity_bindings", "policy_audit_heads", "policy_audit_entries",
+		"cloud_identity_bindings", "policy_audit_heads", "policy_audit_entries", "approval_grants",
 	}
 	for _, table := range tables {
 		var count int
@@ -156,6 +158,10 @@ func TestPostgresRLSBackstop(t *testing.T) {
 		{name: "OIDC binding", statement: `INSERT INTO sith.oidc_bindings(workspace_id, issuer, upstream_subject, member_subject)
 			VALUES ('workspace-b', 'https://idp.example', 'upstream:mallory', 'user:bob')`},
 		{name: "cloud identity binding", statement: "INSERT INTO sith.cloud_identity_bindings(workspace_id, provider, realm, upstream_subject, member_subject)\n\t\t\tVALUES ('workspace-b', 'aws', '222222222222', 'AROAX:mallory', 'user:bob')"},
+		{name: "approval grant", statement: `INSERT INTO sith.approval_grants(
+			workspace_id, id, intent_id, proposer, approver, resolved_digest, approved_at
+		) VALUES ('workspace-b', 'ZZZZZZZZZZZZZZZZZZZZZZ', 'intent-foreign', 'user:operator',
+			'user:approver', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', now())`},
 	}
 	for _, test := range foreignWrites {
 		t.Run("foreign "+test.name+" write denied", func(t *testing.T) {
@@ -257,16 +263,37 @@ func TestPostgresRLSBackstop(t *testing.T) {
 		t.Fatalf("restored AuditIsolation() error = %v", err)
 	}
 
+	if _, err := owner.Exec(ctx, `CREATE POLICY workspace_bypass ON sith.memberships
+		AS PERMISSIVE FOR ALL TO PUBLIC USING (true) WITH CHECK (true)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertWorkspaceAIsolation(ctx, database, scope); err == nil || !strings.Contains(err.Error(), "memberships count = 2") {
+		t.Fatalf("additional-policy negative control did not expose the isolation invariant: %v", err)
+	}
+	if err := AuditIsolation(ctx, owner, appRole); err == nil || !strings.Contains(err.Error(), "complete workspace policy is missing") {
+		t.Fatalf("additional-policy negative control escaped catalog audit: %v", err)
+	}
+	if _, err := owner.Exec(ctx, `DROP POLICY workspace_bypass ON sith.memberships`); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertWorkspaceAIsolation(ctx, database, scope); err != nil {
+		t.Fatalf("additional-policy removal did not recover invariant: %v", err)
+	}
+	if err := AuditIsolation(ctx, owner, appRole); err != nil {
+		t.Fatalf("additional-policy removal AuditIsolation() error = %v", err)
+	}
+
 	assertAPIKeyStoreIntegration(t, ctx, database, admin)
 	assertOIDCStoreIntegration(t, ctx, database)
 	assertCloudIdentityStoreIntegration(t, ctx, database)
 	assertFleetStoreIntegration(t, ctx, database)
 	assertPolicyAuditChainIntegration(t, ctx, database, admin, appRole)
+	assertApprovalGrantIntegration(t, ctx, database, admin, appRole)
 }
 
 func assertWorkspaceAIsolation(ctx context.Context, database *AppDB, scope tenancy.Scope) error {
 	return database.InWorkspace(ctx, scope, func(tx pgx.Tx) error {
-		for _, table := range []string{"workspaces", "memberships", "clusters", "fleet_facts", "api_keys", "oidc_bindings", "cloud_identity_bindings"} {
+		for _, table := range []string{"workspaces", "memberships", "clusters", "fleet_facts", "api_keys", "oidc_bindings", "cloud_identity_bindings", "approval_grants"} {
 			var count int
 			if err := tx.QueryRow(ctx, `SELECT count(*) FROM sith.`+pgx.Identifier{table}.Sanitize()).Scan(&count); err != nil {
 				return err
@@ -445,6 +472,203 @@ func assertPolicyAuditChainIntegration(
 	}
 }
 
+func assertApprovalGrantIntegration(
+	t *testing.T,
+	ctx context.Context,
+	database *AppDB,
+	admin *pgx.Conn,
+	appRole string,
+) {
+	t.Helper()
+
+	if _, err := admin.Exec(ctx, `INSERT INTO sith.memberships(workspace_id, subject, role) VALUES
+		('workspace-a', 'user:operator-a', 'operator'),
+		('workspace-a', 'user:approver-a', 'approver'),
+		('workspace-a', 'user:stale-approver', 'reader'),
+		('workspace-b', 'user:operator-b', 'operator'),
+		('workspace-b', 'user:approver-b', 'approver')`); err != nil {
+		t.Fatalf("seed approval memberships: %v", err)
+	}
+
+	proposerA := testScope(t, "user:operator-a", "workspace-a", tenancy.RoleOperator)
+	approverA := testScope(t, "user:approver-a", "workspace-a", tenancy.RoleApprover)
+	proposerB := testScope(t, "user:operator-b", "workspace-b", tenancy.RoleOperator)
+	approverB := testScope(t, "user:approver-b", "workspace-b", tenancy.RoleApprover)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	create := func(intentID, arguments string) (pep.ApprovalBinding, ApprovalGrantID) {
+		t.Helper()
+		binding := postgresApprovalBinding(t, intentID, "workspace-a", proposerA.Subject(), arguments)
+		identifier, err := database.CreateApprovalGrant(ctx, approverA, binding, now)
+		if err != nil {
+			t.Fatalf("CreateApprovalGrant(%s) error = %v", intentID, err)
+		}
+		if !approvalGrantIDPattern.MatchString(identifier.String()) {
+			t.Fatalf("CreateApprovalGrant(%s) identifier = %q", intentID, identifier)
+		}
+		return binding, identifier
+	}
+
+	baseBinding, baseID := create("intent-250-base", "replicas=3")
+	if _, err := database.CreateApprovalGrant(ctx, approverA, baseBinding, now); !errors.Is(err, ErrApprovalGrantUnavailable) {
+		t.Fatalf("duplicate approval error = %v", err)
+	}
+
+	for name, scope := range map[string]tenancy.Scope{
+		"reader":   testScope(t, "user:reader", "workspace-a", tenancy.RoleReader),
+		"operator": proposerA,
+		"admin":    testScope(t, "user:admin", "workspace-a", tenancy.RoleAdmin),
+	} {
+		if _, err := database.CreateApprovalGrant(ctx, scope, postgresApprovalBinding(t,
+			"intent-role-"+name, "workspace-a", proposerA.Subject(), name), now); !errors.Is(err, ErrApprovalGrantUnavailable) {
+			t.Fatalf("%s approval error = %v", name, err)
+		}
+	}
+	selfScope := testScope(t, "user:self", "workspace-a", tenancy.RoleApprover)
+	if _, err := database.CreateApprovalGrant(ctx, selfScope, postgresApprovalBinding(
+		t, "intent-self", "workspace-a", selfScope.Subject(), "self"), now); !errors.Is(err, ErrApprovalGrantUnavailable) {
+		t.Fatalf("self approval error = %v", err)
+	}
+	staleScope := testScope(t, "user:stale-approver", "workspace-a", tenancy.RoleApprover)
+	if _, err := database.CreateApprovalGrant(ctx, staleScope, postgresApprovalBinding(
+		t, "intent-stale-role", "workspace-a", proposerA.Subject(), "stale"), now); !errors.Is(err, ErrApprovalGrantUnavailable) {
+		t.Fatalf("stale approver role error = %v", err)
+	}
+	if _, err := database.CreateApprovalGrant(ctx, approverA, postgresApprovalBinding(
+		t, "intent-missing-proposer", "workspace-a", "user:missing", "missing"), now); !errors.Is(err, ErrApprovalGrantUnavailable) {
+		t.Fatalf("missing proposer membership error = %v", err)
+	}
+
+	wrongDigestBinding := postgresApprovalBinding(t, baseBinding.IntentID(), "workspace-a", proposerA.Subject(), "replicas=4")
+	if err := database.ConsumeApprovalGrant(ctx, proposerA, wrongDigestBinding, baseID, now.Add(time.Second)); !errors.Is(err, ErrApprovalGrantUnavailable) {
+		t.Fatalf("wrong digest consume error = %v", err)
+	}
+	wrongIntentBinding := postgresApprovalBinding(t, "intent-250-other", "workspace-a", proposerA.Subject(), "replicas=3")
+	if err := database.ConsumeApprovalGrant(ctx, proposerA, wrongIntentBinding, baseID, now.Add(time.Second)); !errors.Is(err, ErrApprovalGrantUnavailable) {
+		t.Fatalf("wrong intent consume error = %v", err)
+	}
+	if err := database.ConsumeApprovalGrant(ctx, proposerB, baseBinding, baseID, now.Add(time.Second)); !errors.Is(err, ErrApprovalGrantUnavailable) {
+		t.Fatalf("foreign workspace consume error = %v", err)
+	}
+	if err := database.ConsumeApprovalGrant(ctx, proposerA, baseBinding, "XXXXXXXXXXXXXXXXXXXXXX", now.Add(time.Second)); !errors.Is(err, ErrApprovalGrantUnavailable) {
+		t.Fatalf("unknown approval consume error = %v", err)
+	}
+	if err := database.ConsumeApprovalGrant(ctx, proposerA, baseBinding, baseID, now.Add(-time.Second)); !errors.Is(err, ErrApprovalGrantUnavailable) {
+		t.Fatalf("pre-approval consume error = %v", err)
+	}
+	if err := database.ConsumeApprovalGrant(ctx, proposerA, baseBinding, baseID, now.Add(time.Second)); err != nil {
+		t.Fatalf("exact approval consume error = %v", err)
+	}
+	if err := database.ConsumeApprovalGrant(ctx, proposerA, baseBinding, baseID, now.Add(2*time.Second)); !errors.Is(err, ErrApprovalGrantUnavailable) {
+		t.Fatalf("replayed approval consume error = %v", err)
+	}
+
+	concurrentBinding, concurrentID := create("intent-250-concurrent", "image=v2")
+	results := make(chan error, 2)
+	var consumers sync.WaitGroup
+	for range 2 {
+		consumers.Add(1)
+		go func() {
+			defer consumers.Done()
+			results <- database.ConsumeApprovalGrant(ctx, proposerA, concurrentBinding, concurrentID, now.Add(time.Second))
+		}()
+	}
+	consumers.Wait()
+	close(results)
+	var successes, refusals int
+	for err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrApprovalGrantUnavailable):
+			refusals++
+		default:
+			t.Fatalf("concurrent approval consume error = %v", err)
+		}
+	}
+	if successes != 1 || refusals != 1 {
+		t.Fatalf("concurrent consumes = successes %d refusals %d", successes, refusals)
+	}
+
+	bindingB := postgresApprovalBinding(t, "intent-250-b", "workspace-b", proposerB.Subject(), "region=west")
+	identifierB, err := database.CreateApprovalGrant(ctx, approverB, bindingB, now)
+	if err != nil {
+		t.Fatalf("CreateApprovalGrant(workspace B) error = %v", err)
+	}
+	if err := database.InWorkspace(ctx, proposerA, func(tx pgx.Tx) error {
+		var foreignCount int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM sith.approval_grants WHERE workspace_id = 'workspace-b'`).Scan(&foreignCount); err != nil {
+			return err
+		}
+		if foreignCount != 0 {
+			return fmt.Errorf("approval RLS exposed %d foreign grants", foreignCount)
+		}
+		tag, err := tx.Exec(ctx, `UPDATE sith.approval_grants SET consumed_at = $1
+			WHERE workspace_id = 'workspace-b' AND id = $2`, now.Add(time.Second), identifierB)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 0 {
+			return fmt.Errorf("approval RLS mutated %d foreign grants", tag.RowsAffected())
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("approval RLS isolation: %v", err)
+	}
+
+	var canConsume, canMutateProposer, canDelete bool
+	if err := admin.QueryRow(ctx, `
+		SELECT has_column_privilege($1, 'sith.approval_grants', 'consumed_at', 'UPDATE'),
+		       has_column_privilege($1, 'sith.approval_grants', 'proposer', 'UPDATE'),
+		       has_table_privilege($1, 'sith.approval_grants', 'DELETE')
+	`, appRole).Scan(&canConsume, &canMutateProposer, &canDelete); err != nil {
+		t.Fatalf("inspect approval privileges: %v", err)
+	}
+	if !canConsume || canMutateProposer || canDelete {
+		t.Fatalf("approval privileges = consume:%t mutate-proposer:%t delete:%t", canConsume, canMutateProposer, canDelete)
+	}
+	for name, statement := range map[string]string{
+		"mutate proposer": `UPDATE sith.approval_grants SET proposer = 'user:mallory' WHERE id = 'GGGGGGGGGGGGGGGGGGGGGG'`,
+		"delete grant":    `DELETE FROM sith.approval_grants WHERE id = 'GGGGGGGGGGGGGGGGGGGGGG'`,
+	} {
+		err := database.InWorkspace(ctx, proposerA, func(tx pgx.Tx) error {
+			_, execErr := tx.Exec(ctx, statement)
+			return execErr
+		})
+		var postgresErr *pgconn.PgError
+		if !errors.As(err, &postgresErr) || postgresErr.Code != "42501" {
+			t.Fatalf("%s error = %v, want privilege denial 42501", name, err)
+		}
+	}
+	if err := AuditIsolation(ctx, admin, appRole); err != nil {
+		t.Fatalf("approval AuditIsolation() error = %v", err)
+	}
+}
+
+func postgresApprovalBinding(
+	t *testing.T,
+	intentID string,
+	workspaceID tenancy.WorkspaceID,
+	proposer string,
+	arguments string,
+) pep.ApprovalBinding {
+	t.Helper()
+	digest := sha256.Sum256([]byte(arguments))
+	input, err := pep.NewProposalInput(
+		intentID, workspaceID, proposer, intent.VerbDeploymentRestart,
+		fleet.ResourceRef{SourceKind: "argocd", Scope: "cluster-a", Kind: "deployment", Namespace: "payments", Name: "payments"},
+		"sha256:"+hex.EncodeToString(digest[:]),
+	)
+	if err != nil {
+		t.Fatalf("NewProposalInput() error = %v", err)
+	}
+	binding, err := input.ApprovalBinding()
+	if err != nil {
+		t.Fatalf("ApprovalBinding() error = %v", err)
+	}
+	return binding
+}
+
 func testScope(
 	t *testing.T,
 	subject string,
@@ -579,6 +803,13 @@ func seedTenantRows(t *testing.T, ctx context.Context, admin *pgx.Conn) {
 		"INSERT INTO sith.cloud_identity_bindings(workspace_id, provider, realm, upstream_subject, member_subject) VALUES\n" +
 			"('workspace-a', 'aws', '111111111111', 'AROAX:alice', 'user:alice'),\n" +
 			"('workspace-b', 'aws', '222222222222', 'AROAX:bob', 'user:bob')",
+		`INSERT INTO sith.approval_grants(
+			workspace_id, id, intent_id, proposer, approver, resolved_digest, approved_at
+		) VALUES
+			('workspace-a', 'GGGGGGGGGGGGGGGGGGGGGG', 'intent-seed-a', 'user:seed-operator',
+			 'user:seed-approver', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', now()),
+			('workspace-b', 'HHHHHHHHHHHHHHHHHHHHHH', 'intent-seed-b', 'user:seed-operator',
+			 'user:seed-approver', 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', now())`,
 	}
 	for _, statement := range statements {
 		if _, err := admin.Exec(ctx, statement); err != nil {

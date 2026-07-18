@@ -413,10 +413,13 @@ Run `sith hub migrate` as a short-lived deployment Job before starting `sith hub
 `SITH_HUB_MIGRATION_OWNER_DATABASE_URL` and `SITH_HUB_APPLICATION_DATABASE_ROLE`; mount the owner
 database URL from the deployment secret provider and set the application role explicitly. The
 command requires TLS for any non-local database target, applies the checksum-locked serializable
-migration ledger, creates the tenant-scoped policy-audit chain, narrows the application role's
-audit-table privileges, audits forced RLS and the immutable-entry privilege contract, attempts to
-close its one owner connection, and exits. It never opens the hub listener, creates a Kubernetes
-client, or starts collection.
+migration ledger, creates the tenant-scoped policy-audit chain and exact single-use approval-grant
+store, narrows the application role's audit and approval-table privileges, audits forced RLS plus
+both immutable-entry contracts, attempts to close its one owner connection, and exits. Approval
+rows contain only opaque identifiers, proposer/approver identity, the resolved proposal digest,
+and lifecycle timestamps. The application role may insert them and update only `consumed_at`; it
+cannot rewrite or delete the approved identity or digest. The migration process never opens the hub
+listener, creates a Kubernetes client, or starts collection.
 
 The normal hub process continues to use only `SITH_HUB_DATABASE_URL` for the non-owner application
 role. Do not reuse the migration-owner credential in the hub Deployment or place either database
@@ -591,8 +594,11 @@ make e2e-kind
 
 The hub tenancy gate starts a temporary, digest-pinned PostgreSQL 18.4 container and proves the
 application role is a non-owner without `BYPASSRLS`, every current workspace table—including API
-key verifier and OIDC binding rows—has forced RLS, direct unscoped reads are default-deny, foreign writes fail, and
-transaction-local scope does not bleed through a reused pool connection. It also exercises real
+key verifier, OIDC binding, and approval-grant rows—has forced RLS, direct unscoped reads are
+default-deny, foreign writes fail, and transaction-local scope does not bleed through a reused pool
+connection. It also proves same-workspace current-role checks, proposer/approver separation,
+approve-then-swap refusal, immutable grant fields, replay refusal, and exactly one winner under a
+concurrent approval-consumption race. It additionally exercises real
 API-key issuance, current-membership exchange, bounded rotation overlap, immediate revocation,
 OIDC binding resolution, and cross-workspace negative controls. It requires Docker and adds one
 official PostgreSQL image pull plus a short-lived local container:
@@ -602,10 +608,11 @@ make e2e-postgres
 ```
 
 The complete tenant-isolation suite combines the real PostgreSQL boundary with signed-token,
-injected-header, scoped-query, and deterministic selector-fuzz invariants. It also removes and
-weakens a live RLS policy and requires the suite to detect both mutations before restoring the
-steady state. The native Go fuzzer runs exactly 50,000 generated selector mutations with four
-workers; coverage no longer depends on CI runner speed, while a separate timeout catches hangs:
+injected-header, scoped-query, and deterministic selector-fuzz invariants. It also removes,
+weakens, and adds a second permissive live RLS policy and requires the suite to detect all three
+mutations before restoring the steady state. The native Go fuzzer runs exactly 50,000 generated
+selector mutations with four workers; coverage no longer depends on CI runner speed, while a
+separate timeout catches hangs:
 
 ```bash
 make e2e-isolation
