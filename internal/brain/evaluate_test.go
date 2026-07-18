@@ -437,6 +437,239 @@ func TestEvaluateArgoSyncFailureDoesNotCorrelateFleetWide(t *testing.T) {
 	}
 }
 
+func TestEvaluateWorkflowRunFailureRuleIsBounded(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 19, 55, 0, 123000000, time.UTC)
+	observation := Observation{
+		Ref: fleet.ResourceRef{
+			SourceKind: "github", Scope: "github.com", Kind: "WorkflowRun",
+			Namespace: "ArdurAI'; printf injected #", Name: "sith#30433642-attempt-2'; printf injected #",
+		},
+		Lens: fleet.LensTimeline, Key: "change.kind", Value: "workflow-run-failed",
+		ObservedAt: now, Source: "github.com",
+	}
+
+	result, err := Evaluate(Investigation{
+		Workspace: fleet.LocalWorkspace, Observations: []Observation{observation},
+		Coverage: covered(fleet.LensTimeline),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if len(result.Verdicts) != 1 {
+		t.Fatalf("verdicts = %#v, want one R9 verdict", result.Verdicts)
+	}
+	verdict := result.Verdicts[0]
+	if verdict.Rule != RuleWorkflowFail || verdict.Status != StatusConfirmed || verdict.FleetWide {
+		t.Fatalf("verdict = %#v, want confirmed entity-local R9", verdict)
+	}
+	if len(verdict.Citations) != 1 {
+		t.Fatalf("citations = %#v, want one exact TIMELINE citation", verdict.Citations)
+	}
+	citation := verdict.Citations[0]
+	if !reflect.DeepEqual(citation.Ref, observation.Ref) || citation.Lens != fleet.LensTimeline ||
+		citation.Predicate != "change.kind" || citation.Observed != "workflow-run-failed" ||
+		citation.Source != observation.Source || !citation.ObservedAt.Equal(now) {
+		t.Fatalf("citation = %#v, want exact normalized source observation", citation)
+	}
+	wantCommand := "inspect GitHub Actions workflow run 'sith#30433642-attempt-2'\\''; printf injected #' owned by 'ArdurAI'\\''; printf injected #' and its failed jobs and logs before considering a rerun"
+	if verdict.Advisory.Command != wantCommand || verdict.Advisory.PRDiff != "" || !verdict.Advisory.Sensitive {
+		t.Fatalf("advisory = %#v, want quoted sensitive read-only inspection guidance", verdict.Advisory)
+	}
+	hypothesis := strings.ToLower(verdict.Hypothesis)
+	if !strings.Contains(hypothesis, "does not identify") {
+		t.Fatalf("hypothesis = %q, want explicit cause uncertainty", verdict.Hypothesis)
+	}
+	for _, overclaim := range []string{"code is", "credential is", "permission is", "capacity is", "dependency is"} {
+		if strings.Contains(hypothesis, overclaim) {
+			t.Fatalf("hypothesis = %q, overclaims %q", verdict.Hypothesis, overclaim)
+		}
+	}
+}
+
+func TestEvaluateWorkflowRunFailureRejectsNearMisses(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 19, 55, 0, 123000000, time.UTC)
+	for _, value := range []string{
+		"failure", "timed_out", "startup_failure", "pipeline-failed", "workflow-failed",
+		"workflow_run_failed", " workflow-run-failed", "workflow-run-failed ",
+		"workflow-run-failed/job", "WORKFLOW-RUN-FAILED", "Workflow-Run-Failed",
+	} {
+		value := value
+		t.Run(value, func(t *testing.T) {
+			t.Parallel()
+			result, err := Evaluate(Investigation{
+				Workspace: fleet.LocalWorkspace,
+				Observations: []Observation{{
+					Ref: fleet.ResourceRef{
+						SourceKind: "github", Scope: "github.com", Kind: "WorkflowRun",
+						Namespace: "ArdurAI", Name: "sith#30433642-attempt-2",
+					},
+					Lens: fleet.LensTimeline, Key: "change.kind", Value: value,
+					ObservedAt: now, Source: "github.com",
+				}},
+				Coverage: covered(fleet.LensTimeline),
+			})
+			if err != nil {
+				t.Fatalf("Evaluate() error = %v", err)
+			}
+			if len(result.Verdicts) != 0 {
+				t.Fatalf("near-miss value %q yielded %#v", value, result.Verdicts)
+			}
+		})
+	}
+}
+
+func TestEvaluateWorkflowRunFailureRequiresExactGitHubApplicability(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 19, 55, 0, 123000000, time.UTC)
+	base := Observation{
+		Ref: fleet.ResourceRef{
+			SourceKind: "github", Scope: "github.com", Kind: "WorkflowRun",
+			Namespace: "ArdurAI", Name: "sith#30433642-attempt-2",
+		},
+		Lens: fleet.LensTimeline, Key: "change.kind", Value: "workflow-run-failed",
+		ObservedAt: now, Source: "github.com",
+	}
+	for _, test := range []struct {
+		name       string
+		sourceKind string
+		kind       string
+	}{
+		{name: "non-GitHub source", sourceKind: "kubeconfig", kind: "WorkflowRun"},
+		{name: "source case mismatch", sourceKind: "GitHub", kind: "WorkflowRun"},
+		{name: "non-workflow resource", sourceKind: "github", kind: "PullRequest"},
+		{name: "resource case mismatch", sourceKind: "github", kind: "workflowrun"},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			observation := base
+			observation.Ref.SourceKind = test.sourceKind
+			observation.Ref.Kind = test.kind
+			result, err := Evaluate(Investigation{
+				Workspace: fleet.LocalWorkspace, Observations: []Observation{observation},
+				Coverage: covered(fleet.LensTimeline),
+			})
+			if err != nil {
+				t.Fatalf("Evaluate() error = %v", err)
+			}
+			if len(result.Verdicts) != 0 {
+				t.Fatalf("source_kind=%q kind=%q yielded %#v, want no R9 advisory", test.sourceKind, test.kind, result.Verdicts)
+			}
+		})
+	}
+}
+
+func TestEvaluateWorkflowRunFailureApplicabilityIsInputOrderIndependent(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 19, 55, 0, 123000000, time.UTC)
+	valid := Observation{
+		Ref: fleet.ResourceRef{
+			SourceKind: "github", Scope: "github.com", Kind: "WorkflowRun",
+			Namespace: "ArdurAI", Name: "sith#30433642-attempt-2",
+		},
+		Lens: fleet.LensTimeline, Key: "change.kind", Value: "workflow-run-failed",
+		ObservedAt: now, Source: "github.com",
+	}
+	unrelated := valid
+	unrelated.Ref.SourceKind = "kubeconfig"
+
+	for _, observations := range [][]Observation{{valid, unrelated}, {unrelated, valid}} {
+		result, err := Evaluate(Investigation{
+			Workspace: fleet.LocalWorkspace, Observations: observations,
+			Coverage: covered(fleet.LensTimeline),
+		})
+		if err != nil {
+			t.Fatalf("Evaluate() error = %v", err)
+		}
+		if len(result.Verdicts) != 1 || result.Verdicts[0].Rule != RuleWorkflowFail ||
+			result.Verdicts[0].Citations[0].Ref.SourceKind != githubGraphSource {
+			t.Fatalf("verdicts = %#v, want one R9 verdict cited only to GitHub evidence", result.Verdicts)
+		}
+	}
+}
+
+func TestEvaluateWorkflowRunFailureAbstainsOnUnusableTimelineEvidence(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 19, 55, 0, 123000000, time.UTC)
+	base := Observation{
+		Ref: fleet.ResourceRef{
+			SourceKind: "github", Scope: "github.com", Kind: "WorkflowRun",
+			Namespace: "ArdurAI", Name: "sith#30433642-attempt-2",
+		},
+		Lens: fleet.LensTimeline, Key: "change.kind", Value: "workflow-run-failed",
+		ObservedAt: now, Source: "github.com",
+	}
+	for _, test := range []struct {
+		name        string
+		observation Observation
+		coverage    map[fleet.Lens]LensCoverage
+	}{
+		{name: "stale observation", observation: func() Observation {
+			observation := base
+			observation.Stale = true
+			return observation
+		}(), coverage: covered(fleet.LensTimeline)},
+		{name: "stale coverage", observation: base, coverage: map[fleet.Lens]LensCoverage{
+			fleet.LensTimeline: {Available: true, Stale: true, Reason: "collector stale"},
+		}},
+		{name: "unavailable coverage", observation: base, coverage: map[fleet.Lens]LensCoverage{
+			fleet.LensTimeline: {Reason: "workflow-run evidence unavailable"},
+		}},
+		{name: "missing coverage", observation: base, coverage: map[fleet.Lens]LensCoverage{}},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			result, err := Evaluate(Investigation{
+				Workspace: fleet.LocalWorkspace, Observations: []Observation{test.observation}, Coverage: test.coverage,
+			})
+			if err != nil {
+				t.Fatalf("Evaluate() error = %v", err)
+			}
+			if len(result.Verdicts) != 1 || result.Verdicts[0].Rule != RuleWorkflowFail ||
+				result.Verdicts[0].Status != StatusUnconfirmed ||
+				!slices.Equal(result.Verdicts[0].MissingLenses, []fleet.Lens{fleet.LensTimeline}) {
+				t.Fatalf("verdicts = %#v, want unconfirmed R9 with TIMELINE gap", result.Verdicts)
+			}
+		})
+	}
+}
+
+func TestEvaluateWorkflowRunFailureDoesNotCorrelateFleetWide(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 19, 55, 0, 123000000, time.UTC)
+	const repoDigest = "registry.example/payments@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	observations := make([]Observation, 0, 4)
+	for _, host := range []string{"github.com", "github.example.com"} {
+		ref := fleet.ResourceRef{
+			SourceKind: "github", Scope: host, Kind: "WorkflowRun",
+			Namespace: "ArdurAI", Name: "sith#30433642-attempt-2",
+		}
+		observations = append(observations,
+			Observation{Ref: ref, Lens: fleet.LensTimeline, Key: "change.kind", Value: "workflow-run-failed", ObservedAt: now, Source: host},
+			Observation{Ref: ref, Lens: fleet.LensLive, Key: fleet.OTelContainerImageRepoDigests, Value: repoDigest, ObservedAt: now, Source: "fixture"},
+		)
+	}
+
+	result, err := Evaluate(Investigation{
+		Workspace: fleet.LocalWorkspace, Observations: observations,
+		Coverage: covered(fleet.LensLive, fleet.LensTimeline),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if len(result.Verdicts) != 2 {
+		t.Fatalf("verdicts = %#v, want one R9 verdict per workflow run", result.Verdicts)
+	}
+	for _, verdict := range result.Verdicts {
+		if verdict.Rule != RuleWorkflowFail || verdict.FleetWide || len(verdict.Clusters) != 0 {
+			t.Fatalf("verdict = %#v, R9 must remain source-native and entity-local", verdict)
+		}
+	}
+}
+
 func TestEvaluateAbstainsWhenRequiredLensIsStale(t *testing.T) {
 	now := time.Now().UTC()
 	result, err := Evaluate(Investigation{

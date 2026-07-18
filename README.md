@@ -601,6 +601,21 @@ cache-backed `sith investigate` command does not fetch Argo Applications or infe
 so R8 appears there only after a future reader supplies the same validated graph evidence and
 explicit TIMELINE coverage.
 
+Adjacent R9 accepts one already-authorized GitHub REST `Get a workflow run` response through a
+bounded, API-versioned projector. It emits an unattached TIMELINE fact only when trusted caller
+identity agrees with the response and GitHub reports exact status `completed` with conclusion
+`failure`, `timed_out`, or `startup_failure`. Incomplete runs and completed non-failure conclusions
+abstain; unknown states, identity mismatches, duplicate JSON members, malformed timestamps, and
+ambiguous facts fail closed. The graph bridge admits only exact `github` source/provenance,
+`workflow-runs/2026-03-10`, a closed payload, consistent run/attempt/native identity, matching event
+time, and explicit caller-supplied TIMELINE coverage. R9 discards job, step, log, actor, branch,
+commit, URL, and raw response data; it reports only that GitHub recorded a completed workflow-run
+failure and leaves the cause unresolved. Its sensitive advisory tells a human to inspect the run's
+failed jobs and logs before considering a rerun. It adds no GitHub client, token loading, fetch,
+retention, repository-to-workload correlation, alert, typed intent, PEP handoff, mutation, or
+execution. The cache-backed `sith investigate` path cannot produce R9 until a future reader supplies
+validated workflow-run graph facts and explicit TIMELINE coverage.
+
 Every verdict includes its rule, exact cited signals, confidence state, missing lenses, and an
 advisory command or PR change for the operator to inspect and run. The brain performs no I/O and
 imports no connector planning, execution, intent, PEP, MCP, or local-operation path.
@@ -610,9 +625,10 @@ Events for TIMELINE when present. DESIRED and TELEMETRY remain unavailable unles
 connector supplies entity-attached facts. Consequently, an OOM or repeated failure is detected
 from LIVE evidence while its leak/spike/log-cause variant remains explicitly unconfirmed. A stale
 or missing required lens downgrades the dependent verdict rather than being treated as negative
-evidence. For correlation-eligible canonical rules, identical unhealthy image digests on two or
-more contexts produce a fleet-wide verdict ahead of per-cluster findings; adjacent R7 and R8
-remain entity-local. Advisory output never executes or dispatches anything.
+evidence. For correlation-eligible canonical rules only, identical unhealthy image digests on two
+or more contexts produce a fleet-wide verdict ahead of per-cluster findings. Adjacent R7, R8, and
+R9 are never fleet-correlated; each remains entity-local. Advisory output never executes or
+dispatches anything.
 
 Initial list-watch hydration is a complete, consistent snapshot rather than a bounded prefix: each
 scope and kind uses 250-object pages under one request deadline, with hard limits of 10,000 objects

@@ -184,3 +184,59 @@ func TestInvestigationSurfaceRendersBoundedArgoSyncFailure(t *testing.T) {
 		t.Fatalf("R8 JSON exposed discarded Argo payload fields: %s", jsonOutput.String())
 	}
 }
+
+func TestInvestigationSurfaceRendersBoundedWorkflowRunFailure(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 19, 55, 0, 123000000, time.UTC)
+	ref := fleet.ResourceRef{
+		SourceKind: "github", Scope: "github.com", Kind: "WorkflowRun",
+		Namespace: "ArdurAI", Name: "sith#30433642-attempt-2",
+	}
+	result, err := brain.Evaluate(brain.Investigation{
+		Workspace: fleet.LocalWorkspace,
+		Coverage:  map[fleet.Lens]brain.LensCoverage{fleet.LensTimeline: {Available: true}},
+		Observations: []brain.Observation{{
+			Ref: ref, Lens: fleet.LensTimeline, Key: "change.kind", Value: "workflow-run-failed",
+			ObservedAt: now, Source: "github.com",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+
+	var textOutput bytes.Buffer
+	textCommand := &cobra.Command{}
+	textCommand.SetOut(&textOutput)
+	if err := writeInvestigation(textCommand, "text", result); err != nil {
+		t.Fatalf("writeInvestigation(text) error = %v", err)
+	}
+	for _, expected := range []string{
+		"R9 GitHub Actions workflow-run failure [confirmed]",
+		"evidence: timeline change.kind=workflow-run-failed",
+		"suggested: inspect GitHub Actions workflow run 'sith#30433642-attempt-2' owned by 'ArdurAI' and its failed jobs and logs before considering a rerun",
+		"sensitive: human review required",
+	} {
+		if !strings.Contains(textOutput.String(), expected) {
+			t.Errorf("text output = %q, want %q", textOutput.String(), expected)
+		}
+	}
+
+	var jsonOutput bytes.Buffer
+	jsonCommand := &cobra.Command{}
+	jsonCommand.SetOut(&jsonOutput)
+	if err := writeInvestigation(jsonCommand, "json", result); err != nil {
+		t.Fatalf("writeInvestigation(json) error = %v", err)
+	}
+	var decoded brain.Result
+	if err := json.Unmarshal(jsonOutput.Bytes(), &decoded); err != nil {
+		t.Fatalf("unmarshal R9 JSON: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded JSON = %#v, want %#v", decoded, result)
+	}
+	for _, discarded := range []string{`"workflow_id":`, `"run_attempt":`, `"conclusion":`, "jobs_url", "logs_url"} {
+		if strings.Contains(jsonOutput.String(), discarded) {
+			t.Fatalf("R9 JSON exposed discarded workflow-run payload field %q: %s", discarded, jsonOutput.String())
+		}
+	}
+}

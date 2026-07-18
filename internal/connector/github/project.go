@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package github normalizes read-only GitHub pull-request evidence for Sith's operational graph.
+// Package github normalizes read-only GitHub pull-request and workflow-run evidence for Sith's
+// operational graph.
 package github
 
 import (
@@ -20,7 +21,7 @@ import (
 const (
 	// Kind is the stable registry identifier for GitHub read evidence.
 	Kind = "github"
-	// APIVersion is the GitHub REST API version whose pull-response contract is normalized here.
+	// APIVersion is the GitHub REST API version whose response contracts are normalized here.
 	APIVersion = "2026-03-10"
 	// ProtocolVersion identifies the normalized Get-a-pull-request fact contract.
 	ProtocolVersion = "pulls/" + APIVersion
