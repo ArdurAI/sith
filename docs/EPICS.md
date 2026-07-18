@@ -2611,6 +2611,11 @@ flowchart TD
 whole fleet. Guardrail: SLOs with error budgets and security alerting make degradation visible and
 actionable rather than silent.
 
+**Implementation note (F10.4a).** The first portable rule contract covers only existing bounded
+Hub symptoms: fail-closed policy-audit errors, lost authentication-refusal delivery records, and a
+sustained aggregate snapshot failure ratio. It deliberately adds no remote scrape path or monitoring
+CRD and does not claim the still-missing read-freshness, dispatch-success, or PDP-latency SLOs.
+
 ### F10.5 — Crown-jewel hardening
 
 **What it is.** The hardening the hub demands as the highest-value target: signer-key protection,
