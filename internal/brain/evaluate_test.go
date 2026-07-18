@@ -207,6 +207,167 @@ func TestEvaluateImagePullFailureDoesNotCorrelateFleetWide(t *testing.T) {
 	}
 }
 
+func TestEvaluateArgoSyncFailureRuleIsBounded(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 15, 30, 0, 0, time.UTC)
+	observation := Observation{
+		Ref: fleet.ResourceRef{
+			SourceKind: "argocd",
+			Scope:      "dev'; printf injected #",
+			Kind:       "Application",
+			Namespace:  "argocd'; printf injected #",
+			Name:       "payments'; printf injected #",
+		},
+		Lens: fleet.LensTimeline, Key: "change.kind", Value: "sync-failed",
+		ObservedAt: now, Source: "fixture",
+	}
+
+	result, err := Evaluate(Investigation{
+		Workspace: fleet.LocalWorkspace, Observations: []Observation{observation},
+		Coverage: covered(fleet.LensTimeline),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if len(result.Verdicts) != 1 {
+		t.Fatalf("verdicts = %#v, want one R8 verdict", result.Verdicts)
+	}
+	verdict := result.Verdicts[0]
+	if verdict.Rule != RuleArgoSyncFail || verdict.Status != StatusConfirmed || verdict.FleetWide {
+		t.Fatalf("verdict = %#v, want confirmed entity-local R8", verdict)
+	}
+	if len(verdict.Citations) != 1 {
+		t.Fatalf("citations = %#v, want one exact TIMELINE citation", verdict.Citations)
+	}
+	citation := verdict.Citations[0]
+	if !reflect.DeepEqual(citation.Ref, observation.Ref) || citation.Lens != fleet.LensTimeline ||
+		citation.Predicate != "change.kind" || citation.Observed != "sync-failed" ||
+		citation.Source != observation.Source || !citation.ObservedAt.Equal(now) {
+		t.Fatalf("citation = %#v, want exact normalized source observation", citation)
+	}
+	wantCommand := "kubectl --context 'dev'\\''; printf injected #' describe application.argoproj.io 'payments'\\''; printf injected #' -n 'argocd'\\''; printf injected #'"
+	if verdict.Advisory.Command != wantCommand || verdict.Advisory.PRDiff != "" || !verdict.Advisory.Sensitive {
+		t.Fatalf("advisory = %#v, want quoted sensitive read-only Application describe", verdict.Advisory)
+	}
+	hypothesis := strings.ToLower(verdict.Hypothesis)
+	if !strings.Contains(hypothesis, "does not identify") {
+		t.Fatalf("hypothesis = %q, want explicit cause uncertainty", verdict.Hypothesis)
+	}
+	for _, overclaim := range []string{"authentication is", "network is", "rendering is", "hook is"} {
+		if strings.Contains(hypothesis, overclaim) {
+			t.Fatalf("hypothesis = %q, overclaims %q", verdict.Hypothesis, overclaim)
+		}
+	}
+}
+
+func TestEvaluateArgoSyncFailureRejectsNearMisses(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 15, 30, 0, 0, time.UTC)
+	for _, value := range []string{
+		"OutOfSync",
+		"Unknown",
+		"Degraded",
+		"argocd-sync",
+		"sync_failed",
+		"sync-failure",
+		" sync-failed",
+		"sync-failed ",
+		"sync-failed/render-error",
+	} {
+		value := value
+		t.Run(value, func(t *testing.T) {
+			t.Parallel()
+			result, err := Evaluate(Investigation{
+				Workspace: fleet.LocalWorkspace,
+				Observations: []Observation{{
+					Ref:  fleet.ResourceRef{SourceKind: "argocd", Scope: "alpha", Kind: "Application", Namespace: "argocd", Name: "payments"},
+					Lens: fleet.LensTimeline, Key: "change.kind", Value: value, ObservedAt: now, Source: "argocd",
+				}},
+				Coverage: covered(fleet.LensTimeline),
+			})
+			if err != nil {
+				t.Fatalf("Evaluate() error = %v", err)
+			}
+			if len(result.Verdicts) != 0 {
+				t.Fatalf("near-miss value %q yielded %#v", value, result.Verdicts)
+			}
+		})
+	}
+}
+
+func TestEvaluateArgoSyncFailureAbstainsOnUnusableTimelineEvidence(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 15, 30, 0, 0, time.UTC)
+	base := Observation{
+		Ref:  fleet.ResourceRef{SourceKind: "argocd", Scope: "alpha", Kind: "Application", Namespace: "argocd", Name: "payments"},
+		Lens: fleet.LensTimeline, Key: "change.kind", Value: "sync-failed", ObservedAt: now, Source: "argocd",
+	}
+	for _, test := range []struct {
+		name        string
+		observation Observation
+		coverage    map[fleet.Lens]LensCoverage
+	}{
+		{name: "stale observation", observation: func() Observation {
+			observation := base
+			observation.Stale = true
+			return observation
+		}(), coverage: covered(fleet.LensTimeline)},
+		{name: "stale coverage", observation: base, coverage: map[fleet.Lens]LensCoverage{
+			fleet.LensTimeline: {Available: true, Stale: true, Reason: "collector stale"},
+		}},
+		{name: "unavailable coverage", observation: base, coverage: map[fleet.Lens]LensCoverage{
+			fleet.LensTimeline: {Reason: "Argo evidence unavailable"},
+		}},
+		{name: "missing coverage", observation: base, coverage: map[fleet.Lens]LensCoverage{}},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			result, err := Evaluate(Investigation{
+				Workspace: fleet.LocalWorkspace, Observations: []Observation{test.observation}, Coverage: test.coverage,
+			})
+			if err != nil {
+				t.Fatalf("Evaluate() error = %v", err)
+			}
+			if len(result.Verdicts) != 1 || result.Verdicts[0].Rule != RuleArgoSyncFail ||
+				result.Verdicts[0].Status != StatusUnconfirmed ||
+				!slices.Equal(result.Verdicts[0].MissingLenses, []fleet.Lens{fleet.LensTimeline}) {
+				t.Fatalf("verdicts = %#v, want unconfirmed R8 with TIMELINE gap", result.Verdicts)
+			}
+		})
+	}
+}
+
+func TestEvaluateArgoSyncFailureDoesNotCorrelateFleetWide(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 15, 30, 0, 0, time.UTC)
+	const repoDigest = "registry.example/payments@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	observations := make([]Observation, 0, 4)
+	for _, cluster := range []string{"alpha", "beta"} {
+		ref := fleet.ResourceRef{SourceKind: "argocd", Scope: cluster, Kind: "Application", Namespace: "argocd", Name: "payments"}
+		observations = append(observations,
+			Observation{Ref: ref, Lens: fleet.LensTimeline, Key: "change.kind", Value: "sync-failed", ObservedAt: now, Source: "argocd"},
+			Observation{Ref: ref, Lens: fleet.LensLive, Key: fleet.OTelContainerImageRepoDigests, Value: repoDigest, ObservedAt: now, Source: "fixture"},
+		)
+	}
+
+	result, err := Evaluate(Investigation{
+		Workspace: fleet.LocalWorkspace, Observations: observations,
+		Coverage: covered(fleet.LensLive, fleet.LensTimeline),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if len(result.Verdicts) != 2 {
+		t.Fatalf("verdicts = %#v, want one R8 verdict per Application", result.Verdicts)
+	}
+	for _, verdict := range result.Verdicts {
+		if verdict.Rule != RuleArgoSyncFail || verdict.FleetWide || len(verdict.Clusters) != 0 {
+			t.Fatalf("verdict = %#v, R8 must remain entity-local", verdict)
+		}
+	}
+}
+
 func TestEvaluateAbstainsWhenRequiredLensIsStale(t *testing.T) {
 	now := time.Now().UTC()
 	result, err := Evaluate(Investigation{

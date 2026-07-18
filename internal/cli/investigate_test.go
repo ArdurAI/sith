@@ -134,3 +134,53 @@ func TestInvestigationSurfaceRendersBoundedImagePullFailure(t *testing.T) {
 		t.Fatalf("decoded JSON = %#v, want %#v", decoded, result)
 	}
 }
+
+func TestInvestigationSurfaceRendersBoundedArgoSyncFailure(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 15, 45, 0, 0, time.UTC)
+	ref := fleet.ResourceRef{SourceKind: "argocd", Scope: "alpha", Kind: "Application", Namespace: "argocd", Name: "payments"}
+	result, err := brain.Evaluate(brain.Investigation{
+		Workspace: fleet.LocalWorkspace,
+		Coverage:  map[fleet.Lens]brain.LensCoverage{fleet.LensTimeline: {Available: true}},
+		Observations: []brain.Observation{{
+			Ref: ref, Lens: fleet.LensTimeline, Key: "change.kind", Value: "sync-failed", ObservedAt: now, Source: "argocd",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+
+	var textOutput bytes.Buffer
+	textCommand := &cobra.Command{}
+	textCommand.SetOut(&textOutput)
+	if err := writeInvestigation(textCommand, "text", result); err != nil {
+		t.Fatalf("writeInvestigation(text) error = %v", err)
+	}
+	for _, expected := range []string{
+		"R8 Argo CD sync failure [confirmed]",
+		"evidence: timeline change.kind=sync-failed",
+		"suggested: kubectl --context 'alpha' describe application.argoproj.io 'payments' -n 'argocd'",
+		"sensitive: human review required",
+	} {
+		if !strings.Contains(textOutput.String(), expected) {
+			t.Errorf("text output = %q, want %q", textOutput.String(), expected)
+		}
+	}
+
+	var jsonOutput bytes.Buffer
+	jsonCommand := &cobra.Command{}
+	jsonCommand.SetOut(&jsonOutput)
+	if err := writeInvestigation(jsonCommand, "json", result); err != nil {
+		t.Fatalf("writeInvestigation(json) error = %v", err)
+	}
+	var decoded brain.Result
+	if err := json.Unmarshal(jsonOutput.Bytes(), &decoded); err != nil {
+		t.Fatalf("unmarshal R8 JSON: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded JSON = %#v, want %#v", decoded, result)
+	}
+	if strings.Contains(jsonOutput.String(), "operationState") || strings.Contains(jsonOutput.String(), "revision") {
+		t.Fatalf("R8 JSON exposed discarded Argo payload fields: %s", jsonOutput.String())
+	}
+}
