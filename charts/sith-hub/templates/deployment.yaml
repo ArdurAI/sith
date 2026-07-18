@@ -102,15 +102,25 @@ spec:
             - name: SITH_HUB_KUBE_API_SERVER_NAME
               value: {{ required "runtime.kubeAPIServerName is required" .Values.runtime.kubeAPIServerName | quote }}
           livenessProbe:
-            tcpSocket:
+            httpGet:
+              path: /healthz
               port: https
+              scheme: HTTPS
             initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 1
+            successThreshold: 1
+            failureThreshold: 3
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /readyz
               port: https
+              scheme: HTTPS
             initialDelaySeconds: 2
             periodSeconds: 5
+            timeoutSeconds: 1
+            successThreshold: 1
+            failureThreshold: 3
           resources:
             {{- include "sith-hub.resources" . | nindent 12 }}
           securityContext:

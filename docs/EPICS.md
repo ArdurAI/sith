@@ -2667,6 +2667,14 @@ worst-case scenario. Guardrail: defense-in-depth — even full hub control canno
 spoke or bypass spoke-side re-validation, and the closed vocabulary plus per-spoke allowlists bound
 the damage (threat-model S1).
 
+**Implementation note (F10.5a).** The Hub's existing TLS listener exposes fixed, body-free
+`GET /healthz` and `GET /readyz` routes for Kubernetes. Liveness checks only process responsiveness;
+readiness performs one least-privilege application-pool PostgreSQL ping under a one-second server
+deadline. Database failure never enters the liveness decision, preventing dependency-driven restart
+storms, and OCM/spoke reachability remains a fleet-coverage concern rather than a whole-Hub
+readiness dependency. The contract adds no listener, Service port, credential, error detail, or
+tenant-proportional signal.
+
 ### E10 exit criteria
 
 - Sith exposes metrics, traces, and structured sanitized logs about its own behavior, correlated

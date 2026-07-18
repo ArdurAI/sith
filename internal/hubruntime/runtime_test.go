@@ -12,11 +12,18 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/ArdurAI/sith/internal/hubserver"
 )
+
+type runtimeProbeChecker func(context.Context) error
+
+func (checker runtimeProbeChecker) Ping(ctx context.Context) error { return checker(ctx) }
 
 func TestServerServesTLSAndStopsWithContext(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -92,6 +99,47 @@ func TestNewServerRejectsUnsafeConfiguration(t *testing.T) {
 				t.Fatal("NewServer accepted unsafe configuration")
 			}
 		})
+	}
+}
+
+func TestRuntimeMuxMountsProbesOutsideAuthenticatedFleetFallback(t *testing.T) {
+	fallbackCalls := 0
+	fallback := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		fallbackCalls++
+		response.WriteHeader(http.StatusUnauthorized)
+	})
+	probes, err := hubserver.NewProbeHandler(runtimeProbeChecker(func(context.Context) error { return nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux, err := newRuntimeMux(fallback, probes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		method string
+		target string
+		status int
+		calls  int
+	}{
+		{method: http.MethodGet, target: hubserver.LivenessPath, status: http.StatusNoContent},
+		{method: http.MethodGet, target: hubserver.ReadinessPath, status: http.StatusNoContent},
+		{method: http.MethodHead, target: hubserver.LivenessPath, status: http.StatusNotFound},
+		{method: http.MethodGet, target: "/v1/workspaces/workspace-a/fleet", status: http.StatusUnauthorized, calls: 1},
+	} {
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, httptest.NewRequest(test.method, test.target, nil))
+		if response.Code != test.status || fallbackCalls != test.calls {
+			t.Fatalf("%s %s = status %d/fallback calls %d, want %d/%d", test.method, test.target, response.Code, fallbackCalls, test.status, test.calls)
+		}
+	}
+
+	if _, err := newRuntimeMux(nil, probes); err == nil {
+		t.Fatal("newRuntimeMux accepted a missing fleet handler")
+	}
+	if _, err := newRuntimeMux(fallback, nil); err == nil {
+		t.Fatal("newRuntimeMux accepted a missing probe handler")
 	}
 }
 
