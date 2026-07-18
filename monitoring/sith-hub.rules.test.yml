@@ -192,6 +192,144 @@ tests:
               description: At least one bounded authentication-refusal record could not be delivered during the last ten minutes.
               runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubauthrefusaldeliverydrop
 
+  - name: refusal-only authentication aggregates hostile labels and honors exact volume and hold guards
+    interval: 1m
+    input_series:
+      - series: 'sith_auth_attempts_total{outcome="refused",job="hub-a",instance="10.0.0.1:9090",actor="must-not-propagate"}'
+        values: '0+0x14 12+0x20'
+      - series: 'sith_auth_attempts_total{outcome="refused",job="hub-b",instance="10.0.0.2:9090",workspace="must-not-propagate"}'
+        values: '0+0x14 8+0x20'
+      - series: 'sith_auth_attempts_total{outcome="accepted",job="hub-a",instance="10.0.0.1:9090",principal="must-not-propagate"}'
+        values: '0+0x25 1+0x10'
+      - series: 'sith_auth_attempts_total{outcome="accepted",job="hub-b",instance="10.0.0.2:9090"}'
+        values: '0+0x35'
+    promql_expr_test:
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m]))
+        eval_time: 25m
+        exp_samples:
+          - labels: '{}'
+            value: 20
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0
+        eval_time: 25m
+        exp_samples:
+          - labels: '{}'
+            value: 20
+    alert_rule_test:
+      - eval_time: 24m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub authentication traffic is persistently refusal-only
+              description: At least twenty aggregate authentication attempts were refused and none were accepted over the last fifteen minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubauthenticationrefusalonly
+      - eval_time: 26m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+
+  - name: missing authentication attempt series stay quiet
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+
+  - name: missing accepted authentication series stays quiet even with refusals
+    interval: 1m
+    input_series:
+      - series: 'sith_auth_attempts_total{outcome="refused"}'
+        values: '0+2x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+
+  - name: refusal-only authentication stays quiet below minimum volume
+    interval: 1m
+    input_series:
+      - series: 'sith_auth_attempts_total{outcome="refused"}'
+        values: '0+0x14 19+0x20'
+      - series: 'sith_auth_attempts_total{outcome="accepted"}'
+        values: '0+0x35'
+    promql_expr_test:
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m]))
+        eval_time: 25m
+        exp_samples:
+          - labels: '{}'
+            value: 19
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+
+  - name: accepted-only authentication traffic stays quiet
+    interval: 1m
+    input_series:
+      - series: 'sith_auth_attempts_total{outcome="refused"}'
+        values: '0+0x35'
+      - series: 'sith_auth_attempts_total{outcome="accepted"}'
+        values: '0+2x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+
+  - name: one accepted authentication suppresses high refusal traffic
+    interval: 1m
+    input_series:
+      - series: 'sith_auth_attempts_total{outcome="refused"}'
+        values: '0+0x14 20+0x20'
+      - series: 'sith_auth_attempts_total{outcome="accepted"}'
+        values: '0+0x14 1+0x20'
+    promql_expr_test:
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0
+        eval_time: 25m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+
+  - name: transient refusal-only authentication clears before the hold window
+    interval: 1m
+    input_series:
+      - series: 'sith_auth_attempts_total{outcome="refused"}'
+        values: '0+0x14 20+0x20'
+      - series: 'sith_auth_attempts_total{outcome="accepted"}'
+        values: '0+0x19 1+0x15'
+    promql_expr_test:
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0
+        eval_time: 19m
+        exp_samples:
+          - labels: '{}'
+            value: 20
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0
+        eval_time: 25m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+
+  - name: authentication refusal counter reset does not fabricate traffic
+    interval: 1m
+    input_series:
+      - series: 'sith_auth_attempts_total{outcome="refused"}'
+        values: '100+0x5 0+0x30'
+      - series: 'sith_auth_attempts_total{outcome="accepted"}'
+        values: '0+0x35'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+
   - name: sustained snapshot failures fire only after ratio volume and hold guards
     interval: 1m
     input_series:

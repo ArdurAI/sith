@@ -1,13 +1,16 @@
 # Sith hub alert runbook
 
 These alerts consume only Sith's fixed-cardinality, process-wide metrics. They are a portable
-F10.4a/F10.4b/F10.4c/F10.4d/F10.4e/F10.4f baseline, not the complete F10.4 SLO and error-budget
+F10.4a/F10.4b/F10.4c/F10.4d/F10.4e/F10.4f/F10.4g baseline, not the complete F10.4 SLO and error-budget
 contract.
 The two fleet-read alerts cover sustained aggregate coverage degradation and proven stale reads;
 neither defines a freshness objective or continuously monitors snapshot age without request traffic.
 The rules do not cover governed dispatch success, PDP latency, or KMS/signing. The missing-telemetry
 warning detects loss of expected Sith samples only while its rule evaluator remains healthy; it
 cannot prove the evaluator, Alertmanager, receiver, or complete notification path is available.
+The authentication warning reports only sustained refusal-only aggregate traffic. It cannot
+attribute a caller or distinguish an attack from expired credentials, rollout drift, or another
+authentication-path outage.
 
 The rules aggregate away every input-series label before producing an alert. Configure stable
 Prometheus external labels if the notification must identify an environment. Do not add workspace,
@@ -88,6 +91,30 @@ degraded.
 2. Confirm the drop counter stops increasing after delivery recovers.
 3. Review the operator-owned log pipeline for matching gaps. Treat the metric as a signal, not as a
    reconstruction of the missing records.
+
+## SithHubAuthenticationRefusalOnly
+
+**Meaning.** At least 20 aggregate completed authentication attempts were `refused` and none were
+`accepted` over 15 minutes, and that condition persisted for 10 minutes. Any accepted attempt in
+the same window suppresses the warning. The rule stays quiet when the accepted series is absent,
+because partial telemetry cannot prove refusal-only traffic. This is an operational symptom, not
+proof of brute force, credential stuffing, account compromise, or a specific actor.
+
+**Triage.**
+
+1. First confirm `sith_build_info` and both preinitialized `accepted|refused` outcome series are
+   current. Check the operator-owned scrape and forwarding path without widening the loopback
+   listener or exposing credentials.
+2. Verify whether a recent credential rotation, session-key change, deployment rollout, verifier
+   configuration change, or clock problem could make every completed verifier decision fail. Use
+   sanitized operator-owned logs; do not add credential, reason, tenant, workspace, actor,
+   principal, IP, path, request, endpoint, or verifier-error data to the metric or alert.
+3. Confirm known-valid bearer and browser-session authentication through an authorized smoke test.
+   Keep the later workspace-authorization result separate: a valid credential that receives a 403
+   is still an `accepted` authentication attempt.
+4. If repeated refusals remain suspicious, investigate through the approved security-log and
+   identity-provider surfaces. Do not infer an attack, block an identity, or weaken authentication
+   from this process-wide aggregate alone.
 
 ## SithHubFederationSnapshotFailureRatioHigh
 
@@ -192,7 +219,7 @@ expected Hub metrics, loopback scrape, or forwarding path is missing.
 
 ## Threshold and cost notes
 
-The eight expressions evaluate once per minute over existing series and produce at most eight alert
+The nine expressions evaluate once per minute over existing series and produce at most nine alert
 instances per rule evaluator. They create no recording series, listener, exporter, remote-write
 path, or storage. The five ratio alerts use a 5% threshold and a 10-minute hold, with the minimum
 volume defined independently by each expression. The snapshot ratio requires 20 aggregate attempts. The
@@ -205,6 +232,10 @@ The database-readiness ratio requires 20 aggregate `ready|unavailable` checks, u
 threshold and 10-minute hold, and cannot divide by zero.
 The policy-decision ratio requires 20 aggregate `allow|deny|require-approval|error` decisions and
 counts only `error` as failure. It aggregates away the closed verb and every source label.
+The refusal-only authentication warning requires at least 20 aggregate refusals, zero accepted
+attempts over the same 15-minute window, and a 10-minute hold. It is deliberately not a refusal
+ratio: without an environment-specific baseline, a generic percentage would create an arbitrary
+security threshold. Missing accepted-series data cannot satisfy the expression.
 The missing-telemetry warning evaluates the existing traffic-independent `sith_build_info` gauge,
 tolerates the most recent ten minutes of samples, and then requires five continuous minutes of
 absence. Its installation precondition is the operator's explicit expectation signal; the rule

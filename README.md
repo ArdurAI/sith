@@ -320,9 +320,10 @@ destination: metrics consume both outcomes, while the process audit child and st
 adapter remain refusal-only. No credential mode, failure reason, tenant, workspace, actor,
 principal, token, IP, path, method, request, trace, or correlation value becomes a label or record.
 These counters do not cover OIDC provider exchange/callback failures, authorization denials,
-handler outcomes, or every future authentication mode. They are raw substrate, not a configured
-ratio, brute-force detector, alert threshold, SLO, error budget, page, or complete security control,
-and they add no new scrape or storage path.
+handler outcomes, or every future authentication mode. The portable package below consumes them
+only for one aggregate refusal-only warning; they do not provide a generic refusal ratio,
+brute-force detector, actor attribution, SLO, error budget, page, or complete security control, and
+they add no new scrape or storage path.
 
 Every referenced key, certificate, or CA file must be a read-only regular file from a deployment
 mount. The runtime obtains its Kubernetes identity only with in-cluster configuration; it has no
@@ -414,12 +415,12 @@ cardinality bounded and use counters for completed online-serving requests; see 
 [metric naming](https://prometheus.io/docs/practices/naming/) guidance.
 The portable [hub alert rules](monitoring/sith-hub.rules.yml) turn the established policy-decision,
 audit, auth-log delivery, aggregate snapshot failure, eligible fleet-read coverage, proven
-fleet-read staleness, database-readiness, and traffic-independent build-info presence signals into
-eight bounded, fixture-tested alerts; the
+fleet-read staleness, database-readiness, bounded authentication outcomes, and traffic-independent
+build-info presence signals into nine bounded, fixture-tested alerts; the
 [runbook](docs/runbooks/hub-alerts.md) documents installation and response. Load the rule file only
 after arranging an operator-owned same-Pod scrape/forwarding path. Sith does not render a Service,
 ServiceMonitor, PrometheusRule, Alertmanager receiver, exporter, or remote-write configuration.
-These rules are an F10.4a/F10.4b/F10.4c/F10.4d/F10.4e/F10.4f baseline, not read-freshness,
+These rules are an F10.4a/F10.4b/F10.4c/F10.4d/F10.4e/F10.4f/F10.4g baseline, not read-freshness,
 dispatch-success, or PDP-latency SLOs or error budgets. Sustained `degraded|error` outcomes among
 eligible `complete|degraded|error` fleet reads now produce one aggregate warning, but `complete`
 remains a coverage-contract outcome rather
@@ -437,6 +438,11 @@ More than five percent `error` among at least twenty eligible
 `allow|deny|require-approval|error` decisions over fifteen minutes produces one aggregate warning
 after a ten-minute hold. `deny` and `require-approval` remain valid decisions in its denominator,
 not failures. This is a fail-closed PEP symptom, not an external Ardur PDP-latency SLI or SLO.
+At least twenty aggregate `refused` authentication attempts with zero `accepted` attempts over
+fifteen minutes, sustained for ten minutes, produce one aggregate warning. Any accepted attempt in
+the same window suppresses it, and a missing accepted series stays quiet rather than interpreting
+partial telemetry. This is refusal-only traffic, not proof of brute force, credential stuffing,
+account compromise, a specific actor, or a negotiated authentication SLO.
 Chain verification detects retained-row edits,
 deletion, reordering, broken links, and head mismatch. It does not make a WORM or non-repudiation
 claim: detecting wholesale replacement by a privileged database owner requires a later externally
