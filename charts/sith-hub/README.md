@@ -45,6 +45,10 @@ The registry includes fixed `sith_hub_readiness_checks_total{outcome}` and
 `sith_hub_readiness_check_duration_seconds{outcome}` families for completed database-aware
 readiness checks, where `outcome` is only `ready` or `unavailable`. These process-local series carry
 no tenant, spoke, request, endpoint, credential, or raw-error label.
+The portable repository rules include an install-neutral warning when more than five percent of at
+least twenty aggregate checks are `unavailable` over fifteen minutes for ten minutes. The chart does
+not install or configure the scraper, rule evaluator, Alertmanager, or receiver; see
+[`docs/runbooks/hub-alerts.md`](../../docs/runbooks/hub-alerts.md).
 
 The Hub also starts a restricted same-container child for the one closed authentication-refusal
 record. Sith supplies only an inherited bounded Unix datagram descriptor and stderr: no
