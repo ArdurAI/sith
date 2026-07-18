@@ -311,16 +311,18 @@ listener, Service, exporter, queue, persistence, remote telemetry, request metad
 data, or raw payload retention. The drop counter is scrapeable only when the same optional loopback
 metrics endpoint above is enabled.
 
-The same already-sanitized middleware refusal also increments the preinitialized, unlabeled
-`sith_auth_refusals_total` counter. Runtime fanout delivers independently to the process audit child
-and metric observer; either observer's panic is isolated and cannot suppress the other or alter the
-uniform HTTP 401 response. The counter spans the bearer API and browser-session console middleware
-that already emit this one closed event. It contains no credential mode, failure reason, tenant,
-workspace, actor, principal, token, IP, path, request, trace, or correlation label. It does not
-cover successful authentication, OIDC provider exchange/callback failures, authorization denials,
-or every future authentication mode. Without a success or attempt denominator it is not a ratio,
-brute-force detector, alert threshold, SLO, error budget, page, or complete security-monitoring
-control, and it adds no new scrape or storage path.
+The same already-sanitized bearer and browser-session boundaries increment exactly two
+preinitialized `sith_auth_attempts_total{outcome="accepted|refused"}` series. `accepted` means the
+local verifier succeeded and is emitted before workspace authorization; `refused` covers the
+existing uniform authentication rejection paths. Every refusal also increments the legacy
+unlabeled `sith_auth_refusals_total` counter exactly once. Runtime fanout is panic-isolated per
+destination: metrics consume both outcomes, while the process audit child and structured-log
+adapter remain refusal-only. No credential mode, failure reason, tenant, workspace, actor,
+principal, token, IP, path, method, request, trace, or correlation value becomes a label or record.
+These counters do not cover OIDC provider exchange/callback failures, authorization denials,
+handler outcomes, or every future authentication mode. They are raw substrate, not a configured
+ratio, brute-force detector, alert threshold, SLO, error budget, page, or complete security control,
+and they add no new scrape or storage path.
 
 Every referenced key, certificate, or CA file must be a read-only regular file from a deployment
 mount. The runtime obtains its Kubernetes identity only with in-cluster configuration; it has no

@@ -408,6 +408,7 @@ func (handler *ConsoleHandler) authorize(
 		refuseAuthentication(handler.authObserver, response)
 		return tenancy.Scope{}, "", false
 	}
+	ObserveAuth(handler.authObserver, AuthEvent{Outcome: AuthOutcomeAccepted})
 	scope, err := principal.Scope(workspaceID)
 	if err != nil {
 		writeConsoleError(response, http.StatusForbidden, "forbidden")

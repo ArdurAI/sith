@@ -66,6 +66,14 @@ the fixed record without delaying the governed response and increments the unlab
 scrape that process-wide loss signal; the chart still renders no related Service port, ingress,
 sidecar, queue, exporter, or remote telemetry path.
 
+The same optional endpoint exposes two fixed, preinitialized
+`sith_auth_attempts_total{outcome="accepted|refused"}` series. A successful local verifier decision
+counts as `accepted` before workspace authorization; every authentication rejection counts as
+`refused` and also increments the legacy unlabeled `sith_auth_refusals_total` counter. The audit
+child remains refusal-only. These counters contain no tenant, workspace, identity, credential,
+request, network, error, trace, or authorization labels and do not add a Service, exporter,
+persistence, remote write, alert, SLO, or cloud resource.
+
 Validate supplied values before applying anything:
 
 ```bash

@@ -19,6 +19,7 @@ func TestSlogAuthObserverEmitsOnlyValidatedFixedFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	observer.ObserveAuth(hubserver.AuthEvent{Outcome: hubserver.AuthOutcomeRefused})
+	observer.ObserveAuth(hubserver.AuthEvent{Outcome: hubserver.AuthOutcomeAccepted})
 	observer.ObserveAuth(hubserver.AuthEvent{Outcome: "token=secret"})
 
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")

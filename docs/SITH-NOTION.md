@@ -2539,7 +2539,7 @@ and alerting · F10.5 crown-jewel hardening.
 ### F10.1 — Metrics
 
 **What it is.** Metrics about Sith's own health and behavior: control-plane liveness, federation
-freshness, intent throughput, sanitized authentication-refusal counts, and future derived rates
+freshness, intent throughput, bounded sanitized authentication-outcome counts, and future derived rates
 where trustworthy denominators exist, abstention rates, and PDP latency.
 
 **How it works.**

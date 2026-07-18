@@ -26,7 +26,7 @@ type slogAuthObserver struct {
 }
 
 func (observer slogAuthObserver) ObserveAuth(event hubserver.AuthEvent) {
-	if observer.logger == nil || event.Validate() != nil {
+	if observer.logger == nil || event.Validate() != nil || event.Outcome != hubserver.AuthOutcomeRefused {
 		return
 	}
 	observer.logger.Warn(

@@ -58,6 +58,7 @@ func TestMetricsExposeOnlyBoundedSelfObservability(t *testing.T) {
 	metrics.ObserveReadiness(hubserver.ReadinessOutcomeReady, 10*time.Millisecond)
 	metrics.ObserveReadiness(hubserver.ReadinessOutcomeUnavailable, -time.Second)
 	metrics.ObserveReadiness(hubserver.ReadinessOutcome("database endpoint secret"), time.Second)
+	metrics.ObserveAuth(hubserver.AuthEvent{Outcome: hubserver.AuthOutcomeAccepted})
 	metrics.ObserveAuth(hubserver.AuthEvent{Outcome: hubserver.AuthOutcomeRefused})
 	metrics.ObserveAuth(hubserver.AuthEvent{Outcome: "token=secret"})
 	metrics.ObserveAuthRefusalDeliveryDrop()
@@ -93,6 +94,8 @@ func TestMetricsExposeOnlyBoundedSelfObservability(t *testing.T) {
 		`sith_hub_readiness_checks_total{outcome="unavailable"} 1`,
 		`sith_hub_readiness_check_duration_seconds_count{outcome="ready"} 1`,
 		`sith_hub_readiness_check_duration_seconds_count{outcome="unavailable"} 1`,
+		`sith_auth_attempts_total{outcome="accepted"} 1`,
+		`sith_auth_attempts_total{outcome="refused"} 1`,
 		"sith_auth_refusals_total 1",
 		"sith_auth_refusal_delivery_drops_total 1",
 		`verb="fleet.read"`,
@@ -149,6 +152,8 @@ func TestMetricsUseIndependentRegistriesAndNormalizeBuildLabels(t *testing.T) {
 		`sith_hub_readiness_checks_total{outcome="unavailable"} 0`,
 		`sith_hub_readiness_check_duration_seconds_count{outcome="ready"} 0`,
 		`sith_hub_readiness_check_duration_seconds_count{outcome="unavailable"} 0`,
+		`sith_auth_attempts_total{outcome="accepted"} 0`,
+		`sith_auth_attempts_total{outcome="refused"} 0`,
 		`sith_auth_refusals_total 0`,
 	} {
 		if !strings.Contains(body, preinitialized) {
@@ -205,6 +210,7 @@ func assertSithMetricLabels(t *testing.T, metrics *Metrics) {
 		"sith_federation_fleet_read_freshness_total":      {"outcome": true},
 		"sith_hub_readiness_checks_total":                 {"outcome": true},
 		"sith_hub_readiness_check_duration_seconds":       {"outcome": true},
+		"sith_auth_attempts_total":                        {"outcome": true},
 		"sith_auth_refusals_total":                        {},
 		"sith_auth_refusal_delivery_drops_total":          {},
 	}

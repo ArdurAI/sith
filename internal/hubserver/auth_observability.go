@@ -4,12 +4,17 @@ package hubserver
 
 import "fmt"
 
-// AuthOutcome is the closed self-observability result of one pre-principal
-// authentication attempt. It intentionally does not distinguish credential failure modes.
+// AuthOutcome is the closed self-observability result of one completed authentication verifier
+// decision. It intentionally does not distinguish credential modes or failure reasons.
 type AuthOutcome string
 
-// AuthOutcomeRefused is emitted for every request the bearer-token middleware rejects.
-const AuthOutcomeRefused AuthOutcome = "refused"
+const (
+	// AuthOutcomeAccepted is emitted after a bearer token or browser session verifies successfully,
+	// before any workspace authorization decision.
+	AuthOutcomeAccepted AuthOutcome = "accepted"
+	// AuthOutcomeRefused is emitted for every request the authentication boundary rejects.
+	AuthOutcomeRefused AuthOutcome = "refused"
+)
 
 // AuthEvent is one passive, sanitized authentication observation. It deliberately has no
 // request, credential, verifier-error, principal, path, network, or correlation fields: none are
@@ -20,7 +25,7 @@ type AuthEvent struct {
 
 // Validate rejects unsupported outcome values before an observer can emit them.
 func (event AuthEvent) Validate() error {
-	if event.Outcome != AuthOutcomeRefused {
+	if event.Outcome != AuthOutcomeAccepted && event.Outcome != AuthOutcomeRefused {
 		return fmt.Errorf("authentication event outcome is unsupported")
 	}
 	return nil
