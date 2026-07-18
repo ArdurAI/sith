@@ -50,13 +50,15 @@ groups:
           sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20
           and
           sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0
+          and
+          sum(count_over_time(sith_auth_attempts_total{outcome="accepted"}[10m])) > 0
         for: 10m
         labels:
           component: sith-hub
           severity: warning
         annotations:
           summary: Sith hub authentication traffic is persistently refusal-only
-          description: At least twenty aggregate authentication attempts were refused and none were accepted over the last fifteen minutes.
+          description: At least twenty aggregate authentication attempts were refused and none were accepted over fifteen minutes; accepted-outcome telemetry was present during the last ten minutes.
           runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubauthenticationrefusalonly
 
       - alert: SithHubFederationSnapshotFailureRatioHigh

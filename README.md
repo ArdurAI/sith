@@ -440,9 +440,10 @@ after a ten-minute hold. `deny` and `require-approval` remain valid decisions in
 not failures. This is a fail-closed PEP symptom, not an external Ardur PDP-latency SLI or SLO.
 At least twenty aggregate `refused` authentication attempts with zero `accepted` attempts over
 fifteen minutes, sustained for ten minutes, produce one aggregate warning. Any accepted attempt in
-the same window suppresses it, and a missing accepted series stays quiet rather than interpreting
-partial telemetry. This is refusal-only traffic, not proof of brute force, credential stuffing,
-account compromise, a specific actor, or a negotiated authentication SLO.
+the same window suppresses it. At least one accepted-outcome sample must also have reached the rule
+evaluator during the last ten minutes; a missing or stale accepted series stays quiet rather than
+turning partial telemetry into a refusal-only claim. This is not proof of brute force, credential
+stuffing, account compromise, a specific actor, or a negotiated authentication SLO.
 Chain verification detects retained-row edits,
 deletion, reordering, broken links, and head mismatch. It does not make a WORM or non-repudiation
 claim: detecting wholesale replacement by a privileged database owner requires a later externally

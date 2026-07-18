@@ -209,7 +209,7 @@ tests:
         exp_samples:
           - labels: '{}'
             value: 20
-      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0 and sum(count_over_time(sith_auth_attempts_total{outcome="accepted"}[10m])) > 0
         eval_time: 25m
         exp_samples:
           - labels: '{}'
@@ -226,7 +226,7 @@ tests:
               severity: warning
             exp_annotations:
               summary: Sith hub authentication traffic is persistently refusal-only
-              description: At least twenty aggregate authentication attempts were refused and none were accepted over the last fifteen minutes.
+              description: At least twenty aggregate authentication attempts were refused and none were accepted over fifteen minutes; accepted-outcome telemetry was present during the last ten minutes.
               runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubauthenticationrefusalonly
       - eval_time: 26m
         alertname: SithHubAuthenticationRefusalOnly
@@ -245,6 +245,27 @@ tests:
         values: '0+2x35'
     alert_rule_test:
       - eval_time: 30m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+
+  - name: stale accepted authentication samples cannot satisfy the recent telemetry guard
+    interval: 1m
+    input_series:
+      - series: 'sith_auth_attempts_total{outcome="refused"}'
+        values: '0+0x1 20+0x20'
+      - series: 'sith_auth_attempts_total{outcome="accepted"}'
+        values: '0+0x1 _x20'
+    promql_expr_test:
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0
+        eval_time: 12m
+        exp_samples:
+          - labels: '{}'
+            value: 20
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0 and sum(count_over_time(sith_auth_attempts_total{outcome="accepted"}[10m])) > 0
+        eval_time: 12m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 12m
         alertname: SithHubAuthenticationRefusalOnly
         exp_alerts: []
 
@@ -286,7 +307,7 @@ tests:
       - series: 'sith_auth_attempts_total{outcome="accepted"}'
         values: '0+0x14 1+0x20'
     promql_expr_test:
-      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0 and sum(count_over_time(sith_auth_attempts_total{outcome="accepted"}[10m])) > 0
         eval_time: 25m
         exp_samples: []
     alert_rule_test:
@@ -302,12 +323,12 @@ tests:
       - series: 'sith_auth_attempts_total{outcome="accepted"}'
         values: '0+0x19 1+0x15'
     promql_expr_test:
-      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0 and sum(count_over_time(sith_auth_attempts_total{outcome="accepted"}[10m])) > 0
         eval_time: 19m
         exp_samples:
           - labels: '{}'
             value: 20
-      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0 and sum(count_over_time(sith_auth_attempts_total{outcome="accepted"}[10m])) > 0
         eval_time: 25m
         exp_samples: []
     alert_rule_test:
