@@ -1,7 +1,7 @@
 # Session — 2026-07-18 — E10 missing Hub telemetry alert
 
 **Builder:** Gnani Rahul · **Branch:** `gnanirahulnutakki/feat/e10-missing-telemetry-alert`
-**Slice:** E10 F10.4d / [#254](https://github.com/ArdurAI/sith/issues/254) · **Status:** ready for commit
+**Slice:** E10 F10.4d / [#254](https://github.com/ArdurAI/sith/issues/254) · **Status:** corrective commit ready
 **Decision record:** [Notion](https://app.notion.com/p/3a12637edb07814a95a1f70de98f1ba1)
 
 ## [G] Goal
@@ -75,3 +75,22 @@ resource, spoke egress, or action capability.
 Implementation and all local gates are complete. Next: create one signed DCO/GSTACK commit, push,
 open the PR into `dev`, and hold completion until exact-head and post-merge CI, CodeQL, review, and
 security queues are green.
+
+## [C] Checkpoint 2 — hosted shell-policy correction
+
+- PR 255 exact-head CodeQL and the release job passed, while the main hosted CI job stopped in the
+  portable Prometheus policy script.
+- Root cause: the policy script still expected five alert rules after this slice intentionally added
+  the sixth. Its bare `[[ ... ]]` assertion also produced no diagnostic and behaved differently
+  between the macOS Bash 3.2 local gate and the hosted Bash 5 runner.
+- Correction: capture the rule count, require exactly six with an explicit conditional failure and
+  error message, then rerun the focused policy test and the complete local CI gate before pushing a
+  second signed DCO/GSTACK checkpoint.
+- CodeRabbit caught one remaining zero-rule edge case before commit: `grep -c` exits nonzero when it
+  finds no matches, so `set -e` could still bypass the diagnostic. The final counter uses `awk` and
+  always emits a numeric count, including zero.
+- Its next pass caught an observability wording overclaim in EPICS: sample presence at an evaluator
+  does not prove that evaluator is healthy. The implementation note now says only that the expected
+  sample reaches the evaluator, matching the runbook's external-synthetic boundary.
+- The zero-rule counter control, focused policy test, and a fresh complete `make ci` pass. The final
+  eight-file CodeRabbit review against `origin/dev` reports no findings.

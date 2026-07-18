@@ -2656,7 +2656,7 @@ not a read-freshness or paging SLO, and adds no scrape, rule-evaluation, notific
 infrastructure.
 
 **Implementation note (F10.4d).** A sixth portable warning uses the existing traffic-independent
-`sith_build_info` gauge to detect when no expected Sith sample reaches a healthy rule evaluator for
+`sith_build_info` gauge to detect when no expected Sith sample reaches the rule evaluator for
 ten minutes and the absence persists for five more. The rule emits one fixed-label warning, depends
 on no operator-specific target identity or Kubernetes metric, and is valid only where an operator
 has intentionally installed the documented Hub scrape/forwarding path. It cannot detect failure of
