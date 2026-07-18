@@ -337,13 +337,16 @@ authorization, carries no workspace, spoke, resource, selector, principal, trace
 label, and is panic-isolated from read behavior. This fixed four-series counter is an F10.1d
 coverage-SLI substrate; it is not a read-freshness objective or error-budget policy.
 The portable [hub alert rules](monitoring/sith-hub.rules.yml) turn the established audit, auth-log
-delivery, and aggregate snapshot failure signals into three bounded, fixture-tested alerts; the
+delivery, aggregate snapshot failure, and eligible fleet-read coverage signals into four bounded,
+fixture-tested alerts; the
 [runbook](docs/runbooks/hub-alerts.md) documents installation and response. Load the rule file only
 after arranging an operator-owned same-Pod scrape/forwarding path. Sith does not render a Service,
 ServiceMonitor, PrometheusRule, Alertmanager receiver, exporter, or remote-write configuration.
-These rules are an F10.4a baseline, not read-freshness, dispatch-success, or PDP-latency SLOs or
-error budgets. The aggregate fleet-read outcome signal now exists, but its target, budget, and
-alert policy still require a separately reviewed F10.4 follow-up; the other signals remain absent.
+These rules are an F10.4a/F10.4b baseline, not read-freshness, dispatch-success, or PDP-latency SLOs
+or error budgets. Sustained `degraded|error` outcomes among eligible `complete|degraded|error` fleet
+reads now produce one aggregate warning, but `complete` remains a coverage-contract outcome rather
+than a snapshot-age guarantee; formal targets and budgets require a separately reviewed F10.4
+follow-up.
 Chain verification detects retained-row edits,
 deletion, reordering, broken links, and head mismatch. It does not make a WORM or non-repudiation
 claim: detecting wholesale replacement by a privileged database owner requires a later externally

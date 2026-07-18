@@ -22,7 +22,7 @@ ci_checksum="$(awk -F '"' '/^  PROMETHEUS_LINUX_AMD64_SHA256: / { print $2 }' "$
 }
 
 rules="${REPO_ROOT}/monitoring/sith-hub.rules.yml"
-[[ "$(grep -c '^[[:space:]]*- alert:' "${rules}")" == 3 ]]
+[[ "$(grep -c '^[[:space:]]*- alert:' "${rules}")" == 4 ]]
 if grep -Fq '{{' "${rules}"; then
   printf '[prometheus-policy] FAIL: dynamic templates are prohibited\n' >&2
   exit 1
