@@ -13,6 +13,12 @@ The chart creates no `Secret`, `data`, or `stringData` block. An E3-approved KMS
 
 `migration.applicationRole` is a non-secret PostgreSQL role name. The migration hook runs before install and upgrade, blocks the release if it fails, and receives no Kubernetes service-account token or runtime TLS material. The Deployment receives an in-cluster token only to read the fixed `sith-reader` managed-serviceaccount Secret; its ClusterRole permits exactly `get` on that one resource name and no list/watch or write verbs.
 
+The same hook creates the forced-RLS approval-grant table used by F5.9a. The application role may
+insert an exact digest-bound grant and atomically set only its `consumed_at` column; it cannot
+rewrite or delete the workspace, intent, proposer, approver, or resolved digest. This adds one
+small indexed row and one scoped transaction per approval, with no queue, polling loop, Secret,
+Service, or cloud dependency.
+
 The chart permits exactly two fixed profiles for both the hub and its migration hook:
 
 | Profile | Requests | Limits | Intended envelope |

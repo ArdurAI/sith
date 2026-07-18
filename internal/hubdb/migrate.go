@@ -163,6 +163,8 @@ func grantApplicationPrivileges(ctx context.Context, tx pgx.Tx, appRole string) 
 		"REVOKE UPDATE, DELETE ON sith.policy_audit_entries FROM " + identifier,
 		"REVOKE UPDATE (workspace_id, sequence, format_version, recorded_at, trace_id, actor, role, action, verb, verdict, reason_code, previous_hash, entry_hash) ON sith.policy_audit_entries FROM " + identifier,
 		"REVOKE DELETE ON sith.policy_audit_heads FROM " + identifier,
+		"REVOKE UPDATE, DELETE ON sith.approval_grants FROM " + identifier,
+		"GRANT UPDATE (consumed_at) ON sith.approval_grants TO " + identifier,
 	}
 	for _, statement := range statements {
 		if _, err := tx.Exec(ctx, statement); err != nil {

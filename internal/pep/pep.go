@@ -113,6 +113,16 @@ type ProposalInput struct {
 	resolvedDigest  string
 }
 
+// ApprovalBinding is the privacy-minimizing, unforgeable view of one validated proposal needed by
+// the approval store. Its fields remain private so code outside this package cannot assemble an
+// approval from caller-controlled identifiers or a digest that did not come from NewProposalInput.
+type ApprovalBinding struct {
+	intentID       string
+	workspaceID    tenancy.WorkspaceID
+	proposer       string
+	resolvedDigest string
+}
+
 // NewReadInput hashes canonical typed arguments for the policy hook. Callers must validate their
 // concrete argument schema before constructing this input.
 func NewReadInput(verb Verb, canonicalArguments []byte) ReadInput {
@@ -145,6 +155,42 @@ func NewProposalInput(
 	input.resolvedDigest = input.digest()
 	return input, nil
 }
+
+// ApprovalBinding returns the exact immutable identity and resolved digest that an approval may
+// authorize. Raw arguments and target data never cross this boundary.
+func (input ProposalInput) ApprovalBinding() (ApprovalBinding, error) {
+	if err := input.validate(); err != nil {
+		return ApprovalBinding{}, fmt.Errorf("derive proposal approval binding: invalid proposal")
+	}
+	return ApprovalBinding{
+		intentID: input.intentID, workspaceID: input.workspaceID,
+		proposer: input.actor, resolvedDigest: input.resolvedDigest,
+	}, nil
+}
+
+// Validate rejects an incomplete approval binding. Only ProposalInput.ApprovalBinding can create a
+// non-zero binding outside this package because every field is private.
+func (binding ApprovalBinding) Validate() error {
+	if validateSafeText("approval intent identifier", binding.intentID, maxIntentIDBytes) != nil ||
+		tenancy.ValidateWorkspaceID(binding.workspaceID) != nil ||
+		validateSafeText("approval proposer", binding.proposer, maxActorBytes) != nil ||
+		!validDigest(binding.resolvedDigest) {
+		return fmt.Errorf("approval binding is invalid")
+	}
+	return nil
+}
+
+// IntentID returns the immutable intent identifier bound to the approval.
+func (binding ApprovalBinding) IntentID() string { return binding.intentID }
+
+// WorkspaceID returns the only workspace in which the approval may be used.
+func (binding ApprovalBinding) WorkspaceID() tenancy.WorkspaceID { return binding.workspaceID }
+
+// Proposer returns the authenticated actor that created the bound proposal.
+func (binding ApprovalBinding) Proposer() string { return binding.proposer }
+
+// ResolvedDigest returns the SHA-256 binding over the exact proposal envelope.
+func (binding ApprovalBinding) ResolvedDigest() string { return binding.resolvedDigest }
 
 // Decision records one PDP-compatible policy result using a safe reason code rather than free text.
 type Decision struct {
