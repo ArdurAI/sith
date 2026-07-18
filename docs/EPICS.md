@@ -2638,6 +2638,14 @@ are `degraded` or `error` over fifteen minutes for ten minutes. Eligible outcome
 This is a user-visible coverage symptom, not a snapshot-age guarantee, SLO target, error budget, or
 burn-rate page.
 
+**Implementation note (F10.4c).** A fifth portable warning consumes only the bounded F10.1e
+`ready|unavailable` counter. It fires when more than five percent of at least twenty aggregate
+database-readiness checks are `unavailable` over fifteen minutes and the condition persists for ten
+minutes. The expression aggregates away all source labels, guards its denominator, and remains quiet
+for missing, low-volume, all-ready, and transient data. It is a control-plane availability symptom,
+not a read-freshness or paging SLO, and adds no scrape, rule-evaluation, notification, or cloud
+infrastructure.
+
 ### F10.5 — Crown-jewel hardening
 
 **What it is.** The hardening the hub demands as the highest-value target: signer-key protection,

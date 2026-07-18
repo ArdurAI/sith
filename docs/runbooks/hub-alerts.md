@@ -1,7 +1,7 @@
 # Sith hub alert runbook
 
 These alerts consume only Sith's fixed-cardinality, process-wide metrics. They are a portable
-F10.4a/F10.4b baseline, not the complete F10.4 SLO and error-budget contract. The fleet-read alert
+F10.4a/F10.4b/F10.4c baseline, not the complete F10.4 SLO and error-budget contract. The fleet-read alert
 covers sustained aggregate coverage degradation but does not establish snapshot-age freshness.
 The rules do not cover governed dispatch success, PDP latency, KMS/signing, or the availability of
 the scrape and notification pipeline.
@@ -104,14 +104,35 @@ contract reported no gaps—it does not guarantee snapshot age. Legitimate inter
    suppress evidence by treating degraded reads as complete, excluding scopes, bypassing the PEP,
    or weakening RLS.
 
+## SithHubDatabaseReadinessDegradationHigh
+
+**Meaning.** More than 5% of at least 20 aggregate completed database readiness checks were
+`unavailable` over 15 minutes, and the condition persisted for 10 minutes. The alert is a warning:
+it reports sustained failure of the Hub's application-pool PostgreSQL ping, not a formal availability
+objective, fleet-freshness signal, or proof that the scrape and notification path is healthy.
+
+**Triage.**
+
+1. Compare the aggregate `ready` and `unavailable` counters. Do not add request, endpoint, tenant,
+   workspace, spoke, credential, error, panic, or database detail to the metric or alert.
+2. Inspect PostgreSQL availability, connection saturation, forced-RLS migration state, storage, and
+   network policy through operator-owned surfaces. Keep credentials and query/error text out of logs.
+3. Confirm Kubernetes is removing unready Pods from service and that healthy replicas retain enough
+   capacity. Do not weaken or bypass `/readyz` to recover traffic.
+4. After the database path recovers, confirm `ready` checks resume and the ratio resolves naturally.
+   Separately test the external scrape-to-receiver path because this white-box rule cannot detect its
+   own absence.
+
 ## Threshold and cost notes
 
-The four expressions evaluate once per minute over existing series and produce at most four alert
+The five expressions evaluate once per minute over existing series and produce at most five alert
 instances per rule evaluator. They create no recording series, listener, exporter, remote-write
 path, or storage. Both ratio alerts use a 5% threshold and a 10-minute hold, with the minimum volume
 defined independently by each expression. The snapshot ratio requires 20 aggregate attempts. The
 fleet-read ratio requires 20 eligible `complete|degraded|error` reads and excludes `empty` from
 numerator and denominator, so legitimate zero-scope traffic neither fires nor hides the alert.
+The database-readiness ratio requires 20 aggregate `ready|unavailable` checks, uses the same 5%
+threshold and 10-minute hold, and cannot divide by zero.
 Change these thresholds only through a reviewed local override backed by observed traffic and an
 explicit response owner. Full SLO thresholds and burn-rate alerts wait for negotiated objectives
 and the missing freshness, dispatch, and PDP production signals.

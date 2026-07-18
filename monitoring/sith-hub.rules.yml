@@ -3,7 +3,7 @@
 groups:
   - name: sith-hub.failure-signals
     interval: 1m
-    limit: 4
+    limit: 5
     rules:
       - alert: SithHubPolicyAuditFailure
         expr: sum(increase(sith_policy_audit_attempts_total{outcome="error"}[5m])) > 0
@@ -62,3 +62,21 @@ groups:
           summary: Sith hub fleet reads are returning sustained coverage degradation
           description: More than five percent of at least twenty aggregate eligible fleet reads were degraded or failed over fifteen minutes.
           runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubfleetreadcoveragedegradationhigh
+
+      - alert: SithHubDatabaseReadinessDegradationHigh
+        expr: |
+          (
+            sum(increase(sith_hub_readiness_checks_total{outcome="unavailable"}[15m]))
+            /
+            clamp_min(sum(increase(sith_hub_readiness_checks_total{outcome=~"ready|unavailable"}[15m])), 1)
+          ) > 0.05
+          and
+          sum(increase(sith_hub_readiness_checks_total{outcome=~"ready|unavailable"}[15m])) >= 20
+        for: 10m
+        labels:
+          component: sith-hub
+          severity: warning
+        annotations:
+          summary: Sith hub database-backed readiness is persistently degraded
+          description: More than five percent of at least twenty aggregate database readiness checks were unavailable over fifteen minutes.
+          runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubdatabasereadinessdegradationhigh
