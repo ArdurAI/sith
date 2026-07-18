@@ -50,6 +50,7 @@ make build
 ./bin/sith correlate 'deploy/payments status!=Healthy'
 ./bin/sith investigate             # rank supported degraded signals across every context
 ./bin/sith investigate payments --context kind-dev --output json
+./bin/sith audit verify ./sith-policy-audit.json # local integrity check; no hub or credentials
 ./bin/sith describe pod/api --context kind-dev -n apps
 ./bin/sith yaml secret/api-token --context kind-dev -n apps
 ./bin/sith logs api --context kind-dev -n apps --tail 100 -f
@@ -351,6 +352,14 @@ or invalid chains fail with the same unavailable response. This portable documen
 the existing privacy-minimized policy and approval events plus their SHA-256 links. It is not the
 future intent-correlated Ardur decision ledger, pagination, WORM storage, external anchoring, or a
 claim that E6 is complete.
+`sith audit verify <export.json>` provides the corresponding offline integrity check. It accepts
+one non-symlink regular file of at most 1 MiB, rejects duplicate, unknown, case-mismatched, or
+trailing JSON, and recomputes every versioned entry hash, sequence link, and declared head. The
+command performs no hub request, database access, credential lookup, temporary-file creation, or
+telemetry and emits only a bounded summary. A successful result means the document is internally
+consistent; without an external anchor it does not prove origin or detect wholesale replacement by
+a privileged store owner. Verification costs one bounded local read and at most 512 SHA-256
+computations, with no cloud, storage, egress, or recurring-service cost.
 The response uses `X-Content-Type-Options: nosniff` and the fixed
 `sith-policy-audit.json` attachment filename. Authentication is bearer-only; browser cookies,
 filters, and raw-payload selection are rejected.

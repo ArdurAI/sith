@@ -95,7 +95,7 @@ func NewAuditExportHandler(config AuditExportHandlerConfig) (http.Handler, error
 			writeAuditExportError(response, http.StatusServiceUnavailable, "audit_export_unavailable")
 			return
 		}
-		if err := exported.ValidateForWorkspace(scope.WorkspaceID()); err != nil {
+		if err := exported.VerifyForWorkspace(scope.WorkspaceID()); err != nil {
 			writeAuditExportError(response, http.StatusServiceUnavailable, "audit_export_unavailable")
 			return
 		}

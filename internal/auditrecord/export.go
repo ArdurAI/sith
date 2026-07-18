@@ -5,10 +5,14 @@
 package auditrecord
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/ArdurAI/sith/internal/intent"
 	"github.com/ArdurAI/sith/internal/pep"
@@ -22,6 +26,11 @@ const (
 	HashAlgorithm = "sha-256"
 	// MaxEntries bounds one synchronous online export before database or network work begins.
 	MaxEntries = 512
+	// MaxDocumentBytes bounds one portable JSON document before offline parsing.
+	MaxDocumentBytes = 1 << 20
+
+	policyAuditHashDomain   = "sith-policy-audit-chain/v1"
+	approvalAuditHashDomain = "sith-approval-audit-chain/v2"
 )
 
 // Export is one complete, verified workspace snapshot. It is constructed only after the backing
@@ -86,6 +95,67 @@ func (export Export) ValidateForWorkspace(workspaceID tenancy.WorkspaceID) error
 	return nil
 }
 
+// Verify recomputes every entry digest from the serialized document and checks the complete
+// retained chain. It proves internal consistency only: without an external anchor, a privileged
+// store owner could still replace an entire chain and head with a different self-consistent one.
+func (export Export) Verify() error {
+	return export.VerifyForWorkspace(tenancy.WorkspaceID(export.WorkspaceID))
+}
+
+// VerifyForWorkspace binds the document to an expected tenant before recomputing its hashes.
+func (export Export) VerifyForWorkspace(workspaceID tenancy.WorkspaceID) error {
+	if err := export.ValidateForWorkspace(workspaceID); err != nil {
+		return err
+	}
+	for index, entry := range export.Entries {
+		recomputed, err := RecomputeEntryHash(workspaceID, entry)
+		if err != nil || recomputed != entry.EntryHash {
+			return fmt.Errorf("audit export entry %d hash is invalid", index+1)
+		}
+	}
+	return nil
+}
+
+// RecomputeEntryHash returns the versioned canonical SHA-256 digest for one portable entry. The
+// database writer and offline verifier share this primitive so format framing cannot drift.
+func RecomputeEntryHash(workspaceID tenancy.WorkspaceID, entry Entry) (string, error) {
+	if workspaceInvalid(workspaceID) || entry.Sequence <= 0 || entry.RecordedAt.IsZero() ||
+		entry.RecordedAt.Location() != time.UTC ||
+		!entry.RecordedAt.Equal(entry.RecordedAt.Truncate(time.Microsecond)) ||
+		!validTraceID(entry.TraceID) || !safeText(entry.Actor, 256) || !validRole(entry.Role) ||
+		!validVerdict(entry.Verdict) || !validReasonCode(entry.ReasonCode) ||
+		!validHash(entry.PreviousHash) || !validEntryShape(entry) {
+		return "", fmt.Errorf("audit export entry hash input is invalid")
+	}
+	previousHash, err := hex.DecodeString(strings.TrimPrefix(entry.PreviousHash, "sha256:"))
+	if err != nil || len(previousHash) != sha256.Size {
+		return "", fmt.Errorf("audit export previous hash is invalid")
+	}
+
+	domain := policyAuditHashDomain
+	if entry.FormatVersion == 2 {
+		domain = approvalAuditHashDomain
+	}
+	canonical := make([]byte, 0, 512)
+	canonical = appendCanonicalString(canonical, domain)
+	canonical = appendCanonicalString(canonical, strconv.FormatInt(int64(entry.FormatVersion), 10))
+	canonical = appendCanonicalString(canonical, strconv.FormatInt(entry.Sequence, 10))
+	canonical = append(canonical, previousHash...)
+	for _, value := range []string{
+		entry.RecordedAt.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano),
+		entry.TraceID, string(workspaceID), entry.Actor, entry.Role, entry.Action, entry.Verb,
+		entry.Verdict, entry.ReasonCode,
+	} {
+		canonical = appendCanonicalString(canonical, value)
+	}
+	if entry.FormatVersion == 2 {
+		canonical = appendCanonicalString(canonical, entry.EventKind)
+		canonical = appendCanonicalString(canonical, entry.EvidenceDigest)
+	}
+	digest := sha256.Sum256(canonical)
+	return "sha256:" + hex.EncodeToString(digest[:]), nil
+}
+
 func workspaceInvalid(workspaceID tenancy.WorkspaceID) bool {
 	return tenancy.ValidateWorkspaceID(workspaceID) != nil
 }
@@ -101,6 +171,11 @@ func validEntryShape(entry Entry) bool {
 		}
 		verb := pep.Verb(entry.Verb)
 		if verb == "invalid" {
+			switch action {
+			case tenancy.ActionRead, tenancy.ActionExportAudit, tenancy.ActionProposeIntent:
+			default:
+				return false
+			}
 			return verdict == pep.VerdictDeny && entry.ReasonCode == "invalid-request"
 		}
 		switch action {
@@ -167,7 +242,7 @@ func lowercaseHex(value string) bool {
 }
 
 func safeText(value string, maximum int) bool {
-	if value == "" || strings.TrimSpace(value) != value || len(value) > maximum {
+	if value == "" || !utf8.ValidString(value) || strings.TrimSpace(value) != value || len(value) > maximum {
 		return false
 	}
 	for _, character := range value {
@@ -189,4 +264,10 @@ func validReasonCode(value string) bool {
 		}
 	}
 	return true
+}
+
+func appendCanonicalString(target []byte, value string) []byte {
+	target = strconv.AppendInt(target, int64(len(value)), 10)
+	target = append(target, ':')
+	return append(target, value...)
 }

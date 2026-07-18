@@ -147,6 +147,9 @@ func TestPolicyAuditExportProjectionIsPortableAndPrivacyMinimized(t *testing.T) 
 		exported.Chain.HeadHash != "sha256:"+hex.EncodeToString(entry.entryHash) || len(exported.Entries) != 1 {
 		t.Fatalf("export = %#v", exported)
 	}
+	if err := exported.Verify(); err != nil {
+		t.Fatalf("portable export Verify() error = %v", err)
+	}
 	record := exported.Entries[0]
 	if record.Sequence != 1 || record.FormatVersion != policyAuditFormatVersion ||
 		record.RecordedAt != entry.recordedAt || record.TraceID != string(entry.traceID) ||
