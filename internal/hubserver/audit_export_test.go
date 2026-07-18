@@ -352,14 +352,20 @@ func authenticatedAuditExportRequest(
 }
 
 func testPolicyAuditExport(now time.Time) auditrecord.Export {
-	hash := "sha256:" + strings.Repeat("a", 64)
-	return auditrecord.Export{
+	exported := auditrecord.Export{
 		Schema: auditrecord.SchemaV1, WorkspaceID: "workspace-a",
-		Chain: auditrecord.Chain{HashAlgorithm: auditrecord.HashAlgorithm, HeadSequence: 1, HeadHash: hash},
+		Chain: auditrecord.Chain{HashAlgorithm: auditrecord.HashAlgorithm, HeadSequence: 1},
 		Entries: []auditrecord.Entry{{
 			Sequence: 1, FormatVersion: 1, RecordedAt: now, TraceID: strings.Repeat("1", 32), Actor: "user:alice",
 			Role: "admin", Action: "export-audit", Verb: "audit.export", Verdict: "allow",
-			ReasonCode: "phase-1-audit-export", EventKind: "policy-decision", PreviousHash: "sha256:" + strings.Repeat("0", 64), EntryHash: hash,
+			ReasonCode: "phase-1-audit-export", EventKind: "policy-decision", PreviousHash: "sha256:" + strings.Repeat("0", 64),
 		}},
 	}
+	hash, err := auditrecord.RecomputeEntryHash("workspace-a", exported.Entries[0])
+	if err != nil {
+		panic(err)
+	}
+	exported.Entries[0].EntryHash = hash
+	exported.Chain.HeadHash = hash
+	return exported
 }

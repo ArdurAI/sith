@@ -848,6 +848,19 @@ func assertApprovalGrantIntegration(
 	if err := database.VerifyPolicyAuditChain(ctx, proposerB); err != nil {
 		t.Fatalf("mixed-version workspace B audit chain error = %v", err)
 	}
+	mixedExport, err := database.ExportPolicyAuditChain(
+		ctx, testScope(t, "user:bob", "workspace-b", tenancy.RoleAdmin),
+	)
+	if err != nil {
+		t.Fatalf("mixed-version workspace B export error = %v", err)
+	}
+	if len(mixedExport.Entries) != 2 || mixedExport.Entries[0].FormatVersion != policyAuditFormatVersion ||
+		mixedExport.Entries[1].FormatVersion != approvalAuditFormatVersion {
+		t.Fatalf("mixed-version workspace B export shape = %#v", mixedExport)
+	}
+	if err := mixedExport.Verify(); err != nil {
+		t.Fatalf("mixed-version PostgreSQL export offline verification error = %v", err)
+	}
 }
 
 func postgresApprovalBinding(

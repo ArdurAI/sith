@@ -11,6 +11,7 @@ import (
 	"math"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -24,8 +25,6 @@ import (
 const (
 	policyAuditFormatVersion   int16    = 1
 	approvalAuditFormatVersion int16    = 2
-	policyAuditHashDomain               = "sith-policy-audit-chain/v1"
-	approvalAuditHashDomain             = "sith-approval-audit-chain/v2"
 	approvalEvidenceHashDomain          = "sith-approval-grant-evidence/v1"
 	policyDecisionEventKind             = "policy-decision"
 	approvalCreatedEventKind            = "approval-created"
@@ -113,6 +112,9 @@ func appendPolicyAuditEntryTx(ctx context.Context, tx pgx.Tx, entry policyAuditE
 	entry.sequence = lastSequence + 1
 	entry.previousHash = bytes.Clone(lastHash)
 	entry.entryHash = policyAuditEntryHash(entry)
+	if len(entry.entryHash) != sha256.Size {
+		return fmt.Errorf("hash policy audit entry: portable audit hash is invalid")
+	}
 
 	if _, err := tx.Exec(ctx, `
 			INSERT INTO sith.policy_audit_entries(
@@ -238,7 +240,7 @@ func readVerifiedPolicyAuditChainTx(
 			return nil, 0, nil, fmt.Errorf("policy audit chain event is invalid at sequence %d", expectedSequence)
 		}
 		calculated := policyAuditEntryHash(entry)
-		if !bytes.Equal(entry.entryHash, calculated) {
+		if len(calculated) != sha256.Size || !bytes.Equal(entry.entryHash, calculated) {
 			return nil, 0, nil, fmt.Errorf("policy audit chain hash is invalid at sequence %d", expectedSequence)
 		}
 		if retainLimit > 0 {
@@ -268,14 +270,7 @@ func newPolicyAuditExport(
 ) auditrecord.Export {
 	records := make([]auditrecord.Entry, len(entries))
 	for index, entry := range entries {
-		records[index] = auditrecord.Entry{
-			Sequence: entry.sequence, FormatVersion: entry.format,
-			RecordedAt: entry.recordedAt.UTC().Truncate(time.Microsecond), TraceID: string(entry.traceID),
-			Actor: entry.actor, Role: string(entry.role), Action: string(entry.action), Verb: string(entry.verb),
-			Verdict: string(entry.verdict), ReasonCode: entry.reasonCode, EventKind: entry.eventKind,
-			EvidenceDigest: entry.evidence, PreviousHash: auditHashString(entry.previousHash),
-			EntryHash: auditHashString(entry.entryHash),
-		}
+		records[index] = portablePolicyAuditEntry(entry)
 	}
 	return auditrecord.Export{
 		Schema: auditrecord.SchemaV1, WorkspaceID: string(workspaceID),
@@ -302,28 +297,26 @@ func auditEventScope(event pep.AuditEvent) (tenancy.Scope, error) {
 }
 
 func policyAuditEntryHash(entry policyAuditEntry) []byte {
-	canonical := make([]byte, 0, 512)
-	domain := policyAuditHashDomain
-	if entry.format == approvalAuditFormatVersion {
-		domain = approvalAuditHashDomain
+	recomputed, err := auditrecord.RecomputeEntryHash(entry.workspaceID, portablePolicyAuditEntry(entry))
+	if err != nil {
+		return nil
 	}
-	canonical = appendCanonicalString(canonical, domain)
-	canonical = appendCanonicalString(canonical, strconv.FormatInt(int64(entry.format), 10))
-	canonical = appendCanonicalString(canonical, strconv.FormatInt(entry.sequence, 10))
-	canonical = append(canonical, entry.previousHash...)
-	for _, value := range []string{
-		entry.recordedAt.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano),
-		string(entry.traceID), string(entry.workspaceID), entry.actor, string(entry.role),
-		string(entry.action), string(entry.verb), string(entry.verdict), entry.reasonCode,
-	} {
-		canonical = appendCanonicalString(canonical, value)
+	decoded, err := hex.DecodeString(strings.TrimPrefix(recomputed, "sha256:"))
+	if err != nil || len(decoded) != sha256.Size {
+		return nil
 	}
-	if entry.format == approvalAuditFormatVersion {
-		canonical = appendCanonicalString(canonical, entry.eventKind)
-		canonical = appendCanonicalString(canonical, entry.evidence)
+	return decoded
+}
+
+func portablePolicyAuditEntry(entry policyAuditEntry) auditrecord.Entry {
+	return auditrecord.Entry{
+		Sequence: entry.sequence, FormatVersion: entry.format,
+		RecordedAt: entry.recordedAt.UTC().Truncate(time.Microsecond), TraceID: string(entry.traceID),
+		Actor: entry.actor, Role: string(entry.role), Action: string(entry.action), Verb: string(entry.verb),
+		Verdict: string(entry.verdict), ReasonCode: entry.reasonCode, EventKind: entry.eventKind,
+		EvidenceDigest: entry.evidence, PreviousHash: auditHashString(entry.previousHash),
+		EntryHash: auditHashString(entry.entryHash),
 	}
-	digest := sha256.Sum256(canonical)
-	return digest[:]
 }
 
 func validatePolicyAuditEntry(entry policyAuditEntry) error {
