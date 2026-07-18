@@ -306,6 +306,7 @@ func assertHubDeployment(t *testing.T, deployment *unstructured.Unstructured, pr
 	}
 	assertHelmContainerSecurity(t, container)
 	assertHelmProfileResources(t, container, profile)
+	assertHubProbes(t, container)
 	environment := helmEnvironment(t, container)
 	if !matchesHubEnvironmentMode(environment, metricsEnabled) || environment["SITH_HUB_DATABASE_URL"] != "secret:sith-runtime/database-url" {
 		t.Fatalf("hub environment = %#v", environment)
@@ -344,6 +345,33 @@ func assertHubDeployment(t *testing.T, deployment *unstructured.Unstructured, pr
 		t.Fatalf("hub service account = %#v", podSpec["serviceAccountName"])
 	}
 	return serviceAccountName, nestedHelmMap(t, deployment.Object, "spec", "template", "metadata", "labels")
+}
+
+func assertHubProbes(t *testing.T, container map[string]any) {
+	t.Helper()
+	for _, probe := range []struct {
+		name         string
+		path         string
+		initialDelay int64
+		period       int64
+	}{
+		{name: "livenessProbe", path: "/healthz", initialDelay: 10, period: 10},
+		{name: "readinessProbe", path: "/readyz", initialDelay: 2, period: 5},
+	} {
+		configuration := nestedHelmMap(t, container, probe.name)
+		if _, found := configuration["tcpSocket"]; found {
+			t.Fatalf("%s regressed to a socket-only check: %#v", probe.name, configuration)
+		}
+		httpGet := nestedHelmMap(t, configuration, "httpGet")
+		if httpGet["path"] != probe.path || httpGet["port"] != "https" || httpGet["scheme"] != "HTTPS" ||
+			helmInt(t, configuration["initialDelaySeconds"]) != probe.initialDelay ||
+			helmInt(t, configuration["periodSeconds"]) != probe.period ||
+			helmInt(t, configuration["timeoutSeconds"]) != 1 ||
+			helmInt(t, configuration["successThreshold"]) != 1 ||
+			helmInt(t, configuration["failureThreshold"]) != 3 {
+			t.Fatalf("%s contract = %#v", probe.name, configuration)
+		}
+	}
 }
 
 func matchesHubEnvironmentMode(environment map[string]string, metricsEnabled bool) bool {

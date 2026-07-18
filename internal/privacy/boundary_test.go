@@ -30,6 +30,9 @@ var approvedNetworkImports = map[string]map[string]bool{
 	"internal/hubserver/console.go":  {"net/http": true, "net/url": true},
 	"internal/hubserver/exchange.go": {"net": true, "net/http": true},
 	"internal/hubserver/fleet.go":    {"net/http": true, "net/url": true},
+	// Fixed inbound-only Hub probes return body-free status codes. They have no listener, dial,
+	// endpoint selection, tenant data, persistence, or outbound HTTP capability.
+	"internal/hubserver/probes.go": {"net/http": true},
 	// AWS STS egress is endpoint-pinned, SigV4-profiled, redirect-disabled, and never used by local mode.
 	"internal/hubauth/aws_sts.go": {"net/http": true, "net/url": true},
 	"internal/hubauth/oidc.go":    {"net": true, "net/http": true, "net/netip": true, "net/url": true},

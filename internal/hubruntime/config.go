@@ -167,7 +167,16 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: HTTP handler configuration is invalid")
 	}
-	handler := fleetHandler
+	probeHandler, err := hubserver.NewProbeHandler(database)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("construct hub runtime: probe handler configuration is invalid")
+	}
+	mux, err := newRuntimeMux(fleetHandler, probeHandler)
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
 	if config.browserOIDC != nil {
 		privateKey, err := loadSessionPrivateKey(config.browserOIDC.sessionPrivateKeyFile)
 		if err != nil {
@@ -230,7 +239,6 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 			cleanup()
 			return nil, fmt.Errorf("construct hub runtime: console handler configuration is invalid")
 		}
-		mux := http.NewServeMux()
 		mux.Handle("GET /v1/workspaces/{workspace}/console/login", http.HandlerFunc(browserHandler.Login))
 		mux.Handle("GET "+browserHandler.CallbackPath(), http.HandlerFunc(browserHandler.Callback))
 		mux.Handle("GET /v1/workspaces/{workspace}/console", http.HandlerFunc(consoleHandler.ServePage))
@@ -240,15 +248,13 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		mux.Handle("GET /v1/workspaces/{workspace}/console/cves", http.HandlerFunc(consoleHandler.ServeCVEIdentifier))
 		mux.Handle("GET /v1/console/assets/console.css", http.HandlerFunc(consoleHandler.ServeCSS))
 		mux.Handle("GET /v1/console/assets/console.js", http.HandlerFunc(consoleHandler.ServeJavaScript))
-		mux.Handle("/", fleetHandler)
-		handler = mux
 	}
 	listener, err := net.Listen("tcp", config.listenAddress)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: listener is unavailable")
 	}
-	server, err := NewServer(ServerConfig{Listener: listener, Handler: handler, TLSConfig: serverTLS})
+	server, err := NewServer(ServerConfig{Listener: listener, Handler: mux, TLSConfig: serverTLS})
 	if err != nil {
 		_ = listener.Close()
 		cleanup()
@@ -268,6 +274,19 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		database.Close()
 	}
 	return &Runtime{server: server, close: cleanup}, nil
+}
+
+func newRuntimeMux(fleetHandler http.Handler, probeHandler *hubserver.ProbeHandler) (*http.ServeMux, error) {
+	if fleetHandler == nil || probeHandler == nil {
+		return nil, fmt.Errorf("construct hub runtime: fleet and probe handlers are required")
+	}
+	mux := http.NewServeMux()
+	// Register without a method qualifier so HEAD and every non-GET method reach the probe's exact
+	// fail-closed request validation instead of ServeMux's implicit GET-to-HEAD behavior.
+	mux.Handle(hubserver.LivenessPath, http.HandlerFunc(probeHandler.ServeLiveness))
+	mux.Handle(hubserver.ReadinessPath, http.HandlerFunc(probeHandler.ServeReadiness))
+	mux.Handle("/", fleetHandler)
+	return mux, nil
 }
 
 // Run serves the configured hub and releases its application database pool on exit.

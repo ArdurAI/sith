@@ -68,6 +68,15 @@ func (database *AppDB) Close() {
 	}
 }
 
+// Ping verifies that the least-privilege application pool can acquire and ping PostgreSQL. It is
+// intentionally scope-free because it executes no tenant query and exists only for Hub readiness.
+func (database *AppDB) Ping(ctx context.Context) error {
+	if database == nil || database.pool == nil || ctx == nil {
+		return fmt.Errorf("ping hub database: database and context are required")
+	}
+	return database.pool.Ping(ctx)
+}
+
 // InWorkspace runs one callback in an explicit transaction with transaction-local RLS scope.
 func (database *AppDB) InWorkspace(ctx context.Context, scope tenancy.Scope, run func(pgx.Tx) error) error {
 	return database.inWorkspace(ctx, scope, pgx.TxOptions{

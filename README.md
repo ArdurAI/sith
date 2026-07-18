@@ -270,6 +270,15 @@ public OIDC client with PKCE, never a frontend client secret or refresh token. T
 must be reachable through the existing no-proxy, TLS 1.2+, public-network-only discovery/JWKS
 transport; deployments must allow only that issuer's required endpoints.
 
+The existing TLS listener also serves two fixed, unauthenticated, body-free Kubernetes probe
+routes. `GET /healthz` is dependency-free process liveness. `GET /readyz` performs one
+application-pool PostgreSQL ping under a one-second server deadline; failure returns only an empty
+`503`, never a database error or endpoint. Every other method, query, encoded variant, or path is
+rejected. PostgreSQL deliberately affects readiness rather than liveness so an outage removes the
+Pod from service without creating a dependency-driven restart storm. OCM/spoke reachability does
+not participate because partial fleet coverage must remain visible rather than making the whole
+Hub unready.
+
 The optional `SITH_HUB_METRICS_LISTEN_ADDR` is disabled unless it is exactly
 `127.0.0.1:<non-zero-port>` or `[::1]:<non-zero-port>`. When configured, it exposes only a
 separate plaintext `GET /metrics` listener backed by Sith's isolated, bounded-label registry. It
