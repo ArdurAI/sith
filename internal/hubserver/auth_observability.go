@@ -40,6 +40,33 @@ func (function AuthObserverFunc) ObserveAuth(event AuthEvent) {
 	function(event)
 }
 
+type authObserverFanout struct {
+	observers []AuthObserver
+}
+
+// NewAuthObserverFanout composes two or more required authentication observers. Each destination
+// remains independently panic-isolated, so a faulty observer cannot suppress later destinations.
+func NewAuthObserverFanout(observers ...AuthObserver) (AuthObserver, error) {
+	if len(observers) < 2 {
+		return nil, fmt.Errorf("construct authentication observer fanout: at least two observers are required")
+	}
+	for _, observer := range observers {
+		if observer == nil {
+			return nil, fmt.Errorf("construct authentication observer fanout: observers are required")
+		}
+	}
+	return &authObserverFanout{observers: append([]AuthObserver(nil), observers...)}, nil
+}
+
+func (fanout *authObserverFanout) ObserveAuth(event AuthEvent) {
+	if fanout == nil {
+		return
+	}
+	for _, observer := range fanout.observers {
+		ObserveAuth(observer, event)
+	}
+}
+
 // ObserveAuth sends a valid event to a passive observer. Invalid events and observer panics are
 // intentionally ignored so observability cannot alter the uniform unauthorized response.
 func ObserveAuth(observer AuthObserver, event AuthEvent) {
