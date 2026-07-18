@@ -44,6 +44,7 @@ type Metrics struct {
 	snapshotAttempts    *prometheus.CounterVec
 	snapshotDuration    *prometheus.HistogramVec
 	fleetReadResults    *prometheus.CounterVec
+	fleetReadFreshness  *prometheus.CounterVec
 	readinessChecks     *prometheus.CounterVec
 	readinessDuration   *prometheus.HistogramVec
 	authDeliveryDrops   prometheus.Counter
@@ -98,6 +99,10 @@ func New(config Config) (*Metrics, error) {
 			Namespace: "sith", Subsystem: "federation", Name: "fleet_read_results_total",
 			Help: "Total authorized Sith federated fleet reads by closed coverage outcome.",
 		}, []string{"outcome"}),
+		fleetReadFreshness: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "sith", Subsystem: "federation", Name: "fleet_read_freshness_total",
+			Help: "Total authorized Sith federated fleet reads by closed request-time freshness outcome.",
+		}, []string{"outcome"}),
 		readinessChecks: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "sith", Subsystem: "hub", Name: "readiness_checks_total",
 			Help: "Total completed Sith Hub database readiness checks by closed outcome.",
@@ -120,7 +125,7 @@ func New(config Config) (*Metrics, error) {
 	})
 	buildInfo.Set(1)
 
-	registered := make([]prometheus.Collector, 0, 13)
+	registered := make([]prometheus.Collector, 0, 14)
 	for _, collector := range []struct {
 		name      string
 		collector prometheus.Collector
@@ -135,6 +140,7 @@ func New(config Config) (*Metrics, error) {
 		{name: "snapshot attempts", collector: metrics.snapshotAttempts},
 		{name: "snapshot duration", collector: metrics.snapshotDuration},
 		{name: "fleet read results", collector: metrics.fleetReadResults},
+		{name: "fleet read freshness", collector: metrics.fleetReadFreshness},
 		{name: "Hub readiness checks", collector: metrics.readinessChecks},
 		{name: "Hub readiness duration", collector: metrics.readinessDuration},
 		{name: "authentication-refusal delivery drops", collector: metrics.authDeliveryDrops},
@@ -160,6 +166,15 @@ func New(config Config) (*Metrics, error) {
 		hubfleet.FleetReadOutcomeError,
 	} {
 		metrics.fleetReadResults.WithLabelValues(string(outcome))
+	}
+	for _, outcome := range []hubfleet.FleetFreshnessOutcome{
+		hubfleet.FleetFreshnessOutcomeFresh,
+		hubfleet.FleetFreshnessOutcomeStale,
+		hubfleet.FleetFreshnessOutcomeUnknown,
+		hubfleet.FleetFreshnessOutcomeEmpty,
+		hubfleet.FleetFreshnessOutcomeError,
+	} {
+		metrics.fleetReadFreshness.WithLabelValues(string(outcome))
 	}
 	for _, outcome := range []hubserver.ReadinessOutcome{
 		hubserver.ReadinessOutcomeReady,
@@ -217,13 +232,15 @@ func (metrics *Metrics) ObserveSpokeSnapshot(outcome hubfleet.SnapshotOutcome, d
 	metrics.snapshotDuration.WithLabelValues(outcomeLabel).Observe(normalizedDuration(duration))
 }
 
-// ObserveFleetRead records one authorized fleet read using only the closed coverage-outcome
-// vocabulary. It intentionally omits every tenant-proportional or caller-controlled dimension.
-func (metrics *Metrics) ObserveFleetRead(outcome hubfleet.FleetReadOutcome) {
-	if metrics == nil || metrics.fleetReadResults == nil {
+// ObserveFleetRead records one authorized fleet read using only closed aggregate coverage and
+// request-time freshness vocabularies. It omits every tenant-proportional or caller-controlled
+// dimension. Invalid pairs are discarded rather than fabricating an observation.
+func (metrics *Metrics) ObserveFleetRead(observation hubfleet.FleetReadObservation) {
+	if metrics == nil || metrics.fleetReadResults == nil || metrics.fleetReadFreshness == nil || !observation.Valid() {
 		return
 	}
-	metrics.fleetReadResults.WithLabelValues(normalizedFleetReadOutcome(outcome)).Inc()
+	metrics.fleetReadResults.WithLabelValues(string(observation.Outcome)).Inc()
+	metrics.fleetReadFreshness.WithLabelValues(string(observation.Freshness)).Inc()
 }
 
 // ObserveReadiness records one completed application-database readiness check. Invalid values are
@@ -287,13 +304,6 @@ func normalizedSnapshotOutcome(outcome hubfleet.SnapshotOutcome) string {
 	default:
 		return string(hubfleet.SnapshotOutcomeStoreError)
 	}
-}
-
-func normalizedFleetReadOutcome(outcome hubfleet.FleetReadOutcome) string {
-	if outcome.Valid() {
-		return string(outcome)
-	}
-	return string(hubfleet.FleetReadOutcomeError)
 }
 
 func normalizedDuration(duration time.Duration) float64 {

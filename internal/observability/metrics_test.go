@@ -29,8 +29,32 @@ func TestMetricsExposeOnlyBoundedSelfObservability(t *testing.T) {
 	metrics.ObservePolicyAudit(pep.AuditSink("workspace-a/token=secret"), pep.AuditOutcome("untrusted"), time.Second)
 	metrics.ObserveSpokeSnapshot(hubfleet.SnapshotOutcomeSuccess, 25*time.Millisecond)
 	metrics.ObserveSpokeSnapshot(hubfleet.SnapshotOutcome("spoke-a/token=secret"), -time.Second)
-	metrics.ObserveFleetRead(hubfleet.FleetReadOutcomeComplete)
-	metrics.ObserveFleetRead(hubfleet.FleetReadOutcome("workspace-a/token=secret"))
+	metrics.ObserveFleetRead(hubfleet.FleetReadObservation{
+		Outcome: hubfleet.FleetReadOutcomeComplete, Freshness: hubfleet.FleetFreshnessOutcomeFresh,
+	})
+	metrics.ObserveFleetRead(hubfleet.FleetReadObservation{
+		Outcome: hubfleet.FleetReadOutcomeDegraded, Freshness: hubfleet.FleetFreshnessOutcomeStale,
+	})
+	metrics.ObserveFleetRead(hubfleet.FleetReadObservation{
+		Outcome: hubfleet.FleetReadOutcomeDegraded, Freshness: hubfleet.FleetFreshnessOutcomeUnknown,
+	})
+	metrics.ObserveFleetRead(hubfleet.FleetReadObservation{
+		Outcome: hubfleet.FleetReadOutcomeEmpty, Freshness: hubfleet.FleetFreshnessOutcomeEmpty,
+	})
+	metrics.ObserveFleetRead(hubfleet.FleetReadObservation{
+		Outcome: hubfleet.FleetReadOutcomeError, Freshness: hubfleet.FleetFreshnessOutcomeError,
+	})
+	metrics.ObserveFleetRead(hubfleet.FleetReadObservation{
+		Outcome:   hubfleet.FleetReadOutcome("workspace-a/token=secret"),
+		Freshness: hubfleet.FleetFreshnessOutcome("spoke-a/token=secret"),
+	})
+	metrics.ObserveFleetRead(hubfleet.FleetReadObservation{
+		Outcome: hubfleet.FleetReadOutcomeComplete, Freshness: hubfleet.FleetFreshnessOutcomeStale,
+	})
+	metrics.ObserveFleetRead(hubfleet.FleetReadObservation{
+		Outcome:   hubfleet.FleetReadOutcomeComplete,
+		Freshness: hubfleet.FleetFreshnessOutcome("spoke-a/token=secret"),
+	})
 	metrics.ObserveReadiness(hubserver.ReadinessOutcomeReady, 10*time.Millisecond)
 	metrics.ObserveReadiness(hubserver.ReadinessOutcomeUnavailable, -time.Second)
 	metrics.ObserveReadiness(hubserver.ReadinessOutcome("database endpoint secret"), time.Second)
@@ -55,9 +79,14 @@ func TestMetricsExposeOnlyBoundedSelfObservability(t *testing.T) {
 		"sith_federation_spoke_snapshot_attempts_total",
 		"sith_federation_spoke_snapshot_duration_seconds",
 		`sith_federation_fleet_read_results_total{outcome="complete"} 1`,
-		`sith_federation_fleet_read_results_total{outcome="degraded"} 0`,
-		`sith_federation_fleet_read_results_total{outcome="empty"} 0`,
+		`sith_federation_fleet_read_results_total{outcome="degraded"} 2`,
+		`sith_federation_fleet_read_results_total{outcome="empty"} 1`,
 		`sith_federation_fleet_read_results_total{outcome="error"} 1`,
+		`sith_federation_fleet_read_freshness_total{outcome="fresh"} 1`,
+		`sith_federation_fleet_read_freshness_total{outcome="stale"} 1`,
+		`sith_federation_fleet_read_freshness_total{outcome="unknown"} 1`,
+		`sith_federation_fleet_read_freshness_total{outcome="empty"} 1`,
+		`sith_federation_fleet_read_freshness_total{outcome="error"} 1`,
 		`sith_hub_readiness_checks_total{outcome="ready"} 1`,
 		`sith_hub_readiness_checks_total{outcome="unavailable"} 1`,
 		`sith_hub_readiness_check_duration_seconds_count{outcome="ready"} 1`,
@@ -108,6 +137,11 @@ func TestMetricsUseIndependentRegistriesAndNormalizeBuildLabels(t *testing.T) {
 		t.Fatalf("unsafe build metadata was not normalized: %s", body)
 	}
 	for _, preinitialized := range []string{
+		`sith_federation_fleet_read_freshness_total{outcome="fresh"} 0`,
+		`sith_federation_fleet_read_freshness_total{outcome="stale"} 0`,
+		`sith_federation_fleet_read_freshness_total{outcome="unknown"} 0`,
+		`sith_federation_fleet_read_freshness_total{outcome="empty"} 0`,
+		`sith_federation_fleet_read_freshness_total{outcome="error"} 0`,
 		`sith_hub_readiness_checks_total{outcome="ready"} 0`,
 		`sith_hub_readiness_checks_total{outcome="unavailable"} 0`,
 		`sith_hub_readiness_check_duration_seconds_count{outcome="ready"} 0`,
@@ -164,6 +198,7 @@ func assertSithMetricLabels(t *testing.T, metrics *Metrics) {
 		"sith_federation_spoke_snapshot_attempts_total":   {"outcome": true},
 		"sith_federation_spoke_snapshot_duration_seconds": {"outcome": true},
 		"sith_federation_fleet_read_results_total":        {"outcome": true},
+		"sith_federation_fleet_read_freshness_total":      {"outcome": true},
 		"sith_hub_readiness_checks_total":                 {"outcome": true},
 		"sith_hub_readiness_check_duration_seconds":       {"outcome": true},
 		"sith_auth_refusal_delivery_drops_total":          {},
