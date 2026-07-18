@@ -463,12 +463,29 @@ func assertPolicyAuditChainIntegration(
 		nil, []any{originalHeadHash},
 	)
 	if _, err := admin.Exec(ctx, `
+		CREATE TEMP TABLE policy_audit_deleted_fixture AS
+		SELECT * FROM sith.policy_audit_entries
+		WHERE workspace_id = 'workspace-a' AND sequence = 2
+	`); err != nil {
+		t.Fatalf("save retained policy audit entry: %v", err)
+	}
+	if _, err := admin.Exec(ctx, `
 		DELETE FROM sith.policy_audit_entries WHERE workspace_id = 'workspace-a' AND sequence = 2
 	`); err != nil {
 		t.Fatalf("delete retained policy audit entry: %v", err)
 	}
 	if err := database.VerifyPolicyAuditChain(ctx, workspaceA); err == nil {
 		t.Fatal("deleted retained policy audit entry was not detected")
+	}
+	if _, err := admin.Exec(ctx, `
+		INSERT INTO sith.policy_audit_entries
+		SELECT * FROM policy_audit_deleted_fixture;
+		DROP TABLE policy_audit_deleted_fixture
+	`); err != nil {
+		t.Fatalf("restore retained policy audit entry: %v", err)
+	}
+	if err := database.VerifyPolicyAuditChain(ctx, workspaceA); err != nil {
+		t.Fatalf("deleted entry restore did not recover chain: %v", err)
 	}
 }
 
@@ -538,6 +555,11 @@ func assertApprovalGrantIntegration(
 		t, "intent-missing-proposer", "workspace-a", "user:missing", "missing"), now); !errors.Is(err, ErrApprovalGrantUnavailable) {
 		t.Fatalf("missing proposer membership error = %v", err)
 	}
+	if _, err := database.CreateApprovalGrant(ctx, approverA, postgresApprovalBinding(
+		t, "intent-future-approval", "workspace-a", proposerA.Subject(), "future"),
+		now.Add(2*time.Minute)); !errors.Is(err, ErrApprovalGrantUnavailable) {
+		t.Fatalf("future approval time error = %v", err)
+	}
 
 	wrongDigestBinding := postgresApprovalBinding(t, baseBinding.IntentID(), "workspace-a", proposerA.Subject(), "replicas=4")
 	if err := database.ConsumeApprovalGrant(ctx, proposerA, wrongDigestBinding, baseID, now.Add(time.Second)); !errors.Is(err, ErrApprovalGrantUnavailable) {
@@ -588,6 +610,83 @@ func assertApprovalGrantIntegration(
 	}
 	if successes != 1 || refusals != 1 {
 		t.Fatalf("concurrent consumes = successes %d refusals %d", successes, refusals)
+	}
+
+	var originalHeadSequence int64
+	var originalHeadHash []byte
+	readAndCorruptHead := func() {
+		t.Helper()
+		if err := admin.QueryRow(ctx, `
+			SELECT last_sequence, last_hash
+			FROM sith.policy_audit_heads WHERE workspace_id = 'workspace-a'
+		`).Scan(&originalHeadSequence, &originalHeadHash); err != nil {
+			t.Fatalf("read approval audit head fixture: %v", err)
+		}
+		if _, err := admin.Exec(ctx, `
+			UPDATE sith.policy_audit_heads SET last_sequence = 9223372036854775807
+			WHERE workspace_id = 'workspace-a'
+		`); err != nil {
+			t.Fatalf("corrupt approval audit head fixture: %v", err)
+		}
+	}
+	restoreHead := func() {
+		t.Helper()
+		if _, err := admin.Exec(ctx, `
+			UPDATE sith.policy_audit_heads SET last_sequence = $1, last_hash = $2
+			WHERE workspace_id = 'workspace-a'
+		`, originalHeadSequence, originalHeadHash); err != nil {
+			t.Fatalf("restore approval audit head fixture: %v", err)
+		}
+	}
+
+	rollbackCreateBinding := postgresApprovalBinding(
+		t, "intent-252-create-rollback", "workspace-a", proposerA.Subject(), "rollback=create",
+	)
+	readAndCorruptHead()
+	_, rollbackCreateErr := database.CreateApprovalGrant(ctx, approverA, rollbackCreateBinding, now)
+	restoreHead()
+	if rollbackCreateErr == nil || errors.Is(rollbackCreateErr, ErrApprovalGrantUnavailable) {
+		t.Fatalf("audit-failed create error = %v, want operational audit failure", rollbackCreateErr)
+	}
+	var rollbackCreateCount int
+	if err := admin.QueryRow(ctx, `
+		SELECT count(*) FROM sith.approval_grants
+		WHERE workspace_id = 'workspace-a' AND intent_id = 'intent-252-create-rollback'
+	`).Scan(&rollbackCreateCount); err != nil {
+		t.Fatalf("inspect audit-failed approval create: %v", err)
+	}
+	if rollbackCreateCount != 0 {
+		t.Fatalf("audit-failed approval create retained %d grants", rollbackCreateCount)
+	}
+
+	rollbackConsumeBinding, rollbackConsumeID := create("intent-252-consume-rollback", "rollback=consume")
+	if err := database.ConsumeApprovalGrant(
+		ctx, proposerA, rollbackConsumeBinding, rollbackConsumeID, now.Add(2*time.Minute),
+	); !errors.Is(err, ErrApprovalGrantUnavailable) {
+		t.Fatalf("future consume time error = %v", err)
+	}
+	readAndCorruptHead()
+	rollbackConsumeErr := database.ConsumeApprovalGrant(
+		ctx, proposerA, rollbackConsumeBinding, rollbackConsumeID, now.Add(time.Second),
+	)
+	restoreHead()
+	if rollbackConsumeErr == nil || errors.Is(rollbackConsumeErr, ErrApprovalGrantUnavailable) {
+		t.Fatalf("audit-failed consume error = %v, want operational audit failure", rollbackConsumeErr)
+	}
+	var rollbackConsumedAt *time.Time
+	if err := admin.QueryRow(ctx, `
+		SELECT consumed_at FROM sith.approval_grants
+		WHERE workspace_id = 'workspace-a' AND id = $1
+	`, rollbackConsumeID).Scan(&rollbackConsumedAt); err != nil {
+		t.Fatalf("inspect audit-failed approval consume: %v", err)
+	}
+	if rollbackConsumedAt != nil {
+		t.Fatalf("audit-failed approval consume retained timestamp %s", rollbackConsumedAt)
+	}
+	if err := database.ConsumeApprovalGrant(
+		ctx, proposerA, rollbackConsumeBinding, rollbackConsumeID, now.Add(time.Second),
+	); err != nil {
+		t.Fatalf("consume after audit rollback error = %v", err)
 	}
 
 	bindingB := postgresApprovalBinding(t, "intent-250-b", "workspace-b", proposerB.Subject(), "region=west")
@@ -642,6 +741,63 @@ func assertApprovalGrantIntegration(
 	}
 	if err := AuditIsolation(ctx, admin, appRole); err != nil {
 		t.Fatalf("approval AuditIsolation() error = %v", err)
+	}
+
+	rows, err := admin.Query(ctx, `
+		SELECT event_kind, evidence_digest, actor, role, action, verb, verdict, reason_code
+		FROM sith.policy_audit_entries
+		WHERE workspace_id = 'workspace-a' AND format_version = 2
+		ORDER BY sequence
+	`)
+	if err != nil {
+		t.Fatalf("read approval lifecycle audit entries: %v", err)
+	}
+	defer rows.Close()
+	kindCounts := map[string]int{}
+	kindsByEvidence := map[string]map[string]bool{}
+	for rows.Next() {
+		var eventKind, evidence, actor, role, action, verb, verdict, reason string
+		if err := rows.Scan(&eventKind, &evidence, &actor, &role, &action, &verb, &verdict, &reason); err != nil {
+			t.Fatalf("scan approval lifecycle audit entry: %v", err)
+		}
+		if !approvalEvidencePattern.MatchString(evidence) || verb != string(approvalAuditVerb) ||
+			verdict != string(pep.VerdictAllow) || reason != eventKind {
+			t.Fatalf("invalid approval lifecycle audit metadata for %s", eventKind)
+		}
+		switch eventKind {
+		case approvalCreatedEventKind:
+			if actor != approverA.Subject() || role != string(tenancy.RoleApprover) || action != string(tenancy.ActionApproveIntent) {
+				t.Fatalf("invalid approval-created actor metadata: %s/%s/%s", actor, role, action)
+			}
+		case approvalConsumedEventKind:
+			if actor != proposerA.Subject() || role != string(tenancy.RoleOperator) || action != string(tenancy.ActionProposeIntent) {
+				t.Fatalf("invalid approval-consumed actor metadata: %s/%s/%s", actor, role, action)
+			}
+		default:
+			t.Fatalf("unexpected approval lifecycle event kind %q", eventKind)
+		}
+		kindCounts[eventKind]++
+		if kindsByEvidence[evidence] == nil {
+			kindsByEvidence[evidence] = map[string]bool{}
+		}
+		kindsByEvidence[evidence][eventKind] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate approval lifecycle audit entries: %v", err)
+	}
+	if kindCounts[approvalCreatedEventKind] != 3 || kindCounts[approvalConsumedEventKind] != 3 || len(kindsByEvidence) != 3 {
+		t.Fatalf("approval lifecycle audit counts = %#v across %d grants, want 3 complete pairs", kindCounts, len(kindsByEvidence))
+	}
+	for evidence, kinds := range kindsByEvidence {
+		if !kinds[approvalCreatedEventKind] || !kinds[approvalConsumedEventKind] || len(kinds) != 2 {
+			t.Fatalf("approval lifecycle evidence %s has events %#v, want one create and one consume", evidence, kinds)
+		}
+	}
+	if err := database.VerifyPolicyAuditChain(ctx, proposerA); err != nil {
+		t.Fatalf("mixed-version workspace A audit chain error = %v", err)
+	}
+	if err := database.VerifyPolicyAuditChain(ctx, proposerB); err != nil {
+		t.Fatalf("mixed-version workspace B audit chain error = %v", err)
 	}
 }
 

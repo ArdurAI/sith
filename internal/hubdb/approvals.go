@@ -17,6 +17,7 @@ import (
 
 	"github.com/ArdurAI/sith/internal/pep"
 	"github.com/ArdurAI/sith/internal/tenancy"
+	"github.com/ArdurAI/sith/internal/tracing"
 )
 
 const approvalGrantIDBytes = 16
@@ -57,7 +58,7 @@ func (database *AppDB) createApprovalGrant(
 	if database == nil || database.pool == nil || ctx == nil {
 		return "", fmt.Errorf("create approval grant: database and context are required")
 	}
-	if binding.Validate() != nil || approvedAt.IsZero() || random == nil ||
+	if binding.Validate() != nil || approvedAt.IsZero() || approvedAt.After(time.Now().Add(time.Minute)) || random == nil ||
 		approver.Authorize(tenancy.ActionApproveIntent) != nil ||
 		approver.RequireWorkspace(binding.WorkspaceID()) != nil || approver.Subject() == binding.Proposer() {
 		return "", fmt.Errorf("create approval grant: %w", ErrApprovalGrantUnavailable)
@@ -67,9 +68,13 @@ func (database *AppDB) createApprovalGrant(
 	if err != nil {
 		return "", fmt.Errorf("create approval grant: mint identifier: %w", err)
 	}
-	err = database.InWorkspace(ctx, approver, func(tx pgx.Tx) error {
+	traceContext, traceID, err := tracing.Ensure(ctx)
+	if err != nil {
+		return "", fmt.Errorf("create approval grant: establish trace context: %w", err)
+	}
+	err = database.InWorkspace(traceContext, approver, func(tx pgx.Tx) error {
 		var proposerRole, currentApproverRole tenancy.Role
-		if err := tx.QueryRow(ctx, `
+		if err := tx.QueryRow(traceContext, `
 			SELECT proposer.role, approver.role
 			FROM sith.memberships proposer
 			JOIN sith.memberships approver ON approver.workspace_id = proposer.workspace_id
@@ -85,7 +90,7 @@ func (database *AppDB) createApprovalGrant(
 			!currentApproverRole.Allows(tenancy.ActionApproveIntent) {
 			return ErrApprovalGrantUnavailable
 		}
-		_, err := tx.Exec(ctx, `
+		_, err := tx.Exec(traceContext, `
 			INSERT INTO sith.approval_grants(
 				workspace_id, id, intent_id, proposer, approver, resolved_digest, approved_at
 			) VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -98,7 +103,17 @@ func (database *AppDB) createApprovalGrant(
 			}
 			return fmt.Errorf("persist exact approval grant: %w", err)
 		}
-		return nil
+		evidence := approvalGrantEvidenceDigest(
+			binding.WorkspaceID(), identifier, binding.IntentID(), binding.Proposer(),
+			approver.Subject(), binding.ResolvedDigest(), approvedAt,
+		)
+		return appendPolicyAuditEntryTx(traceContext, tx, policyAuditEntry{
+			format: approvalAuditFormatVersion, recordedAt: approvedAt.UTC().Truncate(time.Microsecond),
+			traceID: traceID, workspaceID: binding.WorkspaceID(), actor: approver.Subject(),
+			role: approver.Role(), action: tenancy.ActionApproveIntent, verb: approvalAuditVerb,
+			verdict: pep.VerdictAllow, reasonCode: approvalCreatedEventKind,
+			eventKind: approvalCreatedEventKind, evidence: evidence,
+		})
 	})
 	if err != nil {
 		if errors.Is(err, ErrApprovalGrantUnavailable) {
@@ -122,14 +137,19 @@ func (database *AppDB) ConsumeApprovalGrant(
 		return fmt.Errorf("consume approval grant: database and context are required")
 	}
 	if binding.Validate() != nil || !approvalGrantIDPattern.MatchString(identifier.String()) || consumedAt.IsZero() ||
+		consumedAt.After(time.Now().Add(time.Minute)) ||
 		proposer.Authorize(tenancy.ActionProposeIntent) != nil ||
 		proposer.RequireWorkspace(binding.WorkspaceID()) != nil || proposer.Subject() != binding.Proposer() {
 		return fmt.Errorf("consume approval grant: %w", ErrApprovalGrantUnavailable)
 	}
 
-	err := database.InWorkspace(ctx, proposer, func(tx pgx.Tx) error {
+	traceContext, traceID, err := tracing.Ensure(ctx)
+	if err != nil {
+		return fmt.Errorf("consume approval grant: establish trace context: %w", err)
+	}
+	err = database.InWorkspace(traceContext, proposer, func(tx pgx.Tx) error {
 		var currentRole tenancy.Role
-		if err := tx.QueryRow(ctx, `
+		if err := tx.QueryRow(traceContext, `
 			SELECT role FROM sith.memberships
 			WHERE workspace_id = $1 AND subject = $2
 			FOR SHARE
@@ -142,22 +162,36 @@ func (database *AppDB) ConsumeApprovalGrant(
 		if currentRole != proposer.Role() || !currentRole.Allows(tenancy.ActionProposeIntent) {
 			return ErrApprovalGrantUnavailable
 		}
-		var returned ApprovalGrantID
-		err := tx.QueryRow(ctx, `
+		var (
+			returned           ApprovalGrantID
+			returnedApprover   string
+			returnedApprovedAt time.Time
+		)
+		err := tx.QueryRow(traceContext, `
 			UPDATE sith.approval_grants
 			SET consumed_at = $6
 			WHERE workspace_id = $1 AND id = $2 AND intent_id = $3 AND proposer = $4
 			  AND resolved_digest = $5 AND consumed_at IS NULL AND approved_at <= $6
-			RETURNING id
+			RETURNING id, approver, approved_at
 		`, binding.WorkspaceID(), identifier, binding.IntentID(), binding.Proposer(), binding.ResolvedDigest(),
-			consumedAt.UTC()).Scan(&returned)
+			consumedAt.UTC()).Scan(&returned, &returnedApprover, &returnedApprovedAt)
 		if errors.Is(err, pgx.ErrNoRows) || err == nil && returned != identifier {
 			return ErrApprovalGrantUnavailable
 		}
 		if err != nil {
 			return fmt.Errorf("atomically consume exact approval grant: %w", err)
 		}
-		return nil
+		evidence := approvalGrantEvidenceDigest(
+			binding.WorkspaceID(), returned, binding.IntentID(), binding.Proposer(),
+			returnedApprover, binding.ResolvedDigest(), returnedApprovedAt,
+		)
+		return appendPolicyAuditEntryTx(traceContext, tx, policyAuditEntry{
+			format: approvalAuditFormatVersion, recordedAt: consumedAt.UTC().Truncate(time.Microsecond),
+			traceID: traceID, workspaceID: binding.WorkspaceID(), actor: proposer.Subject(),
+			role: proposer.Role(), action: tenancy.ActionProposeIntent, verb: approvalAuditVerb,
+			verdict: pep.VerdictAllow, reasonCode: approvalConsumedEventKind,
+			eventKind: approvalConsumedEventKind, evidence: evidence,
+		})
 	})
 	if err != nil {
 		if errors.Is(err, ErrApprovalGrantUnavailable) {
