@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -19,9 +21,18 @@ import (
 )
 
 const (
-	policyAuditFormatVersion int16 = 1
-	policyAuditHashDomain          = "sith-policy-audit-chain/v1"
+	policyAuditFormatVersion   int16    = 1
+	approvalAuditFormatVersion int16    = 2
+	policyAuditHashDomain               = "sith-policy-audit-chain/v1"
+	approvalAuditHashDomain             = "sith-approval-audit-chain/v2"
+	approvalEvidenceHashDomain          = "sith-approval-grant-evidence/v1"
+	policyDecisionEventKind             = "policy-decision"
+	approvalCreatedEventKind            = "approval-created"
+	approvalConsumedEventKind           = "approval-consumed"
+	approvalAuditVerb          pep.Verb = "approval.grant"
 )
+
+var approvalEvidencePattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 type policyAuditEntry struct {
 	sequence     int64
@@ -35,6 +46,8 @@ type policyAuditEntry struct {
 	verb         pep.Verb
 	verdict      pep.Verdict
 	reasonCode   string
+	eventKind    string
+	evidence     string
 	previousHash []byte
 	entryHash    []byte
 }
@@ -55,61 +68,73 @@ func (database *AppDB) Record(ctx context.Context, event pep.AuditEvent) error {
 	}
 
 	return database.InWorkspace(ctx, scope, func(tx pgx.Tx) error {
-		workspaceID := event.WorkspaceID
-		if _, err := tx.Exec(ctx, `
+		entry := policyAuditEntry{
+			format:     policyAuditFormatVersion,
+			recordedAt: event.At.UTC().Truncate(time.Microsecond), traceID: event.TraceID,
+			workspaceID: event.WorkspaceID, actor: event.Actor, role: event.Role, action: event.Action,
+			verb: event.Verb, verdict: event.Verdict, reasonCode: event.ReasonCode,
+			eventKind: policyDecisionEventKind,
+		}
+		return appendPolicyAuditEntryTx(ctx, tx, entry)
+	})
+}
+
+func appendPolicyAuditEntryTx(ctx context.Context, tx pgx.Tx, entry policyAuditEntry) error {
+	if ctx == nil || tx == nil {
+		return fmt.Errorf("append policy audit entry: context and transaction are required")
+	}
+	if err := validatePolicyAuditEntry(entry); err != nil {
+		return fmt.Errorf("append policy audit entry: %w", err)
+	}
+	workspaceID := entry.workspaceID
+	if _, err := tx.Exec(ctx, `
 			INSERT INTO sith.policy_audit_heads(workspace_id)
 			VALUES ($1)
 			ON CONFLICT (workspace_id) DO NOTHING
-		`, workspaceID); err != nil {
-			return fmt.Errorf("initialize policy audit chain: %w", err)
-		}
+	`, workspaceID); err != nil {
+		return fmt.Errorf("initialize policy audit chain: %w", err)
+	}
 
-		var lastSequence int64
-		var lastHash []byte
-		if err := tx.QueryRow(ctx, `
+	var lastSequence int64
+	var lastHash []byte
+	if err := tx.QueryRow(ctx, `
 			SELECT last_sequence, last_hash
 			FROM sith.policy_audit_heads
 			WHERE workspace_id = $1
 			FOR UPDATE
-		`, workspaceID).Scan(&lastSequence, &lastHash); err != nil {
-			return fmt.Errorf("lock policy audit chain: %w", err)
-		}
-		if lastSequence < 0 || lastSequence == math.MaxInt64 || len(lastHash) != sha256.Size {
-			return fmt.Errorf("policy audit chain head is invalid")
-		}
+	`, workspaceID).Scan(&lastSequence, &lastHash); err != nil {
+		return fmt.Errorf("lock policy audit chain: %w", err)
+	}
+	if lastSequence < 0 || lastSequence == math.MaxInt64 || len(lastHash) != sha256.Size {
+		return fmt.Errorf("policy audit chain head is invalid")
+	}
 
-		entry := policyAuditEntry{
-			sequence: lastSequence + 1, format: policyAuditFormatVersion,
-			recordedAt: event.At.UTC().Truncate(time.Microsecond), traceID: event.TraceID,
-			workspaceID: event.WorkspaceID, actor: event.Actor, role: event.Role, action: event.Action,
-			verb: event.Verb, verdict: event.Verdict, reasonCode: event.ReasonCode,
-			previousHash: bytes.Clone(lastHash),
-		}
-		entry.entryHash = policyAuditEntryHash(entry)
+	entry.sequence = lastSequence + 1
+	entry.previousHash = bytes.Clone(lastHash)
+	entry.entryHash = policyAuditEntryHash(entry)
 
-		if _, err := tx.Exec(ctx, `
+	if _, err := tx.Exec(ctx, `
 			INSERT INTO sith.policy_audit_entries(
 				workspace_id, sequence, format_version, recorded_at, trace_id, actor, role, action,
-				verb, verdict, reason_code, previous_hash, entry_hash
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+				verb, verdict, reason_code, event_kind, evidence_digest, previous_hash, entry_hash
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		`, entry.workspaceID, entry.sequence, entry.format, entry.recordedAt, entry.traceID,
-			entry.actor, entry.role, entry.action, entry.verb, entry.verdict, entry.reasonCode,
-			entry.previousHash, entry.entryHash); err != nil {
-			return fmt.Errorf("insert policy audit entry: %w", err)
-		}
-		tag, err := tx.Exec(ctx, `
+		entry.actor, entry.role, entry.action, entry.verb, entry.verdict, entry.reasonCode,
+		entry.eventKind, entry.evidence, entry.previousHash, entry.entryHash); err != nil {
+		return fmt.Errorf("insert policy audit entry: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `
 			UPDATE sith.policy_audit_heads
 			SET last_sequence = $2, last_hash = $3
 			WHERE workspace_id = $1 AND last_sequence = $4 AND last_hash = $5
 		`, workspaceID, entry.sequence, entry.entryHash, lastSequence, lastHash)
-		if err != nil {
-			return fmt.Errorf("advance policy audit chain: %w", err)
-		}
-		if tag.RowsAffected() != 1 {
-			return fmt.Errorf("advance policy audit chain: locked head changed unexpectedly")
-		}
-		return nil
-	})
+	if err != nil {
+		return fmt.Errorf("advance policy audit chain: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("advance policy audit chain: locked head changed unexpectedly")
+	}
+	return nil
 }
 
 // VerifyPolicyAuditChain checks the complete retained chain and head in one repeatable-read
@@ -138,7 +163,8 @@ func (database *AppDB) VerifyPolicyAuditChain(ctx context.Context, scope tenancy
 
 		rows, err := tx.Query(ctx, `
 			SELECT sequence, format_version, recorded_at, trace_id, workspace_id, actor, role,
-			       action, verb, verdict, reason_code, previous_hash, entry_hash
+			       action, verb, verdict, reason_code, event_kind, evidence_digest,
+			       previous_hash, entry_hash
 			FROM sith.policy_audit_entries
 			WHERE workspace_id = $1
 			ORDER BY sequence
@@ -154,20 +180,16 @@ func (database *AppDB) VerifyPolicyAuditChain(ctx context.Context, scope tenancy
 			var entry policyAuditEntry
 			if err := rows.Scan(&entry.sequence, &entry.format, &entry.recordedAt, &entry.traceID,
 				&entry.workspaceID, &entry.actor, &entry.role, &entry.action, &entry.verb,
-				&entry.verdict, &entry.reasonCode, &entry.previousHash, &entry.entryHash); err != nil {
+				&entry.verdict, &entry.reasonCode, &entry.eventKind, &entry.evidence,
+				&entry.previousHash, &entry.entryHash); err != nil {
 				return fmt.Errorf("scan policy audit chain: %w", err)
 			}
-			if entry.sequence != expectedSequence || entry.format != policyAuditFormatVersion ||
+			if entry.sequence != expectedSequence ||
 				entry.workspaceID != scope.WorkspaceID() || len(entry.previousHash) != sha256.Size ||
 				len(entry.entryHash) != sha256.Size || !bytes.Equal(entry.previousHash, expectedPrevious) {
 				return fmt.Errorf("policy audit chain continuity is invalid at sequence %d", expectedSequence)
 			}
-			event := pep.AuditEvent{
-				At: entry.recordedAt, TraceID: entry.traceID, WorkspaceID: entry.workspaceID,
-				Actor: entry.actor, Role: entry.role, Action: entry.action, Verb: entry.verb,
-				Verdict: entry.verdict, ReasonCode: entry.reasonCode,
-			}
-			if err := event.Validate(); err != nil {
+			if err := validatePolicyAuditEntry(entry); err != nil {
 				return fmt.Errorf("policy audit chain event is invalid at sequence %d", expectedSequence)
 			}
 			calculated := policyAuditEntryHash(entry)
@@ -200,7 +222,11 @@ func auditEventScope(event pep.AuditEvent) (tenancy.Scope, error) {
 
 func policyAuditEntryHash(entry policyAuditEntry) []byte {
 	canonical := make([]byte, 0, 512)
-	canonical = appendCanonicalString(canonical, policyAuditHashDomain)
+	domain := policyAuditHashDomain
+	if entry.format == approvalAuditFormatVersion {
+		domain = approvalAuditHashDomain
+	}
+	canonical = appendCanonicalString(canonical, domain)
 	canonical = appendCanonicalString(canonical, strconv.FormatInt(int64(entry.format), 10))
 	canonical = appendCanonicalString(canonical, strconv.FormatInt(entry.sequence, 10))
 	canonical = append(canonical, entry.previousHash...)
@@ -211,8 +237,74 @@ func policyAuditEntryHash(entry policyAuditEntry) []byte {
 	} {
 		canonical = appendCanonicalString(canonical, value)
 	}
+	if entry.format == approvalAuditFormatVersion {
+		canonical = appendCanonicalString(canonical, entry.eventKind)
+		canonical = appendCanonicalString(canonical, entry.evidence)
+	}
 	digest := sha256.Sum256(canonical)
 	return digest[:]
+}
+
+func validatePolicyAuditEntry(entry policyAuditEntry) error {
+	switch entry.format {
+	case policyAuditFormatVersion:
+		if entry.eventKind != policyDecisionEventKind || entry.evidence != "" {
+			return fmt.Errorf("format 1 policy audit metadata is invalid")
+		}
+		event := pep.AuditEvent{
+			At: entry.recordedAt, TraceID: entry.traceID, WorkspaceID: entry.workspaceID,
+			Actor: entry.actor, Role: entry.role, Action: entry.action, Verb: entry.verb,
+			Verdict: entry.verdict, ReasonCode: entry.reasonCode,
+		}
+		return event.Validate()
+	case approvalAuditFormatVersion:
+		if entry.recordedAt.IsZero() || entry.recordedAt.After(time.Now().Add(time.Minute)) ||
+			!entry.traceID.Valid() || !approvalEvidencePattern.MatchString(entry.evidence) ||
+			entry.verb != approvalAuditVerb || entry.verdict != pep.VerdictAllow || entry.reasonCode != entry.eventKind {
+			return fmt.Errorf("approval lifecycle audit metadata is invalid")
+		}
+		principal, err := tenancy.NewPrincipal(entry.actor, map[tenancy.WorkspaceID]tenancy.Role{
+			entry.workspaceID: entry.role,
+		})
+		if err != nil {
+			return fmt.Errorf("approval lifecycle audit scope: %w", err)
+		}
+		if _, err := principal.Scope(entry.workspaceID); err != nil {
+			return fmt.Errorf("approval lifecycle audit scope: %w", err)
+		}
+		switch entry.eventKind {
+		case approvalCreatedEventKind:
+			if entry.role != tenancy.RoleApprover || entry.action != tenancy.ActionApproveIntent {
+				return fmt.Errorf("approval-created lifecycle actor is invalid")
+			}
+		case approvalConsumedEventKind:
+			if entry.role != tenancy.RoleOperator || entry.action != tenancy.ActionProposeIntent {
+				return fmt.Errorf("approval-consumed lifecycle actor is invalid")
+			}
+		default:
+			return fmt.Errorf("approval lifecycle event kind is invalid")
+		}
+		return nil
+	default:
+		return fmt.Errorf("policy audit format is unsupported")
+	}
+}
+
+func approvalGrantEvidenceDigest(
+	workspaceID tenancy.WorkspaceID,
+	identifier ApprovalGrantID,
+	intentID, proposer, approver, resolvedDigest string,
+	approvedAt time.Time,
+) string {
+	canonical := make([]byte, 0, 512)
+	for _, value := range []string{
+		approvalEvidenceHashDomain, string(workspaceID), identifier.String(), intentID,
+		proposer, approver, resolvedDigest, approvedAt.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano),
+	} {
+		canonical = appendCanonicalString(canonical, value)
+	}
+	digest := sha256.Sum256(canonical)
+	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
 func appendCanonicalString(target []byte, value string) []byte {

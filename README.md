@@ -334,6 +334,10 @@ The PEP decision record itself is durable. Before an allowed governed operation 
 hub appends the privacy-minimized decision to a workspace-scoped PostgreSQL hash chain, then emits
 the structured process log. The application role can insert and read immutable audit entries but
 cannot update or delete them; forced RLS isolates both entries and their per-workspace chain heads.
+Approval creation and consumption append distinct format-versioned lifecycle entries to that same
+tenant chain in the exact transaction that mutates the single-use grant. An audit failure therefore
+rolls back the approval mutation. Each lifecycle pair carries only a one-way, domain-separated
+digest of the immutable grant binding—never raw targets, arguments, or justification content.
 Either database or structured-process-log delivery failure blocks the operation, so production
 database and logging availability and latency are part of the governed-read availability budget.
 The optional loopback metrics surface exposes that boundary as
@@ -420,6 +424,10 @@ rows contain only opaque identifiers, proposer/approver identity, the resolved p
 and lifecycle timestamps. The application role may insert them and update only `consumed_at`; it
 cannot rewrite or delete the approved identity or digest. The migration process never opens the hub
 listener, creates a Kubernetes client, or starts collection.
+
+Migration 0011 preserves defaults for older format-1 audit writers, but older verifiers do not
+understand format-2 approval lifecycle entries. During a rolling upgrade, run the migration, upgrade
+all verifier-capable hub instances, and only then enable traffic that creates or consumes approvals.
 
 The normal hub process continues to use only `SITH_HUB_DATABASE_URL` for the non-owner application
 role. Do not reuse the migration-owner credential in the hub Deployment or place either database
