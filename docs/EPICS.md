@@ -1861,6 +1861,20 @@ flowchart TD
 breach. Guardrail: query and export inherit E1's tenant scoping and DB RLS, so a record is only
 ever visible within its own workspace.
 
+**Implemented F6.4 boundary (2026-07-18).** F6.4a and F6.4b expose and offline-verify one complete
+privacy-minimized Sith policy/approval chain of at most 512 entries. F6.4c adds a distinct paged
+export for larger retained chains without changing that complete-document route. The first page is
+bound to the current head after its own admin-only `audit.export` decision is durably appended;
+each later request is independently authenticated, authorized, and audited, while those later
+audit rows remain outside the fixed snapshot. A versioned fixed-size canonical base64url
+continuation carries a domain-separated workspace binding, snapshot head, next sequence, and prior
+hash. It grants no authority and is revalidated against forced-RLS head and boundary rows in a
+Repeatable Read transaction before at most 512 consecutive entries are returned. Every transaction
+commits before encoding. `sith audit verify-pages` reads bounded stable files one at a time and
+succeeds only for an ordered same-workspace, same-snapshot genesis-to-head sequence. This remains
+an internal-continuity proof, not external authenticity, WORM retention, asynchronous export, the
+Ardur decision ledger, the full action lifecycle, or E6 completion.
+
 ### E6 exit criteria
 
 - Every phase of every action and read produces an audit entry; no unlogged action reaches a

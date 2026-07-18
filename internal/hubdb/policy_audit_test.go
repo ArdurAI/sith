@@ -131,8 +131,42 @@ func TestPolicyAuditBoundaryRejectsMissingDatabaseAndInvalidScope(t *testing.T) 
 	if _, err := (*AppDB)(nil).ExportPolicyAuditChain(context.Background(), tenancy.Scope{}); err == nil {
 		t.Fatal("nil database exported a policy audit chain")
 	}
+	if _, err := (*AppDB)(nil).ExportPolicyAuditPage(context.Background(), tenancy.Scope{}, auditrecord.PageRequest{}); err == nil {
+		t.Fatal("nil database exported a policy audit page")
+	}
 	if _, err := auditEventScope(pep.AuditEvent{}); err == nil {
 		t.Fatal("invalid audit event produced a workspace scope")
+	}
+}
+
+func TestPolicyAuditPageProjectionIsPortableAndPrivacyMinimized(t *testing.T) {
+	t.Parallel()
+
+	entry := policyAuditTestEntry()
+	entry.entryHash = policyAuditEntryHash(entry)
+	page, err := newPolicyAuditPage(
+		"workspace-a", []policyAuditEntry{entry}, 1, auditHashString(entry.entryHash), 1,
+		auditHashString(entry.previousHash),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Schema != auditrecord.PageSchemaV1 || page.WorkspaceID != "workspace-a" ||
+		page.Snapshot.HeadSequence != 1 || page.StartSequence != 1 || page.NextCursor != "" ||
+		len(page.Entries) != 1 || page.Entries[0].EntryHash != page.Snapshot.HeadHash {
+		t.Fatalf("page = %#v", page)
+	}
+	if err := page.Verify(); err != nil {
+		t.Fatalf("portable page Verify() error = %v", err)
+	}
+	encoded, err := json.Marshal(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"arguments", "selector", "target", "credential", "token", "payload", "justification"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("portable page leaked forbidden field %q: %s", forbidden, encoded)
+		}
 	}
 }
 

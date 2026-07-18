@@ -72,22 +72,21 @@ type Entry struct {
 // store. Cryptographic recomputation remains the exporter's responsibility; this check rejects a
 // foreign, oversized, discontinuous, or unsupported document before HTTP serialization.
 func (export Export) ValidateForWorkspace(workspaceID tenancy.WorkspaceID) error {
+	return export.validateForWorkspace(workspaceID, false)
+}
+
+func (export Export) validateForWorkspace(workspaceID tenancy.WorkspaceID, verifyHashes bool) error {
 	if export.Schema != SchemaV1 || export.WorkspaceID != string(workspaceID) ||
 		workspaceInvalid(workspaceID) || export.Chain.HashAlgorithm != HashAlgorithm ||
 		len(export.Entries) == 0 || len(export.Entries) > MaxEntries ||
 		export.Chain.HeadSequence != int64(len(export.Entries)) || !validHash(export.Chain.HeadHash) {
 		return fmt.Errorf("audit export envelope is invalid")
 	}
-	previous := "sha256:" + strings.Repeat("0", 64)
-	for index, entry := range export.Entries {
-		sequence := int64(index + 1)
-		if entry.Sequence != sequence || entry.RecordedAt.IsZero() || !validTraceID(entry.TraceID) ||
-			!safeText(entry.Actor, 256) || !validRole(entry.Role) || !validVerdict(entry.Verdict) ||
-			!validReasonCode(entry.ReasonCode) || entry.PreviousHash != previous || !validHash(entry.EntryHash) ||
-			!validEntryShape(entry) {
-			return fmt.Errorf("audit export entry %d is invalid", sequence)
-		}
-		previous = entry.EntryHash
+	previous, err := validateEntrySequence(
+		workspaceID, export.Entries, 1, zeroHash(), verifyHashes,
+	)
+	if err != nil {
+		return fmt.Errorf("audit export: %w", err)
 	}
 	if previous != export.Chain.HeadHash {
 		return fmt.Errorf("audit export head is invalid")
@@ -104,17 +103,42 @@ func (export Export) Verify() error {
 
 // VerifyForWorkspace binds the document to an expected tenant before recomputing its hashes.
 func (export Export) VerifyForWorkspace(workspaceID tenancy.WorkspaceID) error {
-	if err := export.ValidateForWorkspace(workspaceID); err != nil {
-		return err
-	}
-	for index, entry := range export.Entries {
-		recomputed, err := RecomputeEntryHash(workspaceID, entry)
-		if err != nil || recomputed != entry.EntryHash {
-			return fmt.Errorf("audit export entry %d hash is invalid", index+1)
-		}
-	}
-	return nil
+	return export.validateForWorkspace(workspaceID, true)
 }
+
+func validateEntrySequence(
+	workspaceID tenancy.WorkspaceID,
+	entries []Entry,
+	startSequence int64,
+	previousHash string,
+	verifyHashes bool,
+) (string, error) {
+	if workspaceInvalid(workspaceID) || len(entries) == 0 || startSequence <= 0 || !validHash(previousHash) {
+		return "", fmt.Errorf("audit entry sequence boundary is invalid")
+	}
+	previous := previousHash
+	for index, entry := range entries {
+		sequence := startSequence + int64(index)
+		if sequence <= 0 || entry.Sequence != sequence || entry.RecordedAt.IsZero() ||
+			entry.RecordedAt.Location() != time.UTC ||
+			!entry.RecordedAt.Equal(entry.RecordedAt.Truncate(time.Microsecond)) ||
+			!validTraceID(entry.TraceID) || !safeText(entry.Actor, 256) || !validRole(entry.Role) ||
+			!validVerdict(entry.Verdict) || !validReasonCode(entry.ReasonCode) ||
+			entry.PreviousHash != previous || !validHash(entry.EntryHash) || !validEntryShape(entry) {
+			return "", fmt.Errorf("audit entry %d is invalid", sequence)
+		}
+		if verifyHashes {
+			recomputed, err := RecomputeEntryHash(workspaceID, entry)
+			if err != nil || recomputed != entry.EntryHash {
+				return "", fmt.Errorf("audit entry %d hash is invalid", sequence)
+			}
+		}
+		previous = entry.EntryHash
+	}
+	return previous, nil
+}
+
+func zeroHash() string { return "sha256:" + strings.Repeat("0", 64) }
 
 // RecomputeEntryHash returns the versioned canonical SHA-256 digest for one portable entry. The
 // database writer and offline verifier share this primitive so format framing cannot drift.
