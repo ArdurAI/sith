@@ -15,9 +15,31 @@ type probeChecker func(context.Context) error
 
 func (checker probeChecker) Ping(ctx context.Context) error { return checker(ctx) }
 
+type readinessObservation struct {
+	outcome  ReadinessOutcome
+	duration time.Duration
+}
+
+type readinessObserverFunc func(ReadinessOutcome, time.Duration)
+
+func (observer readinessObserverFunc) ObserveReadiness(outcome ReadinessOutcome, duration time.Duration) {
+	observer(outcome, duration)
+}
+
+type recordingReadinessObserver struct {
+	events []readinessObservation
+}
+
+func (observer *recordingReadinessObserver) ObserveReadiness(outcome ReadinessOutcome, duration time.Duration) {
+	observer.events = append(observer.events, readinessObservation{outcome: outcome, duration: duration})
+}
+
 func TestProbeHandlerSeparatesLivenessFromDatabaseReadiness(t *testing.T) {
 	checker := probeChecker(func(context.Context) error { return errors.New("database endpoint secret") })
-	handler, err := NewProbeHandler(checker)
+	observer := &recordingReadinessObserver{}
+	handler, err := NewProbeHandler(ProbeHandlerConfig{
+		Checker: checker, Observer: observer,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,20 +51,28 @@ func TestProbeHandlerSeparatesLivenessFromDatabaseReadiness(t *testing.T) {
 	if ready.Body.String() != "" {
 		t.Fatalf("readiness body leaked dependency state: %q", ready.Body.String())
 	}
+	if len(observer.events) != 1 || observer.events[0].outcome != ReadinessOutcomeUnavailable || observer.events[0].duration < 0 {
+		t.Fatalf("readiness observations = %#v", observer.events)
+	}
 }
 
 func TestProbeHandlerReportsReadyAndBoundsDependencyCheck(t *testing.T) {
 	t.Run("ready", func(t *testing.T) {
-		handler, err := NewProbeHandler(probeChecker(func(context.Context) error { return nil }))
+		observer := &recordingReadinessObserver{}
+		handler, err := NewProbeHandler(ProbeHandlerConfig{
+			Checker: probeChecker(func(context.Context) error { return nil }), Observer: observer,
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		assertProbeResponse(t, serveProbe(t, handler.ServeReadiness, http.MethodGet, ReadinessPath), http.StatusNoContent)
+		assertReadinessObservation(t, observer, ReadinessOutcomeReady)
 	})
 
 	t.Run("timeout", func(t *testing.T) {
 		var deadline time.Time
-		handler, err := NewProbeHandler(probeChecker(func(ctx context.Context) error {
+		observer := &recordingReadinessObserver{}
+		handler, err := NewProbeHandler(ProbeHandlerConfig{Checker: probeChecker(func(ctx context.Context) error {
 			var ok bool
 			deadline, ok = ctx.Deadline()
 			if !ok {
@@ -50,7 +80,7 @@ func TestProbeHandlerReportsReadyAndBoundsDependencyCheck(t *testing.T) {
 			}
 			<-ctx.Done()
 			return ctx.Err()
-		}))
+		}), Observer: observer})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -61,6 +91,7 @@ func TestProbeHandlerReportsReadyAndBoundsDependencyCheck(t *testing.T) {
 		if deadline.IsZero() || time.Since(started) > 250*time.Millisecond {
 			t.Fatalf("readiness deadline/elapsed = %s/%s", deadline, time.Since(started))
 		}
+		assertReadinessObservation(t, observer, ReadinessOutcomeUnavailable)
 	})
 
 	t.Run("caller cancellation", func(t *testing.T) {
@@ -68,7 +99,8 @@ func TestProbeHandlerReportsReadyAndBoundsDependencyCheck(t *testing.T) {
 			<-ctx.Done()
 			return ctx.Err()
 		})
-		handler, err := NewProbeHandler(checker)
+		observer := &recordingReadinessObserver{}
+		handler, err := NewProbeHandler(ProbeHandlerConfig{Checker: checker, Observer: observer})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -78,15 +110,29 @@ func TestProbeHandlerReportsReadyAndBoundsDependencyCheck(t *testing.T) {
 		response := httptest.NewRecorder()
 		handler.ServeReadiness(response, request.WithContext(ctx))
 		assertProbeResponse(t, response, http.StatusServiceUnavailable)
+		assertReadinessObservation(t, observer, ReadinessOutcomeUnavailable)
 	})
 }
 
 func TestProbeHandlerFailsClosedOnPanicAndInvalidRequests(t *testing.T) {
-	handler, err := NewProbeHandler(probeChecker(func(context.Context) error { panic("database endpoint secret") }))
+	observations := make([]ReadinessOutcome, 0, 1)
+	checkerCalls := 0
+	handler, err := NewProbeHandler(ProbeHandlerConfig{
+		Checker: probeChecker(func(context.Context) error {
+			checkerCalls++
+			panic("database endpoint secret")
+		}),
+		Observer: readinessObserverFunc(func(outcome ReadinessOutcome, _ time.Duration) {
+			observations = append(observations, outcome)
+		}),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertProbeResponse(t, serveProbe(t, handler.ServeReadiness, http.MethodGet, ReadinessPath), http.StatusServiceUnavailable)
+	if checkerCalls != 1 || len(observations) != 1 || observations[0] != ReadinessOutcomeUnavailable {
+		t.Fatalf("checker calls/observations = %d/%v", checkerCalls, observations)
+	}
 
 	for _, test := range []struct {
 		name   string
@@ -105,12 +151,33 @@ func TestProbeHandlerFailsClosedOnPanicAndInvalidRequests(t *testing.T) {
 			assertProbeResponse(t, serveProbe(t, test.serve, test.method, test.target), http.StatusNotFound)
 		})
 	}
+	if checkerCalls != 1 || len(observations) != 1 {
+		t.Fatalf("invalid requests reached checker/observer: calls=%d observations=%v", checkerCalls, observations)
+	}
 
-	if _, err := NewProbeHandler(nil); err == nil {
+	if _, err := NewProbeHandler(ProbeHandlerConfig{}); err == nil {
 		t.Fatal("NewProbeHandler accepted a missing readiness checker")
 	}
 	var nilHandler *ProbeHandler
 	assertProbeResponse(t, serveProbe(t, nilHandler.ServeLiveness, http.MethodGet, LivenessPath), http.StatusNotFound)
+}
+
+func TestProbeHandlerRecoversReadinessObserverPanic(t *testing.T) {
+	checkerCalls := 0
+	handler, err := NewProbeHandler(ProbeHandlerConfig{
+		Checker: probeChecker(func(context.Context) error {
+			checkerCalls++
+			return nil
+		}),
+		Observer: readinessObserverFunc(func(ReadinessOutcome, time.Duration) { panic("metrics fault") }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProbeResponse(t, serveProbe(t, handler.ServeReadiness, http.MethodGet, ReadinessPath), http.StatusNoContent)
+	if checkerCalls != 1 {
+		t.Fatalf("readiness checker calls = %d, want 1", checkerCalls)
+	}
 }
 
 func serveProbe(t *testing.T, serve func(http.ResponseWriter, *http.Request), method, target string) *httptest.ResponseRecorder {
@@ -118,6 +185,13 @@ func serveProbe(t *testing.T, serve func(http.ResponseWriter, *http.Request), me
 	response := httptest.NewRecorder()
 	serve(response, httptest.NewRequest(method, target, nil))
 	return response
+}
+
+func assertReadinessObservation(t *testing.T, observer *recordingReadinessObserver, want ReadinessOutcome) {
+	t.Helper()
+	if len(observer.events) != 1 || observer.events[0].outcome != want || observer.events[0].duration < 0 {
+		t.Fatalf("readiness observations = %#v, want one %q", observer.events, want)
+	}
 }
 
 func assertProbeResponse(t *testing.T, response *httptest.ResponseRecorder, wantStatus int) {

@@ -279,6 +279,16 @@ Pod from service without creating a dependency-driven restart storm. OCM/spoke r
 not participate because partial fleet coverage must remain visible rather than making the whole
 Hub unready.
 
+Each valid completed `GET /readyz` database check also records one
+`sith_hub_readiness_checks_total{outcome}` attempt and one
+`sith_hub_readiness_check_duration_seconds{outcome}` observation in the existing isolated metrics
+registry. `outcome` is only `ready` or `unavailable`; database errors, deadline expiry, caller
+cancellation, and recovered checker panic collapse to `unavailable`. Rejected methods, queries,
+paths, and encoded variants emit no observation. Invalid metric values are discarded, observer
+panics cannot change probe behavior, and no request, endpoint, credential, tenant, spoke, error, or
+panic detail becomes a label. These series are visible only through the opt-in loopback metrics
+listener below and add no listener, Service, exporter, persistence, or remote telemetry path.
+
 The optional `SITH_HUB_METRICS_LISTEN_ADDR` is disabled unless it is exactly
 `127.0.0.1:<non-zero-port>` or `[::1]:<non-zero-port>`. When configured, it exposes only a
 separate plaintext `GET /metrics` listener backed by Sith's isolated, bounded-label registry. It

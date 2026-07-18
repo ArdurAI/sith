@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/ArdurAI/sith/internal/hubfleet"
+	"github.com/ArdurAI/sith/internal/hubserver"
 	"github.com/ArdurAI/sith/internal/pep"
 )
 
@@ -30,6 +31,9 @@ func TestMetricsExposeOnlyBoundedSelfObservability(t *testing.T) {
 	metrics.ObserveSpokeSnapshot(hubfleet.SnapshotOutcome("spoke-a/token=secret"), -time.Second)
 	metrics.ObserveFleetRead(hubfleet.FleetReadOutcomeComplete)
 	metrics.ObserveFleetRead(hubfleet.FleetReadOutcome("workspace-a/token=secret"))
+	metrics.ObserveReadiness(hubserver.ReadinessOutcomeReady, 10*time.Millisecond)
+	metrics.ObserveReadiness(hubserver.ReadinessOutcomeUnavailable, -time.Second)
+	metrics.ObserveReadiness(hubserver.ReadinessOutcome("database endpoint secret"), time.Second)
 	metrics.ObserveAuthRefusalDeliveryDrop()
 
 	response := httptest.NewRecorder()
@@ -54,6 +58,10 @@ func TestMetricsExposeOnlyBoundedSelfObservability(t *testing.T) {
 		`sith_federation_fleet_read_results_total{outcome="degraded"} 0`,
 		`sith_federation_fleet_read_results_total{outcome="empty"} 0`,
 		`sith_federation_fleet_read_results_total{outcome="error"} 1`,
+		`sith_hub_readiness_checks_total{outcome="ready"} 1`,
+		`sith_hub_readiness_checks_total{outcome="unavailable"} 1`,
+		`sith_hub_readiness_check_duration_seconds_count{outcome="ready"} 1`,
+		`sith_hub_readiness_check_duration_seconds_count{outcome="unavailable"} 1`,
 		"sith_auth_refusal_delivery_drops_total 1",
 		`verb="fleet.read"`,
 		`verb="invalid"`,
@@ -68,7 +76,7 @@ func TestMetricsExposeOnlyBoundedSelfObservability(t *testing.T) {
 			t.Fatalf("metrics output missing %q: %s", metric, body)
 		}
 	}
-	for _, forbidden := range []string{"workspace-a", "spoke-a", "token=secret", "untrusted"} {
+	for _, forbidden := range []string{"workspace-a", "spoke-a", "token=secret", "untrusted", "database endpoint secret"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("metrics output leaked %q: %s", forbidden, body)
 		}
@@ -99,13 +107,23 @@ func TestMetricsUseIndependentRegistriesAndNormalizeBuildLabels(t *testing.T) {
 	if !strings.Contains(body, `sith_build_info{commit="unknown",version="unknown"} 1`) {
 		t.Fatalf("unsafe build metadata was not normalized: %s", body)
 	}
+	for _, preinitialized := range []string{
+		`sith_hub_readiness_checks_total{outcome="ready"} 0`,
+		`sith_hub_readiness_checks_total{outcome="unavailable"} 0`,
+		`sith_hub_readiness_check_duration_seconds_count{outcome="ready"} 0`,
+		`sith_hub_readiness_check_duration_seconds_count{outcome="unavailable"} 0`,
+	} {
+		if !strings.Contains(body, preinitialized) {
+			t.Fatalf("metrics output missing preinitialized readiness series %q: %s", preinitialized, body)
+		}
+	}
 }
 
 func TestMetricsRejectDuplicateRegistrations(t *testing.T) {
 	registry := prometheus.NewPedanticRegistry()
 	conflicting := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "sith", Subsystem: "federation", Name: "fleet_read_results_total",
-		Help: "Total authorized Sith federated fleet reads by closed coverage outcome.",
+		Namespace: "sith", Subsystem: "hub", Name: "readiness_checks_total",
+		Help: "Total completed Sith Hub database readiness checks by closed outcome.",
 	}, []string{"outcome"})
 	if err := registry.Register(conflicting); err != nil {
 		t.Fatal(err)
@@ -146,6 +164,8 @@ func assertSithMetricLabels(t *testing.T, metrics *Metrics) {
 		"sith_federation_spoke_snapshot_attempts_total":   {"outcome": true},
 		"sith_federation_spoke_snapshot_duration_seconds": {"outcome": true},
 		"sith_federation_fleet_read_results_total":        {"outcome": true},
+		"sith_hub_readiness_checks_total":                 {"outcome": true},
+		"sith_hub_readiness_check_duration_seconds":       {"outcome": true},
 		"sith_auth_refusal_delivery_drops_total":          {},
 	}
 	for _, family := range families {

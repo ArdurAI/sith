@@ -108,7 +108,9 @@ func TestRuntimeMuxMountsProbesOutsideAuthenticatedFleetFallback(t *testing.T) {
 		fallbackCalls++
 		response.WriteHeader(http.StatusUnauthorized)
 	})
-	probes, err := hubserver.NewProbeHandler(runtimeProbeChecker(func(context.Context) error { return nil }))
+	probes, err := hubserver.NewProbeHandler(hubserver.ProbeHandlerConfig{
+		Checker: runtimeProbeChecker(func(context.Context) error { return nil }),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/ArdurAI/sith/internal/hubfleet"
+	"github.com/ArdurAI/sith/internal/hubserver"
 	"github.com/ArdurAI/sith/internal/pep"
 )
 
@@ -43,14 +44,17 @@ type Metrics struct {
 	snapshotAttempts    *prometheus.CounterVec
 	snapshotDuration    *prometheus.HistogramVec
 	fleetReadResults    *prometheus.CounterVec
+	readinessChecks     *prometheus.CounterVec
+	readinessDuration   *prometheus.HistogramVec
 	authDeliveryDrops   prometheus.Counter
 }
 
 var (
-	_ pep.DecisionObserver       = (*Metrics)(nil)
-	_ pep.AuditObserver          = (*Metrics)(nil)
-	_ hubfleet.SnapshotObserver  = (*Metrics)(nil)
-	_ hubfleet.FleetReadObserver = (*Metrics)(nil)
+	_ pep.DecisionObserver        = (*Metrics)(nil)
+	_ pep.AuditObserver           = (*Metrics)(nil)
+	_ hubfleet.SnapshotObserver   = (*Metrics)(nil)
+	_ hubfleet.FleetReadObserver  = (*Metrics)(nil)
+	_ hubserver.ReadinessObserver = (*Metrics)(nil)
 )
 
 // New constructs metrics against a caller-owned or fresh isolated registry. Registration errors
@@ -94,6 +98,14 @@ func New(config Config) (*Metrics, error) {
 			Namespace: "sith", Subsystem: "federation", Name: "fleet_read_results_total",
 			Help: "Total authorized Sith federated fleet reads by closed coverage outcome.",
 		}, []string{"outcome"}),
+		readinessChecks: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "sith", Subsystem: "hub", Name: "readiness_checks_total",
+			Help: "Total completed Sith Hub database readiness checks by closed outcome.",
+		}, []string{"outcome"}),
+		readinessDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "sith", Subsystem: "hub", Name: "readiness_check_duration_seconds",
+			Help: "Duration of completed Sith Hub database readiness checks by closed outcome.",
+		}, []string{"outcome"}),
 		authDeliveryDrops: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "sith", Subsystem: "auth", Name: "refusal_delivery_drops_total",
 			Help: "Total dropped bounded local authentication-refusal delivery records.",
@@ -108,7 +120,7 @@ func New(config Config) (*Metrics, error) {
 	})
 	buildInfo.Set(1)
 
-	registered := make([]prometheus.Collector, 0, 11)
+	registered := make([]prometheus.Collector, 0, 13)
 	for _, collector := range []struct {
 		name      string
 		collector prometheus.Collector
@@ -123,6 +135,8 @@ func New(config Config) (*Metrics, error) {
 		{name: "snapshot attempts", collector: metrics.snapshotAttempts},
 		{name: "snapshot duration", collector: metrics.snapshotDuration},
 		{name: "fleet read results", collector: metrics.fleetReadResults},
+		{name: "Hub readiness checks", collector: metrics.readinessChecks},
+		{name: "Hub readiness duration", collector: metrics.readinessDuration},
 		{name: "authentication-refusal delivery drops", collector: metrics.authDeliveryDrops},
 	} {
 		if err := registry.Register(collector.collector); err != nil {
@@ -146,6 +160,13 @@ func New(config Config) (*Metrics, error) {
 		hubfleet.FleetReadOutcomeError,
 	} {
 		metrics.fleetReadResults.WithLabelValues(string(outcome))
+	}
+	for _, outcome := range []hubserver.ReadinessOutcome{
+		hubserver.ReadinessOutcomeReady,
+		hubserver.ReadinessOutcomeUnavailable,
+	} {
+		metrics.readinessChecks.WithLabelValues(string(outcome))
+		metrics.readinessDuration.WithLabelValues(string(outcome))
 	}
 
 	return metrics, nil
@@ -203,6 +224,16 @@ func (metrics *Metrics) ObserveFleetRead(outcome hubfleet.FleetReadOutcome) {
 		return
 	}
 	metrics.fleetReadResults.WithLabelValues(normalizedFleetReadOutcome(outcome)).Inc()
+}
+
+// ObserveReadiness records one completed application-database readiness check. Invalid values are
+// discarded instead of creating a caller-controlled series or fabricating dependency failure.
+func (metrics *Metrics) ObserveReadiness(outcome hubserver.ReadinessOutcome, duration time.Duration) {
+	if metrics == nil || metrics.readinessChecks == nil || metrics.readinessDuration == nil || !outcome.Valid() {
+		return
+	}
+	metrics.readinessChecks.WithLabelValues(string(outcome)).Inc()
+	metrics.readinessDuration.WithLabelValues(string(outcome)).Observe(normalizedDuration(duration))
 }
 
 // ObserveAuthRefusalDeliveryDrop records one bounded process-local delivery drop. It carries no
