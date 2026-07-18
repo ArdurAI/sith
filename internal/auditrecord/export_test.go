@@ -43,7 +43,13 @@ func TestExportValidateForWorkspaceRejectsForeignAndMalformedDocuments(t *testin
 		"wrong head hash":   func(value *Export) { value.Chain.HeadHash = hash("b") },
 		"wrong sequence":    func(value *Export) { value.Entries[0].Sequence = 2 },
 		"broken link":       func(value *Export) { value.Entries[0].PreviousHash = hash("b") },
-		"unsafe actor":      func(value *Export) { value.Entries[0].Actor = "user:alice\ntoken=secret" },
+		"sub-microsecond time": func(value *Export) {
+			value.Entries[0].RecordedAt = value.Entries[0].RecordedAt.Add(time.Nanosecond)
+		},
+		"non-UTC time": func(value *Export) {
+			value.Entries[0].RecordedAt = value.Entries[0].RecordedAt.In(time.FixedZone("offset", -5*60*60))
+		},
+		"unsafe actor": func(value *Export) { value.Entries[0].Actor = "user:alice\ntoken=secret" },
 		"invalid UTF-8 actor": func(value *Export) {
 			value.Entries[0].Actor = string([]byte{'u', 's', 'e', 'r', ':', 0xff})
 		},

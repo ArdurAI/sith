@@ -29,6 +29,37 @@ func (function policyAuditExporterFunc) ExportPolicyAuditChain(ctx context.Conte
 	return function(ctx, scope)
 }
 
+func (function policyAuditExporterFunc) ExportPolicyAuditPage(
+	context.Context,
+	tenancy.Scope,
+	auditrecord.PageRequest,
+) (auditrecord.Page, error) {
+	return auditrecord.Page{}, errors.New("paged export is unavailable")
+}
+
+type policyAuditExporterStub struct {
+	complete func(context.Context, tenancy.Scope) (auditrecord.Export, error)
+	page     func(context.Context, tenancy.Scope, auditrecord.PageRequest) (auditrecord.Page, error)
+}
+
+func (stub policyAuditExporterStub) ExportPolicyAuditChain(ctx context.Context, scope tenancy.Scope) (auditrecord.Export, error) {
+	if stub.complete == nil {
+		return auditrecord.Export{}, errors.New("complete export is unavailable")
+	}
+	return stub.complete(ctx, scope)
+}
+
+func (stub policyAuditExporterStub) ExportPolicyAuditPage(
+	ctx context.Context,
+	scope tenancy.Scope,
+	request auditrecord.PageRequest,
+) (auditrecord.Page, error) {
+	if stub.page == nil {
+		return auditrecord.Page{}, errors.New("paged export is unavailable")
+	}
+	return stub.page(ctx, scope, request)
+}
+
 func TestAuditExportHandlerAuthorizesBeforePortableDownload(t *testing.T) {
 	now := time.Date(2026, time.July, 18, 9, 30, 0, 0, time.UTC)
 	verifier, privateKey := fleetTestVerifier(t, now)
@@ -87,6 +118,110 @@ func TestAuditExportHandlerAuthorizesBeforePortableDownload(t *testing.T) {
 	if len(events) != 1 || events[0].Actor != "user:alice" || events[0].Role != tenancy.RoleAdmin ||
 		events[0].TraceID == "0123456789abcdef0123456789abcdef" {
 		t.Fatalf("policy events = %#v", events)
+	}
+}
+
+func TestAuditExportHandlerAuthorizesSnapshotBoundPages(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 9, 30, 0, 0, time.UTC)
+	verifier, privateKey := fleetTestVerifier(t, now)
+	var events []pep.AuditEvent
+	enforcer, err := pep.NewEnforcer(pep.Config{
+		Hook: pep.AllowReadHook{},
+		Auditor: pep.AuditFunc(func(_ context.Context, event pep.AuditEvent) error {
+			events = append(events, event)
+			return nil
+		}),
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := testPolicyAuditPage(now, 1, "sha256:"+strings.Repeat("0", 64))
+	continuation := testPolicyAuditPage(now.Add(time.Microsecond), 513, "sha256:"+strings.Repeat("b", 64))
+	cursor, err := auditrecord.EncodePageCursor(
+		"workspace-a", continuation.Snapshot.HeadSequence, continuation.Snapshot.HeadHash,
+		continuation.StartSequence, continuation.PreviousHash,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageCalls := 0
+	handler, err := NewAuditExportHandler(AuditExportHandlerConfig{
+		Verifier: verifier,
+		Exporter: policyAuditExporterStub{page: func(_ context.Context, scope tenancy.Scope, request auditrecord.PageRequest) (auditrecord.Page, error) {
+			pageCalls++
+			if len(events) != pageCalls || scope.WorkspaceID() != "workspace-a" {
+				t.Fatalf("page exporter observed events/scope = %#v/%#v", events, scope)
+			}
+			if pageCalls == 1 {
+				if !request.Initial() {
+					t.Fatal("initial page route produced a continuation request")
+				}
+				return initial, nil
+			}
+			if request.Initial() || request.HeadSequence() != 513 || request.NextSequence() != 513 ||
+				request.PreviousHash() != continuation.PreviousHash {
+				t.Fatalf("continuation request = %#v", request)
+			}
+			return continuation, nil
+		}},
+		PEP: enforcer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for index, target := range []string{
+		"/v1/workspaces/workspace-a/audit/export/pages",
+		"/v1/workspaces/workspace-a/audit/export/pages?cursor=" + cursor,
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, authenticatedAuditExportRequest(t, http.MethodGet, target, privateKey, now, tenancy.RoleAdmin))
+		if response.Code != http.StatusOK || response.Header().Get("Content-Disposition") !=
+			`attachment; filename="sith-policy-audit-page.json"` || response.Header().Get("Content-Length") != strconv.Itoa(response.Body.Len()) {
+			t.Fatalf("page %d status/headers/body = %d/%#v/%q", index, response.Code, response.Header(), response.Body.String())
+		}
+		var page auditrecord.Page
+		if err := json.NewDecoder(response.Body).Decode(&page); err != nil || page.Verify() != nil {
+			t.Fatalf("page %d decode/verify = %#v/%v", index, page, err)
+		}
+	}
+	if pageCalls != 2 || len(events) != 2 {
+		t.Fatalf("page calls/events = %d/%#v", pageCalls, events)
+	}
+	for _, event := range events {
+		if event.Action != tenancy.ActionExportAudit || event.Verb != pep.VerbAuditExport ||
+			event.Verdict != pep.VerdictAllow {
+			t.Fatalf("page policy event = %#v", event)
+		}
+	}
+}
+
+func TestAuditExportHandlerAuditsCanonicalButInvalidCursor(t *testing.T) {
+	now := time.Date(2026, time.July, 18, 9, 30, 0, 0, time.UTC)
+	verifier, privateKey := fleetTestVerifier(t, now)
+	events := 0
+	enforcer, err := pep.NewEnforcer(pep.Config{
+		Hook: pep.AllowReadHook{}, Auditor: pep.AuditFunc(func(context.Context, pep.AuditEvent) error {
+			events++
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := mustAuditExportHandler(t, verifier, policyAuditExporterStub{page: func(
+		context.Context, tenancy.Scope, auditrecord.PageRequest,
+	) (auditrecord.Page, error) {
+		t.Fatal("invalid cursor reached exporter")
+		return auditrecord.Page{}, nil
+	}}, enforcer)
+	response := httptest.NewRecorder()
+	target := "/v1/workspaces/workspace-a/audit/export/pages?cursor=" + strings.Repeat("A", auditrecord.PageCursorChars)
+	handler.ServeHTTP(response, authenticatedAuditExportRequest(t, http.MethodGet, target, privateKey, now, tenancy.RoleAdmin))
+	if response.Code != http.StatusServiceUnavailable || events != 1 ||
+		response.Body.String() != "{\"error\":\"audit_export_unavailable\"}\n" {
+		t.Fatalf("status/events/body = %d/%d/%q", response.Code, events, response.Body.String())
 	}
 }
 
@@ -198,6 +333,9 @@ func TestAuditExportHandlerRejectsMalformedSurfaceBeforePolicy(t *testing.T) {
 	}{
 		{name: "method", method: http.MethodPost, target: "/v1/workspaces/workspace-a/audit/export", status: http.StatusMethodNotAllowed},
 		{name: "query", method: http.MethodGet, target: "/v1/workspaces/workspace-a/audit/export?after=1", status: http.StatusNotFound},
+		{name: "page extra query", method: http.MethodGet, target: "/v1/workspaces/workspace-a/audit/export/pages?cursor=a&limit=1", status: http.StatusNotFound},
+		{name: "page escaped cursor", method: http.MethodGet, target: "/v1/workspaces/workspace-a/audit/export/pages?cursor=%41", status: http.StatusNotFound},
+		{name: "page trailing slash", method: http.MethodGet, target: "/v1/workspaces/workspace-a/audit/export/pages/", status: http.StatusNotFound},
 		{name: "trailing slash", method: http.MethodGet, target: "/v1/workspaces/workspace-a/audit/export/", status: http.StatusNotFound},
 		{name: "encoded workspace", method: http.MethodGet, target: "/v1/workspaces/workspace%2Da/audit/export", status: http.StatusNotFound},
 		{name: "extra resource", method: http.MethodGet, target: "/v1/workspaces/workspace-a/audit/export/all", status: http.StatusNotFound},
@@ -232,6 +370,15 @@ func TestAuditExportHandlerRejectsMalformedSurfaceBeforePolicy(t *testing.T) {
 				t.Fatalf("body-framed status/body = %d/%q", response.Code, response.Body.String())
 			}
 		})
+	}
+	cookieRequest := authenticatedAuditExportRequest(
+		t, http.MethodGet, "/v1/workspaces/workspace-a/audit/export/pages", privateKey, now, tenancy.RoleAdmin,
+	)
+	cookieRequest.AddCookie(&http.Cookie{Name: "__Host-sith-session", Value: "ignored-browser-session"})
+	cookieResponse := httptest.NewRecorder()
+	handler.ServeHTTP(cookieResponse, cookieRequest)
+	if cookieResponse.Code != http.StatusNotFound {
+		t.Fatalf("page cookie status/body = %d/%q", cookieResponse.Code, cookieResponse.Body.String())
 	}
 	if policyCalls != 0 {
 		t.Fatalf("malformed requests reached policy %d times", policyCalls)
@@ -368,4 +515,22 @@ func testPolicyAuditExport(now time.Time) auditrecord.Export {
 	exported.Entries[0].EntryHash = hash
 	exported.Chain.HeadHash = hash
 	return exported
+}
+
+func testPolicyAuditPage(now time.Time, sequence int64, previousHash string) auditrecord.Page {
+	entry := auditrecord.Entry{
+		Sequence: sequence, FormatVersion: 1, RecordedAt: now, TraceID: strings.Repeat("1", 32), Actor: "user:alice",
+		Role: "admin", Action: "export-audit", Verb: "audit.export", Verdict: "allow",
+		ReasonCode: "phase-1-audit-export", EventKind: "policy-decision", PreviousHash: previousHash,
+	}
+	hash, err := auditrecord.RecomputeEntryHash("workspace-a", entry)
+	if err != nil {
+		panic(err)
+	}
+	entry.EntryHash = hash
+	return auditrecord.Page{
+		Schema: auditrecord.PageSchemaV1, WorkspaceID: "workspace-a",
+		Snapshot:      auditrecord.Chain{HashAlgorithm: auditrecord.HashAlgorithm, HeadSequence: sequence, HeadHash: hash},
+		StartSequence: sequence, PreviousHash: previousHash, Entries: []auditrecord.Entry{entry},
+	}
 }

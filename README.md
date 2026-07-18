@@ -51,6 +51,7 @@ make build
 ./bin/sith investigate             # rank supported degraded signals across every context
 ./bin/sith investigate payments --context kind-dev --output json
 ./bin/sith audit verify ./sith-policy-audit.json # local integrity check; no hub or credentials
+./bin/sith audit verify-pages ./audit-page-0001.json ./audit-page-0002.json # ordered snapshot
 ./bin/sith describe pod/api --context kind-dev -n apps
 ./bin/sith yaml secret/api-token --context kind-dev -n apps
 ./bin/sith logs api --context kind-dev -n apps --tail 100 -f
@@ -334,11 +335,15 @@ only `POST /v1/workspaces/{workspace}/fleet:refresh`,
 `GET /v1/workspaces/{workspace}/fleet/images/{sha256:<64-lowercase-hex>}/cves`, and
 `GET /v1/workspaces/{workspace}/fleet/cves/{CVE-YYYY-N...}`. The separate
 `GET /v1/workspaces/{workspace}/audit/export` route returns the existing retained audit chain only
-to a signed workspace admin. All of those bearer routes require an exact signed Sith session,
-derive the workspace scope from signed memberships, carry that scope through the PEP and RLS seams,
-and reject query parameters. Fleet routes return only normalized coverage/fleet data under
-`Cache-Control: no-store`; the audit-export route returns its versioned JSON attachment under the
-same bearer-only, tenant-scoped cache boundary.
+to a signed workspace admin. The distinct
+`GET /v1/workspaces/{workspace}/audit/export/pages` route returns the first bounded page of a
+larger immutable snapshot; a continuation accepts only the exact
+`?cursor=<canonical-base64url>` query. The complete export and fleet routes reject every query, and
+the page route rejects every other key, duplicate, escaping, or alternate encoding. All bearer
+routes require an exact signed Sith session, derive workspace scope from signed memberships, and
+carry it through the PEP and RLS seams. Fleet routes return only normalized coverage/fleet data
+under `Cache-Control: no-store`; both audit routes return versioned JSON attachments under the same
+bearer-only, tenant-scoped cache boundary.
 
 After deriving the signed scope, the hub mints one opaque local trace ID for the governed request.
 It strips common caller-supplied trace and correlation carriers, never echoes or forwards them,
@@ -356,16 +361,23 @@ Approval creation and consumption append distinct format-versioned lifecycle ent
 tenant chain in the exact transaction that mutates the single-use grant. An audit failure therefore
 rolls back the approval mutation. Each lifecycle pair carries only a one-way, domain-separated
 digest of the immutable grant binding—never raw targets, arguments, or justification content.
-The exact audit-export route uses the dedicated `export-audit` action and `audit.export` PEP verb.
-Sith durably appends that authorization decision before reading the export, then verifies the head
-and complete retained history in one forced-RLS repeatable-read snapshot. It commits the database
-transaction before serializing a versioned JSON attachment, so slow clients cannot pin the
-snapshot and late verification cannot produce a partial successful response. One online export is
-limited to 512 entries and the process admits at most four concurrently; oversized, uninitialized,
-or invalid chains fail with the same unavailable response. This portable document contains only
-the existing privacy-minimized policy and approval events plus their SHA-256 links. It is not the
-future intent-correlated Ardur decision ledger, pagination, WORM storage, external anchoring, or a
-claim that E6 is complete.
+Both audit routes use the dedicated `export-audit` action and `audit.export` PEP verb. Sith durably
+appends an authorization decision before every read. The complete route verifies the head and all
+retained history in one forced-RLS Repeatable Read snapshot and remains limited to 512 entries. For
+larger chains, the page route fixes the first request's current head and returns at most 512
+consecutive entries. Every continuation is independently authenticated, authorized, and audited;
+those later authorization rows remain in the live chain but cannot move the established snapshot
+and appear in a future export.
+
+The continuation is a fixed-size, versioned, canonical base64url descriptor bound to a
+domain-separated workspace digest, snapshot head sequence/hash, next sequence, and expected prior
+hash. It is not a credential. The database rechecks the live and snapshot head anchors plus the
+page boundary under forced RLS; a changed, foreign, skipped, or reordered continuation fails with
+the same unavailable response. Each transaction commits before JSON serialization, so slow clients
+cannot pin a database snapshot and late validation cannot produce a partial successful page. The
+process admits at most four complete or paged exports concurrently. Each document contains only
+the existing privacy-minimized policy and approval events plus their SHA-256 links.
+
 `sith audit verify <export.json>` provides the corresponding offline integrity check. It accepts
 one non-symlink regular file of at most 1 MiB, rejects duplicate, unknown, case-mismatched, or
 trailing JSON, and recomputes every versioned entry hash, sequence link, and declared head. The
@@ -374,9 +386,18 @@ telemetry and emits only a bounded summary. A successful result means the docume
 consistent; without an external anchor it does not prove origin or detect wholesale replacement by
 a privileged store owner. Verification costs one bounded local read and at most 512 SHA-256
 computations, with no cloud, storage, egress, or recurring-service cost.
-The response uses `X-Content-Type-Options: nosniff` and the fixed
-`sith-policy-audit.json` attachment filename. Authentication is bearer-only; browser cookies,
-filters, and raw-payload selection are rejected.
+`sith audit verify-pages <page.json> [page.json...]` performs the same strict bounded-file and
+canonical-hash checks one page at a time, then requires one ordered same-workspace,
+same-snapshot genesis-to-head sequence with no missing, replayed, or swapped page. Success is still
+internal consistency, not external authenticity. Paging adds one small audit row, at most 512
+entry reads plus fixed anchors, and one response of egress per page; work is linear in retained
+entries and page count, with no object store, queue, worker, or recurring cloud resource.
+
+Responses use `X-Content-Type-Options: nosniff` and the fixed `sith-policy-audit.json` or
+`sith-policy-audit-page.json` attachment filename. Authentication is bearer-only; neither route
+uses browser cookies for authority, and the page route rejects every `Cookie` header. Filters,
+raw-payload selection, asynchronous export, WORM retention, external anchoring, the future
+intent-correlated Ardur decision ledger, and an E6-complete claim remain out of scope.
 Either database or structured-process-log delivery failure blocks the operation, so production
 database and logging availability and latency are part of the governed-read availability budget.
 The optional loopback metrics surface exposes that boundary as

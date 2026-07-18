@@ -179,6 +179,170 @@ func (database *AppDB) ExportPolicyAuditChain(ctx context.Context, scope tenancy
 	return result, nil
 }
 
+// ExportPolicyAuditPage returns at most MaxEntries consecutive records from one immutable retained
+// workspace snapshot. A continuation is validated against retained head and boundary rows inside
+// the same forced-RLS repeatable-read transaction; later appends cannot move the declared snapshot.
+func (database *AppDB) ExportPolicyAuditPage(
+	ctx context.Context,
+	scope tenancy.Scope,
+	request auditrecord.PageRequest,
+) (auditrecord.Page, error) {
+	if database == nil || database.pool == nil || ctx == nil {
+		return auditrecord.Page{}, fmt.Errorf("export policy audit page: database and context are required")
+	}
+	if err := scope.Authorize(tenancy.ActionExportAudit); err != nil {
+		return auditrecord.Page{}, fmt.Errorf("export policy audit page: admin scope is required")
+	}
+	if err := request.ValidateForWorkspace(scope.WorkspaceID()); err != nil {
+		return auditrecord.Page{}, fmt.Errorf("export policy audit page: continuation is invalid")
+	}
+
+	var result auditrecord.Page
+	err := database.inWorkspaceReadSnapshot(ctx, scope, func(tx pgx.Tx) error {
+		page, err := readVerifiedPolicyAuditPageTx(ctx, tx, scope, request)
+		if err != nil {
+			return err
+		}
+		result = page
+		return nil
+	})
+	if err != nil {
+		return auditrecord.Page{}, fmt.Errorf("export policy audit page: %w", err)
+	}
+	return result, nil
+}
+
+func readVerifiedPolicyAuditPageTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	scope tenancy.Scope,
+	request auditrecord.PageRequest,
+) (auditrecord.Page, error) {
+	var currentHeadSequence int64
+	var currentHeadHash []byte
+	if err := tx.QueryRow(ctx, `
+		SELECT last_sequence, last_hash
+		FROM sith.policy_audit_heads
+		WHERE workspace_id = $1
+	`, scope.WorkspaceID()).Scan(&currentHeadSequence, &currentHeadHash); err != nil {
+		if err == pgx.ErrNoRows {
+			return auditrecord.Page{}, fmt.Errorf("policy audit chain is not initialized")
+		}
+		return auditrecord.Page{}, fmt.Errorf("read policy audit chain head: %w", err)
+	}
+	if currentHeadSequence <= 0 || len(currentHeadHash) != sha256.Size {
+		return auditrecord.Page{}, fmt.Errorf("policy audit chain head is invalid")
+	}
+	var retainedCurrentHeadHash []byte
+	if err := tx.QueryRow(ctx, `
+		SELECT entry_hash
+		FROM sith.policy_audit_entries
+		WHERE workspace_id = $1 AND sequence = $2
+	`, scope.WorkspaceID(), currentHeadSequence).Scan(&retainedCurrentHeadHash); err != nil {
+		return auditrecord.Page{}, fmt.Errorf("read current policy audit head anchor: %w", err)
+	}
+	if len(retainedCurrentHeadHash) != sha256.Size || !bytes.Equal(currentHeadHash, retainedCurrentHeadHash) {
+		return auditrecord.Page{}, fmt.Errorf("current policy audit head anchor is invalid")
+	}
+
+	snapshotHeadSequence := request.HeadSequence()
+	snapshotHeadHash := request.HeadHash()
+	nextSequence := request.NextSequence()
+	previousHash := request.PreviousHash()
+	if request.Initial() {
+		snapshotHeadSequence = currentHeadSequence
+		snapshotHeadHash = auditHashString(currentHeadHash)
+		nextSequence = 1
+		previousHash = auditHashString(make([]byte, sha256.Size))
+	} else {
+		if snapshotHeadSequence > currentHeadSequence || nextSequence > snapshotHeadSequence {
+			return auditrecord.Page{}, fmt.Errorf("policy audit page snapshot is unavailable")
+		}
+		var retainedPreviousHash []byte
+		if err := tx.QueryRow(ctx, `
+			SELECT entry_hash
+			FROM sith.policy_audit_entries
+			WHERE workspace_id = $1 AND sequence = $2
+		`, scope.WorkspaceID(), nextSequence-1).Scan(&retainedPreviousHash); err != nil {
+			return auditrecord.Page{}, fmt.Errorf("read policy audit page previous anchor: %w", err)
+		}
+		if len(retainedPreviousHash) != sha256.Size || auditHashString(retainedPreviousHash) != previousHash {
+			return auditrecord.Page{}, fmt.Errorf("policy audit page previous anchor is invalid")
+		}
+	}
+	retainedSnapshotHash := retainedCurrentHeadHash
+	if snapshotHeadSequence != currentHeadSequence {
+		retainedSnapshotHash = nil
+		if err := tx.QueryRow(ctx, `
+			SELECT entry_hash
+			FROM sith.policy_audit_entries
+			WHERE workspace_id = $1 AND sequence = $2
+		`, scope.WorkspaceID(), snapshotHeadSequence).Scan(&retainedSnapshotHash); err != nil {
+			return auditrecord.Page{}, fmt.Errorf("read policy audit page snapshot anchor: %w", err)
+		}
+	}
+	if len(retainedSnapshotHash) != sha256.Size || auditHashString(retainedSnapshotHash) != snapshotHeadHash {
+		return auditrecord.Page{}, fmt.Errorf("policy audit page snapshot anchor is invalid")
+	}
+
+	endSequence := snapshotHeadSequence
+	if snapshotHeadSequence-nextSequence+1 > int64(auditrecord.MaxEntries) {
+		endSequence = nextSequence + int64(auditrecord.MaxEntries) - 1
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT sequence, format_version, recorded_at, trace_id, workspace_id, actor, role,
+		       action, verb, verdict, reason_code, event_kind, evidence_digest,
+		       previous_hash, entry_hash
+		FROM sith.policy_audit_entries
+		WHERE workspace_id = $1 AND sequence >= $2 AND sequence <= $3
+		ORDER BY sequence
+	`, scope.WorkspaceID(), nextSequence, endSequence)
+	if err != nil {
+		return auditrecord.Page{}, fmt.Errorf("read policy audit page: %w", err)
+	}
+	defer rows.Close()
+
+	entries := make([]policyAuditEntry, 0, int(endSequence-nextSequence+1))
+	expectedSequence := nextSequence
+	expectedPrevious := previousHash
+	for rows.Next() {
+		var entry policyAuditEntry
+		if err := rows.Scan(&entry.sequence, &entry.format, &entry.recordedAt, &entry.traceID,
+			&entry.workspaceID, &entry.actor, &entry.role, &entry.action, &entry.verb,
+			&entry.verdict, &entry.reasonCode, &entry.eventKind, &entry.evidence,
+			&entry.previousHash, &entry.entryHash); err != nil {
+			return auditrecord.Page{}, fmt.Errorf("scan policy audit page: %w", err)
+		}
+		if entry.sequence != expectedSequence || entry.workspaceID != scope.WorkspaceID() ||
+			len(entry.previousHash) != sha256.Size || len(entry.entryHash) != sha256.Size ||
+			auditHashString(entry.previousHash) != expectedPrevious {
+			return auditrecord.Page{}, fmt.Errorf("policy audit page continuity is invalid at sequence %d", expectedSequence)
+		}
+		if err := validatePolicyAuditEntry(entry); err != nil {
+			return auditrecord.Page{}, fmt.Errorf("policy audit page event is invalid at sequence %d", expectedSequence)
+		}
+		calculated := policyAuditEntryHash(entry)
+		if len(calculated) != sha256.Size || !bytes.Equal(entry.entryHash, calculated) {
+			return auditrecord.Page{}, fmt.Errorf("policy audit page hash is invalid at sequence %d", expectedSequence)
+		}
+		entries = append(entries, entry)
+		expectedPrevious = auditHashString(entry.entryHash)
+		expectedSequence++
+	}
+	if err := rows.Err(); err != nil {
+		return auditrecord.Page{}, fmt.Errorf("iterate policy audit page: %w", err)
+	}
+	if expectedSequence != endSequence+1 || len(entries) != int(endSequence-nextSequence+1) {
+		return auditrecord.Page{}, fmt.Errorf("policy audit page retained range is incomplete")
+	}
+	if endSequence == snapshotHeadSequence && expectedPrevious != snapshotHeadHash {
+		return auditrecord.Page{}, fmt.Errorf("policy audit page head does not match snapshot")
+	}
+	return newPolicyAuditPage(
+		scope.WorkspaceID(), entries, snapshotHeadSequence, snapshotHeadHash, nextSequence, previousHash,
+	)
+}
+
 func readVerifiedPolicyAuditChainTx(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -280,6 +444,41 @@ func newPolicyAuditExport(
 		},
 		Entries: records,
 	}
+}
+
+func newPolicyAuditPage(
+	workspaceID tenancy.WorkspaceID,
+	entries []policyAuditEntry,
+	headSequence int64,
+	headHash string,
+	startSequence int64,
+	previousHash string,
+) (auditrecord.Page, error) {
+	records := make([]auditrecord.Entry, len(entries))
+	for index, entry := range entries {
+		records[index] = portablePolicyAuditEntry(entry)
+	}
+	page := auditrecord.Page{
+		Schema: auditrecord.PageSchemaV1, WorkspaceID: string(workspaceID),
+		Snapshot: auditrecord.Chain{
+			HashAlgorithm: auditrecord.HashAlgorithm, HeadSequence: headSequence, HeadHash: headHash,
+		},
+		StartSequence: startSequence, PreviousHash: previousHash, Entries: records,
+	}
+	endSequence := startSequence + int64(len(records)) - 1
+	if endSequence < headSequence {
+		cursor, err := auditrecord.EncodePageCursor(
+			workspaceID, headSequence, headHash, endSequence+1, records[len(records)-1].EntryHash,
+		)
+		if err != nil {
+			return auditrecord.Page{}, fmt.Errorf("construct policy audit page continuation: %w", err)
+		}
+		page.NextCursor = cursor
+	}
+	if err := page.VerifyForWorkspace(workspaceID); err != nil {
+		return auditrecord.Page{}, fmt.Errorf("construct policy audit page: %w", err)
+	}
+	return page, nil
 }
 
 func auditHashString(value []byte) string {

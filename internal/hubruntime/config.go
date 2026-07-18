@@ -299,6 +299,7 @@ func newRuntimeMux(fleetHandler, auditExportHandler http.Handler, probeHandler *
 	mux.Handle(hubserver.LivenessPath, http.HandlerFunc(probeHandler.ServeLiveness))
 	mux.Handle(hubserver.ReadinessPath, http.HandlerFunc(probeHandler.ServeReadiness))
 	mux.Handle("/v1/workspaces/{workspace}/audit/export", auditExportHandler)
+	mux.Handle("/v1/workspaces/{workspace}/audit/export/pages", auditExportHandler)
 	mux.Handle("/", fleetHandler)
 	return mux, nil
 }

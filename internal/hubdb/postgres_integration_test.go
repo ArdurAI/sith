@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -535,6 +536,70 @@ func assertPolicyAuditChainIntegration(
 	}
 	if oversized, err := database.ExportPolicyAuditChain(ctx, workspaceA); err == nil || oversized.Schema != "" || len(oversized.Entries) != 0 {
 		t.Fatalf("513-entry export/error = %#v/%v", oversized, err)
+	}
+
+	firstRequest, err := auditrecord.FirstPage(workspaceA.WorkspaceID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPage, err := database.ExportPolicyAuditPage(ctx, workspaceA, firstRequest)
+	if err != nil || len(firstPage.Entries) != auditrecord.MaxEntries || firstPage.StartSequence != 1 ||
+		firstPage.Snapshot.HeadSequence != auditrecord.MaxEntries+1 || firstPage.NextCursor == "" {
+		t.Fatalf("first audit page/error = %#v/%v", firstPage, err)
+	}
+	if err := database.Record(ctx, newPolicyAuditEvent(t, workspaceA)); err != nil {
+		t.Fatalf("append after fixed audit snapshot: %v", err)
+	}
+	continuation, err := auditrecord.ContinuePage(workspaceA.WorkspaceID(), firstPage.NextCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalPage, err := database.ExportPolicyAuditPage(ctx, workspaceA, continuation)
+	if err != nil || len(finalPage.Entries) != 1 || finalPage.StartSequence != auditrecord.MaxEntries+1 ||
+		finalPage.Snapshot != firstPage.Snapshot || finalPage.NextCursor != "" {
+		t.Fatalf("final audit page/error = %#v/%v", finalPage, err)
+	}
+	var pageVerifier auditrecord.PageSequenceVerifier
+	if err := pageVerifier.Add(firstPage); err != nil {
+		t.Fatal(err)
+	}
+	if err := pageVerifier.Add(finalPage); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := pageVerifier.Finish(); err != nil || result.Entries != auditrecord.MaxEntries+1 {
+		t.Fatalf("paged PostgreSQL verification = %#v/%v", result, err)
+	}
+	foreignRequest, err := auditrecord.FirstPage("workspace-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExportPolicyAuditPage(ctx, workspaceA, foreignRequest); err == nil {
+		t.Fatal("foreign page request crossed workspace storage boundary")
+	}
+	if _, err := database.ExportPolicyAuditPage(
+		ctx, testScope(t, "user:alice", "workspace-a", tenancy.RoleReader), firstRequest,
+	); err == nil {
+		t.Fatal("reader scope exported an audit page")
+	}
+
+	cursorPayload, err := base64.RawURLEncoding.DecodeString(firstPage.NextCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, offset := range map[string]int{"snapshot head": 41, "previous anchor": len(cursorPayload) - 1} {
+		t.Run("paged export rejects altered "+name, func(t *testing.T) {
+			altered := append([]byte(nil), cursorPayload...)
+			altered[offset] ^= 1
+			request, err := auditrecord.ContinuePage(
+				workspaceA.WorkspaceID(), base64.RawURLEncoding.EncodeToString(altered),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := database.ExportPolicyAuditPage(ctx, workspaceA, request); err == nil {
+				t.Fatal("altered continuation reached a successful page")
+			}
+		})
 	}
 }
 
