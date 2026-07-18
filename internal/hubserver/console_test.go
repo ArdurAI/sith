@@ -37,6 +37,7 @@ func TestConsoleHandlerReadsOnlySignedWorkspaceWithCSRFAndPEP(t *testing.T) {
 		t.Fatal(err)
 	}
 	readerCalled := 0
+	var observed []hubfleet.FleetReadOutcome
 	handler, err := NewConsoleHandler(ConsoleHandlerConfig{
 		Verifier:   verifier,
 		Correlator: noopConsoleCorrelator(t),
@@ -56,7 +57,10 @@ func TestConsoleHandlerReadsOnlySignedWorkspaceWithCSRFAndPEP(t *testing.T) {
 				Coverage: fleet.Coverage{Requested: 4, Reachable: 2, Unreachable: []string{"spoke-c"}, Stale: []string{"spoke-b"}},
 			}, nil
 		}),
-		PEP: enforcer, Now: func() time.Time { return now }, Random: bytes.NewReader(bytes.Repeat([]byte{0x5a}, 192)),
+		PEP: enforcer, ReadObserver: fleetReadObserverFunc(func(outcome hubfleet.FleetReadOutcome) {
+			observed = append(observed, outcome)
+		}),
+		Now: func() time.Time { return now }, Random: bytes.NewReader(bytes.Repeat([]byte{0x5a}, 192)),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -85,6 +89,9 @@ func TestConsoleHandlerReadsOnlySignedWorkspaceWithCSRFAndPEP(t *testing.T) {
 	handler.ServeFleet(response, request)
 	if response.Code != http.StatusOK || readerCalled != 1 || len(audits) != 1 || audits[0].Verb != pep.VerbFleetRead {
 		t.Fatalf("status/reader/audits = %d/%d/%#v body=%q", response.Code, readerCalled, audits, response.Body.String())
+	}
+	if len(observed) != 1 || observed[0] != hubfleet.FleetReadOutcomeDegraded {
+		t.Fatalf("console fleet read observations = %q, want degraded", observed)
 	}
 	assertConsoleSecurityHeaders(t, response.Header())
 	var payload consoleFleetResponse
@@ -275,6 +282,7 @@ func TestConsoleHandlerHidesReaderErrorsAndServesFixedAssets(t *testing.T) {
 	now := time.Date(2026, 7, 17, 11, 0, 0, 0, time.UTC)
 	verifier, privateKey := fleetTestVerifier(t, now)
 	session := signHubTestToken(t, hubValidClaims(now), privateKey)
+	var observed []hubfleet.FleetReadOutcome
 	handler, err := NewConsoleHandler(ConsoleHandlerConfig{
 		Verifier:   verifier,
 		Correlator: noopConsoleCorrelator(t),
@@ -283,7 +291,10 @@ func TestConsoleHandlerHidesReaderErrorsAndServesFixedAssets(t *testing.T) {
 		Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
 			return fleet.FleetResult{}, errors.New("database=secret topology=private")
 		}),
-		PEP: fleetTestPEP(t, pep.AllowReadHook{}), Now: func() time.Time { return now }, Random: bytes.NewReader(bytes.Repeat([]byte{0x41}, 192)),
+		PEP: fleetTestPEP(t, pep.AllowReadHook{}), ReadObserver: fleetReadObserverFunc(func(outcome hubfleet.FleetReadOutcome) {
+			observed = append(observed, outcome)
+		}),
+		Now: func() time.Time { return now }, Random: bytes.NewReader(bytes.Repeat([]byte{0x41}, 192)),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -293,6 +304,9 @@ func TestConsoleHandlerHidesReaderErrorsAndServesFixedAssets(t *testing.T) {
 	handler.ServeFleet(response, validConsoleFleetRequest(session, csrfToken))
 	if response.Code != http.StatusServiceUnavailable || response.Body.String() != "{\"error\":\"fleet_unavailable\"}\n" || strings.Contains(response.Body.String(), "secret") {
 		t.Fatalf("status/body = %d/%q", response.Code, response.Body.String())
+	}
+	if len(observed) != 1 || observed[0] != hubfleet.FleetReadOutcomeError {
+		t.Fatalf("console error observations = %q, want error", observed)
 	}
 
 	for _, asset := range []struct {

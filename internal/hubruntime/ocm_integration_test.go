@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +25,7 @@ import (
 	"github.com/ArdurAI/sith/internal/hubfleet"
 	"github.com/ArdurAI/sith/internal/hubocm"
 	"github.com/ArdurAI/sith/internal/hubserver"
+	"github.com/ArdurAI/sith/internal/observability"
 	"github.com/ArdurAI/sith/internal/pep"
 	"github.com/ArdurAI/sith/internal/tenancy"
 	"github.com/ArdurAI/sith/tests/testutil/ocmlab"
@@ -77,8 +80,12 @@ func TestHubRuntimeDirectClusterProxyM0(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	verifier, privateKey := m0RuntimeVerifier(t, now)
+	metrics, err := observability.New(observability.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler, err := hubserver.NewFleetHandler(hubserver.FleetHandlerConfig{
-		Verifier: verifier, Collector: collector, Reader: store, ImageSearcher: imageSearcher, CVESearcher: cveSearcher, CVEIdentifierSearcher: cveSearcher, PEP: enforcer,
+		Verifier: verifier, Collector: collector, Reader: store, ImageSearcher: imageSearcher, CVESearcher: cveSearcher, CVEIdentifierSearcher: cveSearcher, PEP: enforcer, ReadObserver: metrics,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -124,6 +131,11 @@ func TestHubRuntimeDirectClusterProxyM0(t *testing.T) {
 	}
 	if len(result.Clusters) != 2 || result.Coverage.Requested != 2 || result.Coverage.Reachable != 2 {
 		t.Fatalf("runtime direct fleet = %#v", result)
+	}
+	metricsResponse := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(metricsResponse, httptest.NewRequest(http.MethodGet, "http://metrics.invalid/metrics", nil))
+	if metricsResponse.Code != http.StatusOK || !strings.Contains(metricsResponse.Body.String(), `sith_federation_fleet_read_results_total{outcome="complete"} 1`) {
+		t.Fatalf("runtime fleet read metric status/body = %d/%q", metricsResponse.Code, metricsResponse.Body.String())
 	}
 	digest := m0RuntimeFixtureDigest(t, store)
 	imageResponse := m0RuntimeRequest(t, ctx, client, http.MethodGet, endpoint+"/fleet/images/"+digest, token)

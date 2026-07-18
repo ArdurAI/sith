@@ -2515,6 +2515,13 @@ flowchart TD
 lake. Guardrail: metrics describe Sith's own behavior only; federated health reads stay a bounded
 cache (E2), not a series store.
 
+**Implementation note (F10.1d).** Authorized persisted fleet reads emit one aggregate closed
+coverage result: `complete`, `degraded`, `empty`, or `error`. Coverage inconsistency, result/count
+mismatch, staleness, unreachability, truncation, and unaccounted scopes collapse to `degraded`;
+only an internally consistent zero-scope result is `empty`. The fixed four-series counter has no tenant, spoke,
+resource, selector, identity, trace, age, or raw-error label and uses only the existing opt-in
+loopback scrape boundary. It is SLI substrate, not an SLO target, error budget, or alert.
+
 ### F10.2 — Distributed tracing
 
 **What it is.** Traces that follow an intent's lifecycle across the PEP stages and the hub → spoke

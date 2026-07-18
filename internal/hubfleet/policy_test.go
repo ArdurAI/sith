@@ -36,7 +36,11 @@ func TestHubReadEntrypointsStopBeforeDependenciesWhenPolicyRefuses(t *testing.T)
 	}
 
 	reader := &recordingFleetReader{}
-	source, err := NewSource(SourceConfig{Reader: reader, Scope: scope, PEP: refusal.enforcer(t)})
+	var readObservations int
+	source, err := NewSource(SourceConfig{
+		Reader: reader, Scope: scope, PEP: refusal.enforcer(t),
+		Observer: fleetReadObserverFunc(func(FleetReadOutcome) { readObservations++ }),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,6 +49,9 @@ func TestHubReadEntrypointsStopBeforeDependenciesWhenPolicyRefuses(t *testing.T)
 	}
 	if reader.calls != 0 {
 		t.Fatalf("source reached fleet reader %d times after refusal", reader.calls)
+	}
+	if readObservations != 0 {
+		t.Fatalf("source emitted %d fleet-read observations before authorization", readObservations)
 	}
 
 	querier := &recordingFleetQuerier{}

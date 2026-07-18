@@ -49,6 +49,7 @@ type FleetHandlerConfig struct {
 	CVESearcher           FleetCVESearcher
 	CVEIdentifierSearcher FleetCVEIdentifierSearcher
 	PEP                   *pep.Enforcer
+	ReadObserver          hubfleet.FleetReadObserver
 }
 
 // NewFleetHandler constructs the fixed, authenticated hub read surface.
@@ -87,9 +88,7 @@ func NewFleetHandler(config FleetHandlerConfig) (http.Handler, error) {
 				return
 			}
 			source, err := hubfleet.NewSource(hubfleet.SourceConfig{
-				Reader: config.Reader,
-				Scope:  scope,
-				PEP:    config.PEP,
+				Reader: config.Reader, Scope: scope, PEP: config.PEP, Observer: config.ReadObserver,
 			})
 			if err != nil {
 				writeFleetError(response, http.StatusForbidden, "forbidden")

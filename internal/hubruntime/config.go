@@ -161,6 +161,7 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 	}
 	fleetHandler, err := hubserver.NewFleetHandler(hubserver.FleetHandlerConfig{
 		Verifier: verifier, AuthObserver: authObserver, Collector: collector, Reader: database, ImageSearcher: imageSearcher, CVESearcher: cveSearcher, CVEIdentifierSearcher: cveSearcher, PEP: enforcer,
+		ReadObserver: metrics,
 	})
 	if err != nil {
 		cleanup()
@@ -223,6 +224,7 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		}
 		consoleHandler, err := hubserver.NewConsoleHandler(hubserver.ConsoleHandlerConfig{
 			Verifier: verifier, AuthObserver: authObserver, Reader: database, Correlator: consoleCorrelator, Inventory: consoleInventory, CVE: consoleCVE, PEP: enforcer,
+			ReadObserver: metrics,
 		})
 		if err != nil {
 			cleanup()
