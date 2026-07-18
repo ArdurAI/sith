@@ -167,7 +167,7 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: HTTP handler configuration is invalid")
 	}
-	probeHandler, err := hubserver.NewProbeHandler(database)
+	probeHandler, err := hubserver.NewProbeHandler(hubserver.ProbeHandlerConfig{Checker: database, Observer: metrics})
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: probe handler configuration is invalid")

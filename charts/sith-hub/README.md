@@ -41,6 +41,10 @@ its isolated low-cardinality registry. A same-Pod collector can reach it over `l
 containers in a Pod share a network namespace; that is deliberately a local operational trade-off,
 not a public or tenant-visible metrics endpoint. See the [Kubernetes Pod networking
 documentation](https://kubernetes.io/docs/concepts/workloads/pods/#how-pods-manage-multiple-containers).
+The registry includes fixed `sith_hub_readiness_checks_total{outcome}` and
+`sith_hub_readiness_check_duration_seconds{outcome}` families for completed database-aware
+readiness checks, where `outcome` is only `ready` or `unavailable`. These process-local series carry
+no tenant, spoke, request, endpoint, credential, or raw-error label.
 
 The Hub also starts a restricted same-container child for the one closed authentication-refusal
 record. Sith supplies only an inherited bounded Unix datagram descriptor and stderr: no

@@ -24,20 +24,49 @@ type ReadinessChecker interface {
 	Ping(context.Context) error
 }
 
+// ReadinessOutcome is the closed self-observability result of one completed database readiness
+// check. It deliberately does not distinguish dependency failure classes or carry request data.
+type ReadinessOutcome string
+
+const (
+	// ReadinessOutcomeReady means the application database responded inside the server deadline.
+	ReadinessOutcomeReady ReadinessOutcome = "ready"
+	// ReadinessOutcomeUnavailable collapses errors, cancellation, timeout, and checker panic.
+	ReadinessOutcomeUnavailable ReadinessOutcome = "unavailable"
+)
+
+// Valid reports whether the outcome belongs to the fixed readiness vocabulary.
+func (outcome ReadinessOutcome) Valid() bool {
+	return outcome == ReadinessOutcomeReady || outcome == ReadinessOutcomeUnavailable
+}
+
+// ReadinessObserver records one completed valid readiness dependency check. Implementations must
+// not affect probe behavior; ProbeHandler recovers observer panics at the instrumentation seam.
+type ReadinessObserver interface {
+	ObserveReadiness(ReadinessOutcome, time.Duration)
+}
+
+// ProbeHandlerConfig supplies the required dependency and optional self-observability sink.
+type ProbeHandlerConfig struct {
+	Checker  ReadinessChecker
+	Observer ReadinessObserver
+}
+
 // ProbeHandler exposes fixed, body-free liveness and readiness responses. It deliberately does
 // not authenticate because the kubelet has no Hub identity, and it never reveals dependency or
 // error details.
 type ProbeHandler struct {
-	checker ReadinessChecker
-	timeout time.Duration
+	checker  ReadinessChecker
+	observer ReadinessObserver
+	timeout  time.Duration
 }
 
 // NewProbeHandler constructs the Hub probe boundary over its required application database.
-func NewProbeHandler(checker ReadinessChecker) (*ProbeHandler, error) {
-	if checker == nil {
+func NewProbeHandler(config ProbeHandlerConfig) (*ProbeHandler, error) {
+	if config.Checker == nil {
 		return nil, fmt.Errorf("construct hub probes: readiness checker is required")
 	}
-	return &ProbeHandler{checker: checker, timeout: readinessTimeout}, nil
+	return &ProbeHandler{checker: config.Checker, observer: config.Observer, timeout: readinessTimeout}, nil
 }
 
 // ServeLiveness reports only whether the Hub HTTP process can serve this exact request. Required
@@ -61,11 +90,16 @@ func (handler *ProbeHandler) ServeReadiness(response http.ResponseWriter, reques
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), handler.timeout)
 	defer cancel()
-	if !dependencyReady(ctx, handler.checker) {
-		writeProbeStatus(response, http.StatusServiceUnavailable)
-		return
+	started := time.Now()
+	ready := dependencyReady(ctx, handler.checker)
+	outcome := ReadinessOutcomeUnavailable
+	status := http.StatusServiceUnavailable
+	if ready {
+		outcome = ReadinessOutcomeReady
+		status = http.StatusNoContent
 	}
-	writeProbeStatus(response, http.StatusNoContent)
+	observeReadiness(handler.observer, outcome, time.Since(started))
+	writeProbeStatus(response, status)
 }
 
 func validProbeRequest(request *http.Request, path string) bool {
@@ -80,6 +114,16 @@ func dependencyReady(ctx context.Context, checker ReadinessChecker) (ready bool)
 		}
 	}()
 	return checker.Ping(ctx) == nil
+}
+
+func observeReadiness(observer ReadinessObserver, outcome ReadinessOutcome, duration time.Duration) {
+	if observer == nil {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	observer.ObserveReadiness(outcome, duration)
 }
 
 func writeProbeStatus(response http.ResponseWriter, status int) {

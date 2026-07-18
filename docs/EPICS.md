@@ -2522,6 +2522,14 @@ only an internally consistent zero-scope result is `empty`. The fixed four-serie
 resource, selector, identity, trace, age, or raw-error label and uses only the existing opt-in
 loopback scrape boundary. It is SLI substrate, not an SLO target, error budget, or alert.
 
+**Implementation note (F10.1e).** Each valid completed Hub database readiness check emits one
+fixed `ready|unavailable` attempt and latency observation through the existing isolated loopback
+registry. Dependency errors, deadline expiry, caller cancellation, and recovered checker panic
+collapse to `unavailable`; invalid requests emit nothing and invalid observation values are
+discarded. The two preinitialized outcome series carry no tenant, spoke, request, endpoint,
+credential, error, or panic detail. Instrumentation is panic-isolated from the body-free probe and
+adds no listener, Service, exporter, persistence, remote write, or cloud resource.
+
 ### F10.2 — Distributed tracing
 
 **What it is.** Traces that follow an intent's lifecycle across the PEP stages and the hub → spoke
