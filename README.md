@@ -328,13 +328,22 @@ appears after a durable success. Operators can build failure-rate and latency si
 `histogram_quantile(0.95, sum by (le, sink)
 (rate(sith_policy_audit_duration_seconds_bucket[5m])))`. These fixed series add no listener,
 exporter, persistence, or tenant-proportional cardinality beyond the existing opt-in metrics path.
+Each authorized persisted fleet read also increments exactly one
+`sith_federation_fleet_read_results_total{outcome}` series. `outcome` is the closed vocabulary
+`complete`, `degraded`, `empty`, or `error`: internally inconsistent or incomplete coverage and a
+result/coverage count mismatch are always `degraded`, and only a consistent zero-scope result is
+`empty`. The observer runs after PEP
+authorization, carries no workspace, spoke, resource, selector, principal, trace, age, or raw-error
+label, and is panic-isolated from read behavior. This fixed four-series counter is an F10.1d
+coverage-SLI substrate; it is not a read-freshness objective or error-budget policy.
 The portable [hub alert rules](monitoring/sith-hub.rules.yml) turn the established audit, auth-log
 delivery, and aggregate snapshot failure signals into three bounded, fixture-tested alerts; the
 [runbook](docs/runbooks/hub-alerts.md) documents installation and response. Load the rule file only
 after arranging an operator-owned same-Pod scrape/forwarding path. Sith does not render a Service,
 ServiceMonitor, PrometheusRule, Alertmanager receiver, exporter, or remote-write configuration.
 These rules are an F10.4a baseline, not read-freshness, dispatch-success, or PDP-latency SLOs or
-error budgets; those require production signals that do not exist yet.
+error budgets. The aggregate fleet-read outcome signal now exists, but its target, budget, and
+alert policy still require a separately reviewed F10.4 follow-up; the other signals remain absent.
 Chain verification detects retained-row edits,
 deletion, reordering, broken links, and head mismatch. It does not make a WORM or non-repudiation
 claim: detecting wholesale replacement by a privileged database owner requires a later externally

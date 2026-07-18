@@ -66,6 +66,7 @@ type ConsoleHandlerConfig struct {
 	Inventory    *hubfleet.InventorySearcher
 	CVE          *hubfleet.CVESearcher
 	PEP          *pep.Enforcer
+	ReadObserver hubfleet.FleetReadObserver
 	CSRFLifetime time.Duration
 	Now          func() time.Time
 	Random       io.Reader
@@ -80,6 +81,7 @@ type ConsoleHandler struct {
 	inventory    *hubfleet.InventorySearcher
 	cve          *hubfleet.CVESearcher
 	pep          *pep.Enforcer
+	readObserver hubfleet.FleetReadObserver
 	csrfLifetime time.Duration
 	now          func() time.Time
 	random       io.Reader
@@ -183,7 +185,7 @@ func NewConsoleHandler(config ConsoleHandlerConfig) (*ConsoleHandler, error) {
 	}
 	handler := &ConsoleHandler{
 		verifier: config.Verifier, authObserver: config.AuthObserver, reader: config.Reader, correlator: config.Correlator, inventory: config.Inventory, cve: config.CVE, pep: config.PEP,
-		csrfLifetime: config.CSRFLifetime, now: config.Now, random: config.Random, page: page, assets: assets,
+		readObserver: config.ReadObserver, csrfLifetime: config.CSRFLifetime, now: config.Now, random: config.Random, page: page, assets: assets,
 	}
 	if _, err := io.ReadFull(handler.random, handler.csrfKey[:]); err != nil {
 		return nil, fmt.Errorf("construct Hub console: CSRF key generation failed")
@@ -252,7 +254,9 @@ func (handler *ConsoleHandler) ServeFleet(response http.ResponseWriter, request 
 		writeConsoleError(response, http.StatusForbidden, "forbidden")
 		return
 	}
-	source, err := hubfleet.NewSource(hubfleet.SourceConfig{Reader: handler.reader, Scope: scope, PEP: handler.pep})
+	source, err := hubfleet.NewSource(hubfleet.SourceConfig{
+		Reader: handler.reader, Scope: scope, PEP: handler.pep, Observer: handler.readObserver,
+	})
 	if err != nil {
 		writeConsoleError(response, http.StatusForbidden, "forbidden")
 		return

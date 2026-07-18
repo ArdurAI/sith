@@ -18,11 +18,40 @@ type FleetReader interface {
 	ReadFleet(ctx context.Context, scope tenancy.Scope, freshness time.Duration, now time.Time) (fleet.FleetResult, error)
 }
 
+// FleetReadOutcome is the bounded self-observability result of one authorized fleet read. It
+// intentionally carries no workspace, spoke, resource, selector, principal, trace, or raw error.
+type FleetReadOutcome string
+
+// Closed fleet-read outcomes.
+const (
+	FleetReadOutcomeComplete FleetReadOutcome = "complete"
+	FleetReadOutcomeDegraded FleetReadOutcome = "degraded"
+	FleetReadOutcomeEmpty    FleetReadOutcome = "empty"
+	FleetReadOutcomeError    FleetReadOutcome = "error"
+)
+
+// Valid reports whether the outcome belongs to the closed fleet-read vocabulary.
+func (outcome FleetReadOutcome) Valid() bool {
+	switch outcome {
+	case FleetReadOutcomeComplete, FleetReadOutcomeDegraded, FleetReadOutcomeEmpty, FleetReadOutcomeError:
+		return true
+	default:
+		return false
+	}
+}
+
+// FleetReadObserver receives one passive result for an authorized fleet read. Implementations
+// must not block or mutate read behavior; Source isolates observer panics defensively.
+type FleetReadObserver interface {
+	ObserveFleetRead(FleetReadOutcome)
+}
+
 // SourceConfig fixes a signed tenancy scope to a source-abstract hub reader.
 type SourceConfig struct {
 	Reader    FleetReader
 	Scope     tenancy.Scope
 	PEP       *pep.Enforcer
+	Observer  FleetReadObserver
 	Freshness time.Duration
 	Now       func() time.Time
 }
@@ -32,6 +61,7 @@ type Source struct {
 	reader    FleetReader
 	scope     tenancy.Scope
 	pep       *pep.Enforcer
+	observer  FleetReadObserver
 	freshness time.Duration
 	now       func() time.Time
 }
@@ -55,7 +85,10 @@ func NewSource(config SourceConfig) (*Source, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	return &Source{reader: config.Reader, scope: config.Scope, pep: config.PEP, freshness: config.Freshness, now: config.Now}, nil
+	return &Source{
+		reader: config.Reader, scope: config.Scope, pep: config.PEP, observer: config.Observer,
+		freshness: config.Freshness, now: config.Now,
+	}, nil
 }
 
 // Kind identifies OCM-brokered spoke snapshots at the common fleet.Source seam.
@@ -76,7 +109,27 @@ func (source *Source) Fleet(ctx context.Context) (fleet.FleetResult, error) {
 	}
 	result, err := source.reader.ReadFleet(ctx, source.scope, source.freshness, source.now().UTC())
 	if err != nil {
+		source.observeFleetRead(FleetReadOutcomeError)
 		return fleet.FleetResult{}, fmt.Errorf("read OCM spoke fleet: %w", err)
 	}
+	assessment := result.Coverage.Assessment()
+	switch {
+	case !assessment.Complete || len(result.Clusters) != result.Coverage.Requested:
+		source.observeFleetRead(FleetReadOutcomeDegraded)
+	case result.Coverage.Requested == 0:
+		source.observeFleetRead(FleetReadOutcomeEmpty)
+	default:
+		source.observeFleetRead(FleetReadOutcomeComplete)
+	}
 	return result, nil
+}
+
+func (source *Source) observeFleetRead(outcome FleetReadOutcome) {
+	if source == nil || source.observer == nil || !outcome.Valid() {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	source.observer.ObserveFleetRead(outcome)
 }

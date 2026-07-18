@@ -64,10 +64,17 @@ var _ FleetImageSearcher = fleetImageSearcherFunc(nil)
 var _ FleetCVESearcher = fleetImageSearcherFunc(nil)
 var _ FleetCVEIdentifierSearcher = fleetCVEIdentifierSearcherFunc(nil)
 
+type fleetReadObserverFunc func(hubfleet.FleetReadOutcome)
+
+func (function fleetReadObserverFunc) ObserveFleetRead(outcome hubfleet.FleetReadOutcome) {
+	function(outcome)
+}
+
 func TestFleetHandlerRefreshUsesOnlySignedWorkspaceScope(t *testing.T) {
 	now := time.Date(2026, 7, 14, 7, 0, 0, 0, time.UTC)
 	verifier, privateKey := fleetTestVerifier(t, now)
 	called := false
+	var observed []hubfleet.FleetReadOutcome
 	handler, err := NewFleetHandler(FleetHandlerConfig{
 		Verifier: verifier,
 		Collector: fleetRefresherFunc(func(_ context.Context, scope tenancy.Scope) (fleet.Coverage, error) {
@@ -89,6 +96,9 @@ func TestFleetHandlerRefreshUsesOnlySignedWorkspaceScope(t *testing.T) {
 			return fleet.QueryResult{}, nil
 		}),
 		PEP: fleetTestPEP(t, pep.AllowReadHook{}),
+		ReadObserver: fleetReadObserverFunc(func(outcome hubfleet.FleetReadOutcome) {
+			observed = append(observed, outcome)
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +112,9 @@ func TestFleetHandlerRefreshUsesOnlySignedWorkspaceScope(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("refresh collector was not called")
+	}
+	if len(observed) != 0 {
+		t.Fatalf("refresh emitted fleet-read observations = %q", observed)
 	}
 	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Pragma") != "no-cache" {
 		t.Fatalf("refresh response caching headers = Cache-Control %q, Pragma %q", response.Header().Get("Cache-Control"), response.Header().Get("Pragma"))
@@ -182,6 +195,7 @@ func TestFleetHandlerReadConstructsRequestScopedSource(t *testing.T) {
 	now := time.Date(2026, 7, 14, 7, 0, 0, 0, time.UTC)
 	verifier, privateKey := fleetTestVerifier(t, now)
 	called := false
+	var observed []hubfleet.FleetReadOutcome
 	handler, err := NewFleetHandler(FleetHandlerConfig{
 		Verifier: verifier,
 		Collector: fleetRefresherFunc(func(context.Context, tenancy.Scope) (fleet.Coverage, error) {
@@ -206,6 +220,9 @@ func TestFleetHandlerReadConstructsRequestScopedSource(t *testing.T) {
 			return fleet.QueryResult{}, nil
 		}),
 		PEP: fleetTestPEP(t, pep.AllowReadHook{}),
+		ReadObserver: fleetReadObserverFunc(func(outcome hubfleet.FleetReadOutcome) {
+			observed = append(observed, outcome)
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -217,6 +234,9 @@ func TestFleetHandlerReadConstructsRequestScopedSource(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("fleet reader was not called")
+	}
+	if len(observed) != 1 || observed[0] != hubfleet.FleetReadOutcomeComplete {
+		t.Fatalf("fleet read observations = %q, want complete", observed)
 	}
 	var result fleet.FleetResult
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {

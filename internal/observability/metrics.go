@@ -42,13 +42,15 @@ type Metrics struct {
 	policyAuditDuration *prometheus.HistogramVec
 	snapshotAttempts    *prometheus.CounterVec
 	snapshotDuration    *prometheus.HistogramVec
+	fleetReadResults    *prometheus.CounterVec
 	authDeliveryDrops   prometheus.Counter
 }
 
 var (
-	_ pep.DecisionObserver      = (*Metrics)(nil)
-	_ pep.AuditObserver         = (*Metrics)(nil)
-	_ hubfleet.SnapshotObserver = (*Metrics)(nil)
+	_ pep.DecisionObserver       = (*Metrics)(nil)
+	_ pep.AuditObserver          = (*Metrics)(nil)
+	_ hubfleet.SnapshotObserver  = (*Metrics)(nil)
+	_ hubfleet.FleetReadObserver = (*Metrics)(nil)
 )
 
 // New constructs metrics against a caller-owned or fresh isolated registry. Registration errors
@@ -88,6 +90,10 @@ func New(config Config) (*Metrics, error) {
 			Namespace: "sith", Subsystem: "federation", Name: "spoke_snapshot_duration_seconds",
 			Help: "Duration of completed Sith federated spoke snapshot attempts by closed outcome.",
 		}, []string{"outcome"}),
+		fleetReadResults: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "sith", Subsystem: "federation", Name: "fleet_read_results_total",
+			Help: "Total authorized Sith federated fleet reads by closed coverage outcome.",
+		}, []string{"outcome"}),
 		authDeliveryDrops: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "sith", Subsystem: "auth", Name: "refusal_delivery_drops_total",
 			Help: "Total dropped bounded local authentication-refusal delivery records.",
@@ -102,7 +108,7 @@ func New(config Config) (*Metrics, error) {
 	})
 	buildInfo.Set(1)
 
-	registered := make([]prometheus.Collector, 0, 10)
+	registered := make([]prometheus.Collector, 0, 11)
 	for _, collector := range []struct {
 		name      string
 		collector prometheus.Collector
@@ -116,6 +122,7 @@ func New(config Config) (*Metrics, error) {
 		{name: "policy audit duration", collector: metrics.policyAuditDuration},
 		{name: "snapshot attempts", collector: metrics.snapshotAttempts},
 		{name: "snapshot duration", collector: metrics.snapshotDuration},
+		{name: "fleet read results", collector: metrics.fleetReadResults},
 		{name: "authentication-refusal delivery drops", collector: metrics.authDeliveryDrops},
 	} {
 		if err := registry.Register(collector.collector); err != nil {
@@ -131,6 +138,14 @@ func New(config Config) (*Metrics, error) {
 			metrics.policyAuditAttempts.WithLabelValues(string(sink), string(outcome))
 			metrics.policyAuditDuration.WithLabelValues(string(sink), string(outcome))
 		}
+	}
+	for _, outcome := range []hubfleet.FleetReadOutcome{
+		hubfleet.FleetReadOutcomeComplete,
+		hubfleet.FleetReadOutcomeDegraded,
+		hubfleet.FleetReadOutcomeEmpty,
+		hubfleet.FleetReadOutcomeError,
+	} {
+		metrics.fleetReadResults.WithLabelValues(string(outcome))
 	}
 
 	return metrics, nil
@@ -179,6 +194,15 @@ func (metrics *Metrics) ObserveSpokeSnapshot(outcome hubfleet.SnapshotOutcome, d
 	outcomeLabel := normalizedSnapshotOutcome(outcome)
 	metrics.snapshotAttempts.WithLabelValues(outcomeLabel).Inc()
 	metrics.snapshotDuration.WithLabelValues(outcomeLabel).Observe(normalizedDuration(duration))
+}
+
+// ObserveFleetRead records one authorized fleet read using only the closed coverage-outcome
+// vocabulary. It intentionally omits every tenant-proportional or caller-controlled dimension.
+func (metrics *Metrics) ObserveFleetRead(outcome hubfleet.FleetReadOutcome) {
+	if metrics == nil || metrics.fleetReadResults == nil {
+		return
+	}
+	metrics.fleetReadResults.WithLabelValues(normalizedFleetReadOutcome(outcome)).Inc()
 }
 
 // ObserveAuthRefusalDeliveryDrop records one bounded process-local delivery drop. It carries no
@@ -232,6 +256,13 @@ func normalizedSnapshotOutcome(outcome hubfleet.SnapshotOutcome) string {
 	default:
 		return string(hubfleet.SnapshotOutcomeStoreError)
 	}
+}
+
+func normalizedFleetReadOutcome(outcome hubfleet.FleetReadOutcome) string {
+	if outcome.Valid() {
+		return string(outcome)
+	}
+	return string(hubfleet.FleetReadOutcomeError)
 }
 
 func normalizedDuration(duration time.Duration) float64 {

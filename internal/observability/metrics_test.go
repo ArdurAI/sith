@@ -28,6 +28,8 @@ func TestMetricsExposeOnlyBoundedSelfObservability(t *testing.T) {
 	metrics.ObservePolicyAudit(pep.AuditSink("workspace-a/token=secret"), pep.AuditOutcome("untrusted"), time.Second)
 	metrics.ObserveSpokeSnapshot(hubfleet.SnapshotOutcomeSuccess, 25*time.Millisecond)
 	metrics.ObserveSpokeSnapshot(hubfleet.SnapshotOutcome("spoke-a/token=secret"), -time.Second)
+	metrics.ObserveFleetRead(hubfleet.FleetReadOutcomeComplete)
+	metrics.ObserveFleetRead(hubfleet.FleetReadOutcome("workspace-a/token=secret"))
 	metrics.ObserveAuthRefusalDeliveryDrop()
 
 	response := httptest.NewRecorder()
@@ -48,6 +50,10 @@ func TestMetricsExposeOnlyBoundedSelfObservability(t *testing.T) {
 		`sith_policy_audit_attempts_total{outcome="error",sink="process"} 1`,
 		"sith_federation_spoke_snapshot_attempts_total",
 		"sith_federation_spoke_snapshot_duration_seconds",
+		`sith_federation_fleet_read_results_total{outcome="complete"} 1`,
+		`sith_federation_fleet_read_results_total{outcome="degraded"} 0`,
+		`sith_federation_fleet_read_results_total{outcome="empty"} 0`,
+		`sith_federation_fleet_read_results_total{outcome="error"} 1`,
 		"sith_auth_refusal_delivery_drops_total 1",
 		`verb="fleet.read"`,
 		`verb="invalid"`,
@@ -97,10 +103,10 @@ func TestMetricsUseIndependentRegistriesAndNormalizeBuildLabels(t *testing.T) {
 
 func TestMetricsRejectDuplicateRegistrations(t *testing.T) {
 	registry := prometheus.NewPedanticRegistry()
-	conflicting := prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "sith", Subsystem: "policy", Name: "audit_duration_seconds",
-		Help: "Duration of completed Sith policy-audit sink attempts by closed sink and outcome.",
-	}, []string{"sink", "outcome"})
+	conflicting := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "sith", Subsystem: "federation", Name: "fleet_read_results_total",
+		Help: "Total authorized Sith federated fleet reads by closed coverage outcome.",
+	}, []string{"outcome"})
 	if err := registry.Register(conflicting); err != nil {
 		t.Fatal(err)
 	}
@@ -139,6 +145,7 @@ func assertSithMetricLabels(t *testing.T, metrics *Metrics) {
 		"sith_policy_audit_duration_seconds":              {"outcome": true, "sink": true},
 		"sith_federation_spoke_snapshot_attempts_total":   {"outcome": true},
 		"sith_federation_spoke_snapshot_duration_seconds": {"outcome": true},
+		"sith_federation_fleet_read_results_total":        {"outcome": true},
 		"sith_auth_refusal_delivery_drops_total":          {},
 	}
 	for _, family := range families {
