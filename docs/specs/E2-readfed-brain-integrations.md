@@ -472,8 +472,8 @@ hub). Weights are indicative, to be tuned against real incidents.
 ---
 
 **Future adjacent rules (same pattern, add as coverage lands):** `FailingDependency`
-(mesh/trace-driven), `Pipeline/SyncFailure` (Argo/CI), `HPA-thrash`, and
-`PVC-full / volume-bind`. The schema in §3.3 admits them without change.
+(mesh/trace-driven), CI-specific pipeline failure, `HPA-thrash`, and `PVC-full / volume-bind`.
+The schema in §3.3 admits them without change.
 
 **Implemented adjacent rule R7 (2026-07-18):** R7 consumes only the existing sanitized LIVE
 `pod.reason` projection and matches exact, case-insensitive `ImagePullBackOff` or `ErrImagePull`.
@@ -484,6 +484,21 @@ It cites the single Pod observation and emits only a sensitive-marked, read-only
 Event message, or raw payload and performs no probe, connector call, write, governed-plan handoff,
 or fleet-wide correlation. Stale or unavailable LIVE evidence produces an `unconfirmed` verdict
 with the LIVE gap named.
+
+**Implemented adjacent rule R8 (2026-07-18):** R8 completes only the Argo half of the earlier
+`Pipeline/SyncFailure` candidate. It consumes an attached, workspace-valid TIMELINE `FactChange`
+from the bounded Argo CD `1.0.0` projector when `change_kind=sync-failed`, operation phase is
+`Failed` or `Error`, source/provenance/entity identity agrees, and payload event time equals the
+fact observation time. The bridge emits only canonical `change.kind=sync-failed`; it discards the
+revision and all raw payload fields and copies explicit caller coverage without inferring it.
+`OutOfSync`, degraded health, successful/running operations, arbitrary strings, malformed or
+ambiguous facts, and unrelated connector changes do not prove R8. The hypothesis states only that
+Argo reported a failed operation, remains uncertain among rendering, validation, authorization,
+hook, network, Kubernetes API, resource, and other causes, and offers only a sensitive-marked,
+read-only `kubectl describe application.argoproj.io` advisory. R8 performs no Argo fetch, client
+call, storage, alert, SLO, typed intent, PEP handoff, dispatch, mutation, execution, or fleet
+correlation. The cache-backed local CLI cannot produce R8 until a future reader supplies validated
+Argo graph facts and explicit TIMELINE coverage; CI-specific pipeline failure remains future work.
 
 ### 3.5 Rule composition and arbitration
 
@@ -721,9 +736,9 @@ the plan-renderer forks.
    "what changed recently" useful without drifting toward a store. Recommendation: a small fixed
    window (e.g. last N events / last 24–72h), tuned against real incidents; explicitly *not* a series.
 4. **Rule weights and thresholds.** The §3.4 weights are indicative. A versioned, synthetic replay
-   harness in `internal/brain/testdata/replays` now guards the six canonical rules, coverage
-   abstention, cause chaining, and safe fleet correlation. Future tuning should add sanitized incident
-   shapes to that corpus and preserve its exact expected verdict contract.
+   harness in `internal/brain/testdata/replays` now guards the six canonical rules, adjacent R7/R8,
+   coverage abstention, cause chaining, and safe fleet correlation. Future tuning should add
+   sanitized incident shapes to that corpus and preserve its exact expected verdict contract.
 5. **Cross-cluster remediation surface for node/cluster-level causes (R6).** Node/nodegroup/autoscaler
    actions are outside the v1 closed vocabulary — kept advisory now. Whether/when to add a
    cloud-scoped typed verb is a later E4 decision.

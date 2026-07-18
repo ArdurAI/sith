@@ -24,6 +24,7 @@ const (
 	RuleCertExpiry   RuleID = "R5"
 	RuleNodePressure RuleID = "R6"
 	RuleImagePull    RuleID = "R7"
+	RuleArgoSyncFail RuleID = "R8"
 )
 
 // Status is the confidence state of a verdict.

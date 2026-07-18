@@ -24,10 +24,10 @@ bare workload name.
 1. `internal/brain` consumes a closed normalized observation envelope: entity reference, evidence
    lens, key, value, source, time, and staleness. It performs no I/O. Kubernetes decoding stays in
    `fleetcache`; cache-to-rule projection stays in one adapter.
-2. The catalog contains stable canonical R1-R6 rules plus the bounded adjacent R7 image-pull
-   symptom rule. Matching is exact and deterministic. Verdict ordering is fleet-wide correlation,
-   score, rule ID, then scope. R1 can compose as the cause of R3 when a recent change and repeated
-   failure are attached to the same entity.
+2. The catalog contains stable canonical R1-R6 rules plus bounded adjacent R7 image-pull and R8
+   Argo sync-operation failure rules. Matching is exact and deterministic. Verdict ordering is
+   fleet-wide correlation, score, rule ID, then scope. R1 can compose as the cause of R3 when a
+   recent change and repeated failure are attached to the same entity.
 3. Required and strengthening lenses are checked per entity. Fleet-level connector availability
    cannot satisfy a workload's evidence gate. Missing or stale required evidence yields
    `unconfirmed`; missing variant evidence yields `detected` plus named missing lenses.
@@ -57,6 +57,29 @@ and `kubectl describe pod` is the documented inspection surface. See the upstrea
 [Pod lifecycle](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#container-states)
 and [Pod debugging](https://kubernetes.io/docs/tasks/debug/debug-application/debug-pods/) guides.
 
+### 2026-07-18 extension: adjacent R8 Argo sync-operation failure
+
+R8 consumes the already-reviewed graph contract rather than raw Argo CRDs. `FromGraphFacts`
+first validates the workspace-bounded graph and then admits only an attached TIMELINE
+`FactChange` whose source kind and provenance adapter are `argocd`, protocol is `1.0.0`, and source
+and entity identify the same Application. Its closed payload must pair `change_kind=sync-failed`
+with operation phase `Failed` or `Error`, and its event time must equal the fact observation time.
+Only canonical `change.kind=sync-failed` enters the evaluator; revision, repository, messages,
+conditions, raw CRD data, and operation payload fields are discarded.
+
+Graph projection copies caller-declared lens coverage but never infers it from fact presence.
+Missing, unavailable, stale, or observation-stale TIMELINE evidence therefore produces an
+`unconfirmed` R8 verdict. `OutOfSync` is desired-state drift and is not a failed-operation signal.
+R8 states only that Argo CD reported a failed operation and leaves rendering, validation,
+authorization, hooks, networking, Kubernetes API, resource, and other causes unresolved. Its only
+advisory is a sensitive-marked, read-only `kubectl describe application.argoproj.io` command.
+
+This boundary follows Argo CD's stable notification trigger, where failed synchronization is
+defined by `app.status?.operationState.phase` being `Error` or `Failed`, and the stable catalog's
+`on-sync-failed` operation-failure contract. See the upstream
+[notification triggers](https://argo-cd.readthedocs.io/en/stable/operator-manual/notifications/triggers/)
+and [notification catalog](https://argo-cd.readthedocs.io/en/stable/operator-manual/notifications/catalog/).
+
 ## Consequences
 
 - Investigations are offline, reproducible, replayable, and inspectable. The same observation
@@ -65,8 +88,11 @@ and [Pod debugging](https://kubernetes.io/docs/tasks/debug/debug-application/deb
   telemetry-dependent cause variant. This is intentionally less confident than an opaque guess.
 - Phase L does not auto-port-forward to Prometheus/Loki, retain telemetry series, read Git desired
   state, or infer absent evidence. Those connectors can later emit the same observation contract.
+- The existing cache-backed CLI does not fetch Argo Applications. R8 is available only to callers
+  that already possess validated graph facts and explicitly declare TIMELINE coverage.
 - There is no hosted or cloud cost. Runtime cost is one existing tier-1 hydration pass plus
-  in-memory rule evaluation over the returned records. No extra Kubernetes watch is introduced.
+  in-memory rule evaluation over the returned records or an existing bounded graph. No extra
+  Kubernetes watch, Argo request, storage, or network egress is introduced.
 - Advisory strings are not shell execution. Operators remain responsible for reviewing and
   running a suggestion with their own kubeconfig identity.
 

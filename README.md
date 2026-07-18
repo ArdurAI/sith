@@ -556,10 +556,24 @@ node pressure, and exact `ImagePullBackOff`/`ErrImagePull` detection. R7 proves 
 failure or backoff, not registry authentication, an invalid reference, reachability, rate limiting,
 platform mismatch, or another underlying cause. Its sensitive-marked advisory is only a read-only
 `kubectl describe pod` command; it retains no image reference, registry credential, Secret, Event
-message, or raw payload. Every verdict includes its rule, exact cited signals, confidence state,
-missing lenses, and an advisory command or PR change for the operator to inspect and run. The brain
-performs no I/O and imports no connector planning, execution, intent, PEP, MCP, or local-operation
-path.
+message, or raw payload.
+
+The brain package also exposes adjacent R8 to callers that already hold reviewed Argo CD graph
+facts. R8 fails closed unless an attached, workspace-valid Application TIMELINE `FactChange` has
+exact `argocd` source and provenance, protocol `1.0.0`, matching source/entity identity, a closed
+payload with consistent failure kind and phase, an exact event time, and explicit caller-supplied
+coverage. Only operation phase `Failed` or `Error` is accepted; missing or mismatched evidence,
+`OutOfSync`, health, and successful or running operations do not prove failure. R8 discards the
+revision and raw source payload, reports only that Argo recorded a failed operation, and offers the
+sensitive read-only advisory
+`kubectl --context {context} describe application.argoproj.io {name} -n {namespace}`. The
+cache-backed `sith investigate` command does not fetch Argo Applications or infer Argo coverage,
+so R8 appears there only after a future reader supplies the same validated graph evidence and
+explicit TIMELINE coverage.
+
+Every verdict includes its rule, exact cited signals, confidence state, missing lenses, and an
+advisory command or PR change for the operator to inspect and run. The brain performs no I/O and
+imports no connector planning, execution, intent, PEP, MCP, or local-operation path.
 
 Phase-L kubeconfig hydration supplies LIVE pod/workload/node evidence and discrete Kubernetes
 Events for TIMELINE when present. DESIRED and TELEMETRY remain unavailable unless a future
@@ -567,8 +581,8 @@ connector supplies entity-attached facts. Consequently, an OOM or repeated failu
 from LIVE evidence while its leak/spike/log-cause variant remains explicitly unconfirmed. A stale
 or missing required lens downgrades the dependent verdict rather than being treated as negative
 evidence. For correlation-eligible canonical rules, identical unhealthy image digests on two or
-more contexts produce a fleet-wide verdict ahead of per-cluster findings; adjacent R7 remains
-entity-local. Advisory output never executes or dispatches anything.
+more contexts produce a fleet-wide verdict ahead of per-cluster findings; adjacent R7 and R8
+remain entity-local. Advisory output never executes or dispatches anything.
 
 Initial list-watch hydration is a complete, consistent snapshot rather than a bounded prefix: each
 scope and kind uses 250-object pages under one request deadline, with hard limits of 10,000 objects

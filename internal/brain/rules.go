@@ -15,6 +15,9 @@ type rule struct {
 	id           RuleID
 	failureMode  string
 	rootCause    string
+	sourceKind   string
+	resourceKind string
+	exactTrigger bool
 	trigger      predicate
 	signals      []predicate
 	required     []fleet.Lens
@@ -69,5 +72,13 @@ var catalog = []rule{
 		trigger:  predicate{fleet.LensLive, "pod.reason", []string{"imagepullbackoff", "errimagepull"}, 3},
 		required: []fleet.Lens{fleet.LensLive},
 		advisory: Advisory{Command: "kubectl --context {context} describe pod {name} -n {namespace}", Sensitive: true},
+	},
+	{
+		id: RuleArgoSyncFail, failureMode: "Argo CD sync failure", rootCause: "Argo CD reports that the Application sync operation failed; the normalized operation phase does not identify whether the underlying cause is rendering, validation, authorization, a hook, network access, the Kubernetes API, a resource, or another failure",
+		sourceKind: argoGraphSource, resourceKind: "Application",
+		exactTrigger: true,
+		trigger:      predicate{fleet.LensTimeline, "change.kind", []string{"sync-failed"}, 3},
+		required:     []fleet.Lens{fleet.LensTimeline},
+		advisory:     Advisory{Command: "kubectl --context {context} describe application.argoproj.io {name} -n {namespace}", Sensitive: true},
 	},
 }

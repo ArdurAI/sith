@@ -51,7 +51,8 @@ func compose(verdicts []Verdict) []Verdict {
 }
 
 func evaluateRule(candidate rule, observations []Observation, coverage map[fleet.Lens]LensCoverage) (Verdict, bool) {
-	trigger, ok := match(candidate.trigger, observations)
+	observations = candidate.applicableObservations(observations)
+	trigger, ok := match(candidate.trigger, observations, candidate.exactTrigger)
 	if !ok {
 		return Verdict{}, false
 	}
@@ -63,7 +64,7 @@ func evaluateRule(candidate rule, observations []Observation, coverage map[fleet
 	verdict.Citations = append(verdict.Citations, citation(candidate.trigger, trigger))
 	verdict.Score += candidate.trigger.weight
 	for _, signal := range candidate.signals {
-		if observation, found := match(signal, observations); found {
+		if observation, found := match(signal, observations, false); found {
 			verdict.Citations = append(verdict.Citations, citation(signal, observation))
 			verdict.Score += signal.weight
 		}
@@ -87,7 +88,27 @@ func evaluateRule(candidate rule, observations []Observation, coverage map[fleet
 	return verdict, true
 }
 
-func match(predicate predicate, observations []Observation) (Observation, bool) {
+func (candidate rule) applicableObservations(observations []Observation) []Observation {
+	if candidate.sourceKind == "" && candidate.resourceKind == "" {
+		return observations
+	}
+	filtered := make([]Observation, 0, len(observations))
+	for _, observation := range observations {
+		if candidate.appliesTo(observation) {
+			filtered = append(filtered, observation)
+		}
+	}
+	return filtered
+}
+
+func (candidate rule) appliesTo(observation Observation) bool {
+	if candidate.sourceKind != "" && observation.Ref.SourceKind != candidate.sourceKind {
+		return false
+	}
+	return candidate.resourceKind == "" || observation.Ref.Kind == candidate.resourceKind
+}
+
+func match(predicate predicate, observations []Observation, exact bool) (Observation, bool) {
 	var stale Observation
 	staleMatched := false
 	for _, observation := range observations {
@@ -102,7 +123,7 @@ func match(predicate predicate, observations []Observation) (Observation, bool) 
 			continue
 		}
 		for _, expected := range predicate.values {
-			if strings.EqualFold(observation.Value, expected) {
+			if observation.Value == expected || (!exact && strings.EqualFold(observation.Value, expected)) {
 				if !observation.Stale {
 					return observation, true
 				}
