@@ -1,10 +1,11 @@
 # Sith hub alert runbook
 
 These alerts consume only Sith's fixed-cardinality, process-wide metrics. They are a portable
-F10.4a/F10.4b/F10.4c baseline, not the complete F10.4 SLO and error-budget contract. The fleet-read alert
+F10.4a/F10.4b/F10.4c/F10.4d baseline, not the complete F10.4 SLO and error-budget contract. The fleet-read alert
 covers sustained aggregate coverage degradation but does not establish snapshot-age freshness.
-The rules do not cover governed dispatch success, PDP latency, KMS/signing, or the availability of
-the scrape and notification pipeline.
+The rules do not cover governed dispatch success, PDP latency, or KMS/signing. The missing-telemetry
+warning detects loss of expected Sith samples only while its rule evaluator remains healthy; it
+cannot prove the evaluator, Alertmanager, receiver, or complete notification path is available.
 
 The rules aggregate away every input-series label before producing an alert. Configure stable
 Prometheus external labels if the notification must identify an environment. Do not add workspace,
@@ -16,7 +17,9 @@ Sith does not install Prometheus, Alertmanager, a Prometheus Operator CRD, or a 
 metrics Service. First arrange an operator-owned same-Pod collector that scrapes the exact-loopback
 endpoint described in the README and forwards the existing series to a rule evaluator. Then copy
 `monitoring/sith-hub.rules.yml` into that evaluator's rule-file path and reload it using the
-evaluator's documented mechanism.
+evaluator's documented mechanism. Loading this package declares that the environment expects a Sith
+Hub telemetry path. Do not load it in an environment where no Hub is expected; otherwise the
+missing-telemetry warning is correctly indistinguishable from a broken scrape/forwarding path.
 
 Validate the unchanged file before loading it:
 
@@ -123,16 +126,41 @@ objective, fleet-freshness signal, or proof that the scrape and notification pat
    Separately test the external scrape-to-receiver path because this white-box rule cannot detect its
    own absence.
 
+## SithHubTelemetryMissing
+
+**Meaning.** The rule evaluator received no `sith_build_info` sample for ten minutes and the absence
+continued through the five-minute hold. Build info is set to one when the Hub constructs its
+isolated registry and requires no requests, so this is a traffic-independent warning that the
+expected Hub metrics, loopback scrape, or forwarding path is missing.
+
+**Triage.**
+
+1. Confirm the Hub process and its opt-in exact-loopback metrics listener are running with the
+   intended version and configuration. Do not widen the listener to a wildcard or cluster-routable
+   address.
+2. Check the operator-owned same-Pod collector's loopback scrape, forwarding queue, authentication,
+   backpressure, and last successful sample timestamp. Keep credentials and response bodies out of
+   logs and alert labels.
+3. Confirm the rule evaluator is accepting the forwarded `sith_build_info` series. Do not add a
+   fixed `job`, `instance`, Pod, workspace, or endpoint dependency to the portable rule.
+4. Confirm the alert resolves when any current Sith build-info sample arrives. Separately exercise
+   an external synthetic from collection through Alertmanager to the receiver; this rule cannot fire
+   if its own evaluator is down.
+
 ## Threshold and cost notes
 
-The five expressions evaluate once per minute over existing series and produce at most five alert
+The six expressions evaluate once per minute over existing series and produce at most six alert
 instances per rule evaluator. They create no recording series, listener, exporter, remote-write
-path, or storage. Both ratio alerts use a 5% threshold and a 10-minute hold, with the minimum volume
+path, or storage. The three ratio alerts use a 5% threshold and a 10-minute hold, with the minimum volume
 defined independently by each expression. The snapshot ratio requires 20 aggregate attempts. The
 fleet-read ratio requires 20 eligible `complete|degraded|error` reads and excludes `empty` from
 numerator and denominator, so legitimate zero-scope traffic neither fires nor hides the alert.
 The database-readiness ratio requires 20 aggregate `ready|unavailable` checks, uses the same 5%
 threshold and 10-minute hold, and cannot divide by zero.
+The missing-telemetry warning evaluates the existing traffic-independent `sith_build_info` gauge,
+tolerates the most recent ten minutes of samples, and then requires five continuous minutes of
+absence. Its installation precondition is the operator's explicit expectation signal; the rule
+does not require or preserve source labels.
 Change these thresholds only through a reviewed local override backed by observed traffic and an
 explicit response owner. Full SLO thresholds and burn-rate alerts wait for negotiated objectives
 and the missing freshness, dispatch, and PDP production signals.

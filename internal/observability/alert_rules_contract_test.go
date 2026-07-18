@@ -44,17 +44,19 @@ func TestPortableAlertRulesStayBoundedAndStatic(t *testing.T) {
 		t.Fatalf("rule groups = %d, want 1", len(file.Groups))
 	}
 	group := file.Groups[0]
-	if group.Name != "sith-hub.failure-signals" || group.Interval != "1m" || group.Limit != 5 {
+	if group.Name != "sith-hub.failure-signals" || group.Interval != "1m" || group.Limit != 6 {
 		t.Errorf("rule group contract = %#v", group)
 	}
-	if len(group.Rules) != 5 {
-		t.Fatalf("alert rules = %d, want 5", len(group.Rules))
+	if len(group.Rules) != 6 {
+		t.Fatalf("alert rules = %d, want 6", len(group.Rules))
 	}
 
 	want := map[string]struct {
-		severity string
-		hold     string
-		expr     string
+		severity    string
+		hold        string
+		expr        string
+		summary     string
+		description string
 	}{
 		"SithHubPolicyAuditFailure": {
 			severity: "critical", hold: "2m",
@@ -76,6 +78,12 @@ func TestPortableAlertRulesStayBoundedAndStatic(t *testing.T) {
 			severity: "warning", hold: "10m",
 			expr: `( sum(increase(sith_hub_readiness_checks_total{outcome="unavailable"}[15m])) / clamp_min(sum(increase(sith_hub_readiness_checks_total{outcome=~"ready|unavailable"}[15m])), 1) ) > 0.05 and sum(increase(sith_hub_readiness_checks_total{outcome=~"ready|unavailable"}[15m])) >= 20`,
 		},
+		"SithHubTelemetryMissing": {
+			severity: "warning", hold: "5m",
+			expr:        `absent_over_time(sith_build_info[10m])`,
+			summary:     "Sith hub telemetry is absent from the rule evaluator",
+			description: "No Sith build-info sample reached the rule evaluator during the last ten minutes.",
+		},
 	}
 	for _, rule := range group.Rules {
 		expected, ok := want[rule.Alert]
@@ -94,6 +102,10 @@ func TestPortableAlertRulesStayBoundedAndStatic(t *testing.T) {
 		if len(rule.Annotations) != 3 || rule.Annotations["summary"] == "" ||
 			rule.Annotations["description"] == "" || rule.Annotations["runbook_url"] != wantRunbook {
 			t.Errorf("%s annotations = %#v", rule.Alert, rule.Annotations)
+		}
+		if expected.summary != "" && (rule.Annotations["summary"] != expected.summary ||
+			rule.Annotations["description"] != expected.description) {
+			t.Errorf("%s fixed annotation contract = %#v", rule.Alert, rule.Annotations)
 		}
 		for key, value := range rule.Annotations {
 			if strings.Contains(value, "{{") || strings.Contains(value, "$labels") || strings.ContainsAny(value, "\r\n") {

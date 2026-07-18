@@ -3,7 +3,7 @@
 groups:
   - name: sith-hub.failure-signals
     interval: 1m
-    limit: 5
+    limit: 6
     rules:
       - alert: SithHubPolicyAuditFailure
         expr: sum(increase(sith_policy_audit_attempts_total{outcome="error"}[5m])) > 0
@@ -80,3 +80,14 @@ groups:
           summary: Sith hub database-backed readiness is persistently degraded
           description: More than five percent of at least twenty aggregate database readiness checks were unavailable over fifteen minutes.
           runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubdatabasereadinessdegradationhigh
+
+      - alert: SithHubTelemetryMissing
+        expr: absent_over_time(sith_build_info[10m])
+        for: 5m
+        labels:
+          component: sith-hub
+          severity: warning
+        annotations:
+          summary: Sith hub telemetry is absent from the rule evaluator
+          description: No Sith build-info sample reached the rule evaluator during the last ten minutes.
+          runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubtelemetrymissing
