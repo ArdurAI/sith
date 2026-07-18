@@ -3,7 +3,7 @@
 groups:
   - name: sith-hub.failure-signals
     interval: 1m
-    limit: 7
+    limit: 8
     rules:
       - alert: SithHubPolicyAuditFailure
         expr: sum(increase(sith_policy_audit_attempts_total{outcome="error"}[5m])) > 0
@@ -15,6 +15,24 @@ groups:
           summary: Sith hub is refusing governed reads because policy-audit delivery failed
           description: At least one durable or process policy-audit sink failed during the last five minutes.
           runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubpolicyauditfailure
+
+      - alert: SithHubPolicyDecisionErrorRatioHigh
+        expr: |
+          (
+            sum(increase(sith_policy_decisions_total{outcome="error"}[15m]))
+            /
+            clamp_min(sum(increase(sith_policy_decisions_total{outcome=~"allow|deny|require-approval|error"}[15m])), 1)
+          ) > 0.05
+          and
+          sum(increase(sith_policy_decisions_total{outcome=~"allow|deny|require-approval|error"}[15m])) >= 20
+        for: 10m
+        labels:
+          component: sith-hub
+          severity: warning
+        annotations:
+          summary: Sith hub policy decisions are returning sustained errors
+          description: More than five percent of at least twenty aggregate eligible policy decisions ended in error over fifteen minutes.
+          runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubpolicydecisionerrorratiohigh
 
       - alert: SithHubAuthRefusalDeliveryDrop
         expr: sum(increase(sith_auth_refusal_delivery_drops_total[10m])) > 0
