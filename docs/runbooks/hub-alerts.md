@@ -1,8 +1,9 @@
 # Sith hub alert runbook
 
 These alerts consume only Sith's fixed-cardinality, process-wide metrics. They are a portable
-F10.4a/F10.4b/F10.4c/F10.4d baseline, not the complete F10.4 SLO and error-budget contract. The fleet-read alert
-covers sustained aggregate coverage degradation but does not establish snapshot-age freshness.
+F10.4a/F10.4b/F10.4c/F10.4d/F10.4e baseline, not the complete F10.4 SLO and error-budget contract.
+The two fleet-read alerts cover sustained aggregate coverage degradation and proven stale reads;
+neither defines a freshness objective or continuously monitors snapshot age without request traffic.
 The rules do not cover governed dispatch success, PDP latency, or KMS/signing. The missing-telemetry
 warning detects loss of expected Sith samples only while its rule evaluator remains healthy; it
 cannot prove the evaluator, Alertmanager, receiver, or complete notification path is available.
@@ -107,6 +108,26 @@ contract reported no gaps—it does not guarantee snapshot age. Legitimate inter
    suppress evidence by treating degraded reads as complete, excluding scopes, bypassing the PEP,
    or weakening RLS.
 
+## SithHubFleetReadStalenessHigh
+
+**Meaning.** More than 5% of at least 20 aggregate freshness-eligible fleet reads were proven
+`stale` over 15 minutes, and the condition persisted for 10 minutes. Eligible outcomes are only
+`fresh` and `stale`: both require a structurally valid result with unique cluster identities and
+non-zero observation times. `unknown`, `error`, and `empty` are excluded because they do not prove
+snapshot age. This warning is request-time evidence, not continuous age monitoring or a formal SLO.
+
+**Triage.**
+
+1. Compare the aggregate `fresh` and `stale` counters. Do not add tenant, workspace, spoke, cluster,
+   resource, principal, trace, endpoint, age, or raw-error labels to the metric or alert.
+2. Use the tenant-scoped fleet API and retained observation timestamps—not process-wide metric
+   labels—to identify the stale authorized scope. Keep PEP and RLS boundaries intact.
+3. Inspect the relevant OCM addon health, projected service-account rotation, tunnel connectivity,
+   Hub egress policy, snapshot persistence, and PostgreSQL health through operator-owned surfaces.
+4. Confirm new authorized reads return `fresh` and the ratio resolves naturally. Do not hide stale
+   evidence by rewriting timestamps, excluding registered clusters, treating unknown results as
+   fresh, bypassing the PEP, or weakening RLS.
+
 ## SithHubDatabaseReadinessDegradationHigh
 
 **Meaning.** More than 5% of at least 20 aggregate completed database readiness checks were
@@ -149,12 +170,15 @@ expected Hub metrics, loopback scrape, or forwarding path is missing.
 
 ## Threshold and cost notes
 
-The six expressions evaluate once per minute over existing series and produce at most six alert
+The seven expressions evaluate once per minute over existing series and produce at most seven alert
 instances per rule evaluator. They create no recording series, listener, exporter, remote-write
-path, or storage. The three ratio alerts use a 5% threshold and a 10-minute hold, with the minimum volume
-defined independently by each expression. The snapshot ratio requires 20 aggregate attempts. The
+path, or storage. The four ratio alerts use a 5% threshold and a 10-minute hold, with the minimum
+volume defined independently by each expression. The snapshot ratio requires 20 aggregate attempts. The
 fleet-read ratio requires 20 eligible `complete|degraded|error` reads and excludes `empty` from
 numerator and denominator, so legitimate zero-scope traffic neither fires nor hides the alert.
+The fleet-read staleness ratio separately requires 20 eligible `fresh|stale` reads. It excludes
+`unknown`, `error`, and `empty` from both numerator and denominator, so unproven age cannot trigger
+or dilute the warning.
 The database-readiness ratio requires 20 aggregate `ready|unavailable` checks, uses the same 5%
 threshold and 10-minute hold, and cannot divide by zero.
 The missing-telemetry warning evaluates the existing traffic-independent `sith_build_info` gauge,
@@ -162,5 +186,5 @@ tolerates the most recent ten minutes of samples, and then requires five continu
 absence. Its installation precondition is the operator's explicit expectation signal; the rule
 does not require or preserve source labels.
 Change these thresholds only through a reviewed local override backed by observed traffic and an
-explicit response owner. Full SLO thresholds and burn-rate alerts wait for negotiated objectives
-and the missing freshness, dispatch, and PDP production signals.
+explicit response owner. Full SLO thresholds and burn-rate alerts wait for negotiated objectives,
+continuous freshness monitoring, and the missing dispatch and PDP production signals.

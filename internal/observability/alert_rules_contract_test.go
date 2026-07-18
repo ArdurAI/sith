@@ -44,11 +44,11 @@ func TestPortableAlertRulesStayBoundedAndStatic(t *testing.T) {
 		t.Fatalf("rule groups = %d, want 1", len(file.Groups))
 	}
 	group := file.Groups[0]
-	if group.Name != "sith-hub.failure-signals" || group.Interval != "1m" || group.Limit != 6 {
+	if group.Name != "sith-hub.failure-signals" || group.Interval != "1m" || group.Limit != 7 {
 		t.Errorf("rule group contract = %#v", group)
 	}
-	if len(group.Rules) != 6 {
-		t.Fatalf("alert rules = %d, want 6", len(group.Rules))
+	if len(group.Rules) != 7 {
+		t.Fatalf("alert rules = %d, want 7", len(group.Rules))
 	}
 
 	want := map[string]struct {
@@ -73,6 +73,10 @@ func TestPortableAlertRulesStayBoundedAndStatic(t *testing.T) {
 		"SithHubFleetReadCoverageDegradationHigh": {
 			severity: "warning", hold: "10m",
 			expr: `( sum(increase(sith_federation_fleet_read_results_total{outcome=~"degraded|error"}[15m])) / clamp_min(sum(increase(sith_federation_fleet_read_results_total{outcome=~"complete|degraded|error"}[15m])), 1) ) > 0.05 and sum(increase(sith_federation_fleet_read_results_total{outcome=~"complete|degraded|error"}[15m])) >= 20`,
+		},
+		"SithHubFleetReadStalenessHigh": {
+			severity: "warning", hold: "10m",
+			expr: `( sum(increase(sith_federation_fleet_read_freshness_total{outcome="stale"}[15m])) / clamp_min(sum(increase(sith_federation_fleet_read_freshness_total{outcome=~"fresh|stale"}[15m])), 1) ) > 0.05 and sum(increase(sith_federation_fleet_read_freshness_total{outcome=~"fresh|stale"}[15m])) >= 20`,
 		},
 		"SithHubDatabaseReadinessDegradationHigh": {
 			severity: "warning", hold: "10m",
