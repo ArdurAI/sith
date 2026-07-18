@@ -471,8 +471,8 @@ hub). Weights are indicative, to be tuned against real incidents.
 
 ---
 
-**Adjacent rules (same pattern, add as coverage lands):** `ImagePullBackOff / registry-auth`,
-`FailingDependency` (mesh/trace-driven), `Pipeline/SyncFailure` (Argo/CI), `HPA-thrash`,
+**Future adjacent rules (same pattern, add as coverage lands):** `FailingDependency`
+(mesh/trace-driven), `Pipeline/SyncFailure` (Argo/CI), `HPA-thrash`, and
 `PVC-full / volume-bind`. The schema in §3.3 admits them without change.
 
 **Implemented adjacent rule R7 (2026-07-18):** R7 consumes only the existing sanitized LIVE

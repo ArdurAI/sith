@@ -102,7 +102,7 @@ func match(predicate predicate, observations []Observation) (Observation, bool) 
 			continue
 		}
 		for _, expected := range predicate.values {
-			if strings.EqualFold(strings.TrimSpace(observation.Value), expected) {
+			if strings.EqualFold(observation.Value, expected) {
 				if !observation.Stale {
 					return observation, true
 				}
@@ -115,7 +115,7 @@ func match(predicate predicate, observations []Observation) (Observation, bool) 
 
 func unavailable(lens fleet.Lens, coverage map[fleet.Lens]LensCoverage, observations []Observation) bool {
 	state, declared := coverage[lens]
-	if declared && (!state.Available || state.Stale) {
+	if !declared || !state.Available || state.Stale {
 		return true
 	}
 	for _, observation := range observations {

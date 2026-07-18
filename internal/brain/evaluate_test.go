@@ -68,7 +68,7 @@ func TestEvaluateImagePullFailureRuleIsBounded(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
 
-	for _, reason := range []string{"ImagePullBackOff", "ErrImagePull", "errimagepull"} {
+	for _, reason := range []string{"ImagePullBackOff", "imagepullbackoff", "ImAgEpUlLbAcKoFf", "ErrImagePull", "errimagepull"} {
 		reason := reason
 		t.Run(reason, func(t *testing.T) {
 			t.Parallel()
@@ -110,7 +110,15 @@ func TestEvaluateImagePullFailureRuleIsBounded(t *testing.T) {
 		})
 	}
 
-	for _, reason := range []string{"ImagePullBackOff/registry-auth", "ErrImagePull: unauthorized", "ImagePull", "PullBackOff"} {
+	for _, reason := range []string{
+		"ImagePullBackOff/registry-auth",
+		"ErrImagePull: unauthorized",
+		" ImagePullBackOff",
+		"ImagePullBackOff ",
+		"\tErrImagePull",
+		"ImagePull",
+		"PullBackOff",
+	} {
 		reason := reason
 		t.Run("reject "+reason, func(t *testing.T) {
 			t.Parallel()
@@ -143,9 +151,13 @@ func TestEvaluateImagePullFailureAbstainsOnUnusableLiveEvidence(t *testing.T) {
 			observation.Stale = true
 			return observation
 		}(), coverage: covered(fleet.LensLive)},
+		{name: "stale coverage", observation: observe(now, fleet.LensLive, "pod.reason", "ImagePullBackOff"), coverage: map[fleet.Lens]LensCoverage{
+			fleet.LensLive: {Available: true, Stale: true, Reason: "watch disconnected"},
+		}},
 		{name: "unavailable coverage", observation: observe(now, fleet.LensLive, "pod.reason", "ErrImagePull"), coverage: map[fleet.Lens]LensCoverage{
 			fleet.LensLive: {Available: false, Reason: "context unreachable"},
 		}},
+		{name: "missing coverage", observation: observe(now, fleet.LensLive, "pod.reason", "ErrImagePull"), coverage: map[fleet.Lens]LensCoverage{}},
 	} {
 		test := test
 		t.Run(test.name, func(t *testing.T) {

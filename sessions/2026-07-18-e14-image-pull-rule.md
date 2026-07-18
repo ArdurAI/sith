@@ -2,7 +2,7 @@
 
 **Builder:** Gnani Rahul · **Branch:** `gnanirahulnutakki/feat/e14-image-pull-rule`
 
-**Slice:** E14 R7 / [#268](https://github.com/ArdurAI/sith/issues/268) · **Status:** locally verified
+**Slice:** E14 R7 / [#268](https://github.com/ArdurAI/sith/issues/268) · **Status:** review fixes verified
 
 **Base:** `origin/dev` at `91f4a47da7691843fd9e00b257849e63243646fd`
 
@@ -63,6 +63,27 @@ and is never executed by the brain.
 - README review is complete. The investigation section documents R7's uncertainty, sensitive
   read-only advisory, retained-data exclusions, and explicit exemption from fleet correlation.
 
-Remaining before completion: signed DCO/GSTACK commit, push and PR into `dev`, exact-head
-CI/CodeQL plus empty review/security queues, merge preserving the tested head, and exact
-post-merge `dev` CI/CodeQL proof.
+## [V2] Hosted review remediation — 2026-07-18
+
+- Exact-head CI run [29647811006](https://github.com/ArdurAI/sith/actions/runs/29647811006)
+  and CodeQL run [29647810480](https://github.com/ArdurAI/sith/actions/runs/29647810480)
+  passed for signed head `604eb1778252f9e8e1a0444d98546d52e2da0f07`.
+- Hosted CodeRabbit reviewed the exact 13-file base-to-head diff and identified one documentation
+  inconsistency plus three test-hardening opportunities. Validation exposed two real fail-open
+  behaviors: whitespace-padded rule values were normalized before matching, and undeclared lens
+  coverage could be inferred from an observation.
+- Matching now remains case-insensitive but does not trim caller-controlled values. Missing,
+  unavailable, or stale coverage now fails closed to `unconfirmed`; cache tests assert the full
+  Pod citation boundary; and both authoritative rule inventories distinguish implemented R7 from
+  future adjacent rules.
+- Focused brain and CLI race tests pass. The full `make ci` gate passes with zero lint findings and
+  zero known Go vulnerabilities. PostgreSQL 18.4 forced-RLS coverage and both 50,000-case
+  workspace-isolation fuzz campaigns also pass on the review-fixed working tree.
+- The pre-commit base-to-working-tree secret scan reports zero recognized credential or private-key
+  patterns. CodeRabbit CLI 0.6.5 then re-reviewed the complete 13-file diff and reported zero
+  findings. README was rechecked and already contains the required operator-facing boundary; no
+  additional README change is needed for the review fix.
+
+Remaining before completion: signed DCO/GSTACK review-fix commit, push, fresh exact-head
+CI/CodeQL and hosted review with empty review/security queues, merge preserving the tested head,
+and exact post-merge `dev` CI/CodeQL proof.

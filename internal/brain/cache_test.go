@@ -3,6 +3,7 @@
 package brain
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -36,6 +37,7 @@ func TestFromCacheProjectsLiveFactsAndHonestCoverage(t *testing.T) {
 func TestFromCacheProjectsExactImagePullReasons(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	ref := fleet.ResourceRef{SourceKind: "kubeconfig", Scope: "alpha", Kind: "Pod", Namespace: "prod", Name: "payments-0"}
 
 	for _, reason := range []string{"ImagePullBackOff", "ErrImagePull"} {
 		reason := reason
@@ -45,7 +47,7 @@ func TestFromCacheProjectsExactImagePullReasons(t *testing.T) {
 				Coverage: fleet.Coverage{Requested: 1, Reachable: 1},
 				Records: []fleetcache.Record{{
 					Fact: fleet.Fact{Evidence: fleet.Evidence{
-						Ref:    fleet.ResourceRef{SourceKind: "kubeconfig", Scope: "alpha", Kind: "Pod", Namespace: "prod", Name: "payments-0"},
+						Ref:    ref,
 						Source: "alpha",
 					}, Workspace: fleet.LocalWorkspace},
 					Workspace: fleet.LocalWorkspace, Kind: "Pod", Cluster: "alpha", Namespace: "prod", Name: "payments-0",
@@ -54,6 +56,11 @@ func TestFromCacheProjectsExactImagePullReasons(t *testing.T) {
 			})
 			if len(input.Observations) != 1 || input.Observations[0].Key != "pod.reason" || input.Observations[0].Value != reason {
 				t.Fatalf("observations = %#v, want one exact sanitized reason", input.Observations)
+			}
+			observation := input.Observations[0]
+			if !reflect.DeepEqual(observation.Ref, ref) || observation.Lens != fleet.LensLive || observation.Source != "alpha" ||
+				!observation.ObservedAt.Equal(now) {
+				t.Fatalf("observation metadata = %#v, want exact cached Pod citation metadata", observation)
 			}
 			result, err := Evaluate(input)
 			if err != nil {

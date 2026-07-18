@@ -24,9 +24,10 @@ bare workload name.
 1. `internal/brain` consumes a closed normalized observation envelope: entity reference, evidence
    lens, key, value, source, time, and staleness. It performs no I/O. Kubernetes decoding stays in
    `fleetcache`; cache-to-rule projection stays in one adapter.
-2. The catalog contains stable R1-R6 rules. Matching is exact and deterministic. Verdict ordering
-   is fleet-wide correlation, score, rule ID, then scope. R1 can compose as the cause of R3 when a
-   recent change and repeated failure are attached to the same entity.
+2. The catalog contains stable canonical R1-R6 rules plus the bounded adjacent R7 image-pull
+   symptom rule. Matching is exact and deterministic. Verdict ordering is fleet-wide correlation,
+   score, rule ID, then scope. R1 can compose as the cause of R3 when a recent change and repeated
+   failure are attached to the same entity.
 3. Required and strengthening lenses are checked per entity. Fleet-level connector availability
    cannot satisfy a workload's evidence gate. Missing or stale required evidence yields
    `unconfirmed`; missing variant evidence yields `detected` plus named missing lenses.
