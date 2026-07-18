@@ -113,3 +113,40 @@ local proof above on exact base `22c6caa834442120d61add38009bacc154eda4fd`. Next
 SSH-signed DCO commit, push one narrow PR into `dev`, require exact-head CI/CodeQL and empty review
 and security queues, merge preserving the tested head, verify exact post-merge `dev` proof, close
 the child issue, and synchronize the landed Notion and Obsidian checkpoints.
+
+## [V3] Hosted-review hardening and final local proof — 2026-07-18
+
+- Hosted CodeRabbit reviewed exact initial head `03fdc34dcb4b90f3ec2f8c61b5ef71c5b6b55794` and found
+  two valid gaps: the roadmap omitted the explicit TIMELINE-coverage boundary, and direct
+  evaluator inputs could produce the Argo Application advisory without exact Argo/Application
+  applicability checks.
+- The roadmap now states that callers must explicitly declare TIMELINE coverage and that fact
+  presence never implies coverage. R8 filters its evidence view before trigger, signal, and
+  coverage evaluation to exact `source_kind=argocd` and `kind=Application` observations, so
+  mixed-source input order cannot change the result or citation source.
+- The complete local follow-up review found and fixed a related canonicalization gap: R8 now
+  requires exact `change.kind=sync-failed`; case variants cannot pass through the shared
+  case-insensitive matcher used by the Kubernetes-oriented rules. Tests cover non-Argo sources,
+  non-Application kinds, case variants, reversed mixed-source input, and the exact `alpha` plus
+  `beta` entity-local scope set.
+- A repeated complete CodeRabbit CLI 0.6.5 review of all 14 changed/new files against exact base
+  `22c6caa834442120d61add38009bacc154eda4fd` reports zero findings. The pre-check candidate scanned
+  239,208 bytes with zero recognized credential, private-key, provider-token, JWT,
+  authenticated-URL, or generic secret-assignment candidates.
+- Focused brain/CLI race tests and full `make ci` pass after the fixes: formatting, vet, zero lint
+  findings, `govulncheck` with no reachable vulnerabilities, 87.9% brain coverage, full race
+  suite, policy checks, eight Prometheus rules, performance, compiled E2E, and build.
+- Digest-pinned PostgreSQL 18.4 forced-RLS tests pass with 76.2% `hubdb` coverage; both 50,000-case
+  workspace-isolation fuzzers pass with four workers. Pinned Helm 4.2.3 and standalone
+  linux/amd64 plus linux/arm64 OCI contracts pass.
+- The release gate produces two identical four-platform snapshots with verified archives, SPDX
+  SBOMs, Homebrew formula, and a release-derived two-platform hub OCI layout. The real
+  digest-pinned Kubernetes v1.36.1 two-cluster gate passes in 239.320 seconds under the race
+  detector; independent cleanup confirms zero Kind clusters and zero Sith containers.
+
+## [C] Checkpoint #2
+
+`2026-07-18/e14-argocd-sync-failure-rule#2` records the hosted-review fixes and repeated local
+proof above. Next: final exact-tree secret scan and review, create a second SSH-signed DCO/GSTACK
+commit, push it, require fresh exact-head CI/CodeQL plus a clean incremental hosted review, resolve
+both original review threads, and only then merge into `dev` for exact post-merge proof.

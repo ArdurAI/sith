@@ -273,6 +273,8 @@ func TestEvaluateArgoSyncFailureRejectsNearMisses(t *testing.T) {
 		" sync-failed",
 		"sync-failed ",
 		"sync-failed/render-error",
+		"SYNC-FAILED",
+		"Sync-Failed",
 	} {
 		value := value
 		t.Run(value, func(t *testing.T) {
@@ -292,6 +294,68 @@ func TestEvaluateArgoSyncFailureRejectsNearMisses(t *testing.T) {
 				t.Fatalf("near-miss value %q yielded %#v", value, result.Verdicts)
 			}
 		})
+	}
+}
+
+func TestEvaluateArgoSyncFailureRequiresExactArgoApplicationApplicability(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 15, 30, 0, 0, time.UTC)
+	base := Observation{
+		Ref:  fleet.ResourceRef{SourceKind: "argocd", Scope: "alpha", Kind: "Application", Namespace: "argocd", Name: "payments"},
+		Lens: fleet.LensTimeline, Key: "change.kind", Value: "sync-failed", ObservedAt: now, Source: "alpha",
+	}
+	for _, test := range []struct {
+		name       string
+		sourceKind string
+		kind       string
+	}{
+		{name: "non-Argo source", sourceKind: "kubeconfig", kind: "Application"},
+		{name: "source case mismatch", sourceKind: "ArgoCD", kind: "Application"},
+		{name: "non-Application resource", sourceKind: "argocd", kind: "Deployment"},
+		{name: "resource case mismatch", sourceKind: "argocd", kind: "application"},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			observation := base
+			observation.Ref.SourceKind = test.sourceKind
+			observation.Ref.Kind = test.kind
+			result, err := Evaluate(Investigation{
+				Workspace: fleet.LocalWorkspace, Observations: []Observation{observation},
+				Coverage: covered(fleet.LensTimeline),
+			})
+			if err != nil {
+				t.Fatalf("Evaluate() error = %v", err)
+			}
+			if len(result.Verdicts) != 0 {
+				t.Fatalf("source_kind=%q kind=%q yielded %#v, want no R8 advisory", test.sourceKind, test.kind, result.Verdicts)
+			}
+		})
+	}
+}
+
+func TestEvaluateArgoSyncFailureApplicabilityIsInputOrderIndependent(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 15, 30, 0, 0, time.UTC)
+	valid := Observation{
+		Ref:  fleet.ResourceRef{SourceKind: "argocd", Scope: "alpha", Kind: "Application", Namespace: "argocd", Name: "payments"},
+		Lens: fleet.LensTimeline, Key: "change.kind", Value: "sync-failed", ObservedAt: now, Source: "alpha",
+	}
+	nonArgo := valid
+	nonArgo.Ref.SourceKind = "kubeconfig"
+
+	for _, observations := range [][]Observation{{valid, nonArgo}, {nonArgo, valid}} {
+		result, err := Evaluate(Investigation{
+			Workspace: fleet.LocalWorkspace, Observations: observations,
+			Coverage: covered(fleet.LensTimeline),
+		})
+		if err != nil {
+			t.Fatalf("Evaluate() error = %v", err)
+		}
+		if len(result.Verdicts) != 1 || result.Verdicts[0].Rule != RuleArgoSyncFail ||
+			result.Verdicts[0].Citations[0].Ref.SourceKind != argoGraphSource {
+			t.Fatalf("verdicts = %#v, want one R8 verdict cited only to Argo evidence", result.Verdicts)
+		}
 	}
 }
 
@@ -361,10 +425,15 @@ func TestEvaluateArgoSyncFailureDoesNotCorrelateFleetWide(t *testing.T) {
 	if len(result.Verdicts) != 2 {
 		t.Fatalf("verdicts = %#v, want one R8 verdict per Application", result.Verdicts)
 	}
+	scopes := map[string]bool{}
 	for _, verdict := range result.Verdicts {
 		if verdict.Rule != RuleArgoSyncFail || verdict.FleetWide || len(verdict.Clusters) != 0 {
 			t.Fatalf("verdict = %#v, R8 must remain entity-local", verdict)
 		}
+		scopes[verdict.Ref.Scope] = true
+	}
+	if !reflect.DeepEqual(scopes, map[string]bool{"alpha": true, "beta": true}) {
+		t.Fatalf("verdict scopes = %#v, want alpha and beta", scopes)
 	}
 }
 

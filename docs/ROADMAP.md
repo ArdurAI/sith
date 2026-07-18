@@ -320,10 +320,11 @@ over the existing sanitized LIVE cache. It remains local, read-only, entity-scop
 uncertain about the underlying registry, reference, network, rate-limit, or platform cause.
 
 The second adjacent rule, **R8**, consumes only attached, workspace-valid Argo CD Application
-TIMELINE facts emitted by the bounded `1.0.0` projector for operation phases `Failed` or `Error`.
-It does not equate `OutOfSync` or degraded health with a failed operation, infer coverage, retain
-the source revision or raw payload, diagnose the underlying cause, or correlate fleet-wide. R8 is
-available to reviewed graph-fact callers; the cache-backed local CLI still has no Argo fetch path.
+TIMELINE facts emitted by the bounded `1.0.0` projector for operation phases `Failed` or `Error`,
+with explicit caller-declared TIMELINE coverage; coverage is never inferred from fact presence.
+It does not equate `OutOfSync` or degraded health with a failed operation, retain the source
+revision or raw payload, diagnose the underlying cause, or correlate fleet-wide. R8 is available
+to reviewed graph-fact callers; the cache-backed local CLI still has no Argo fetch path.
 
 ## Integration waves (E12) — the connector coverage the brain needs
 
