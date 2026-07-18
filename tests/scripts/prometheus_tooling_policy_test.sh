@@ -23,8 +23,8 @@ ci_checksum="$(awk -F '"' '/^  PROMETHEUS_LINUX_AMD64_SHA256: / { print $2 }' "$
 
 rules="${REPO_ROOT}/monitoring/sith-hub.rules.yml"
 alert_count="$(awk '/^[[:space:]]*- alert:/ { count++ } END { print count + 0 }' "${rules}")"
-[[ "${alert_count}" == 6 ]] || {
-  printf '[prometheus-policy] FAIL: portable rule count = %q, want 6\n' "${alert_count}" >&2
+[[ "${alert_count}" == 7 ]] || {
+  printf '[prometheus-policy] FAIL: portable rule count = %q, want 7\n' "${alert_count}" >&2
   exit 1
 }
 if grep -Fq '{{' "${rules}"; then

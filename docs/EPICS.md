@@ -2677,6 +2677,15 @@ has intentionally installed the documented Hub scrape/forwarding path. It cannot
 its own evaluator, Alertmanager, or receiver; an external synthetic remains required for the full
 notification path.
 
+**Implementation note (F10.4e).** A seventh portable warning consumes only the bounded F10.1f
+`fresh|stale|unknown|empty|error` counter. It fires when more than five percent of at least twenty
+aggregate freshness-eligible `fresh|stale` reads are proven `stale` over fifteen minutes and the
+condition persists for ten minutes. `unknown`, `error`, and `empty` are excluded from both numerator
+and denominator because none proves snapshot age. The expression aggregates away every source
+label and adds no scrape, storage, remote-write, notification, or cloud infrastructure. This is a
+request-time aggregate symptom, not continuous freshness monitoring, an SLO, an error budget, or a
+page.
+
 ### F10.5 — Crown-jewel hardening
 
 **What it is.** The hardening the hub demands as the highest-value target: signer-key protection,
