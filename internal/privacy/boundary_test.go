@@ -22,6 +22,9 @@ var approvedNetworkImports = map[string]map[string]bool{
 	"internal/connector/argocd/project.go":           {"net/url": true},
 	"internal/connector/kubeconfig/local_streams.go": {"net/http": true, "net/url": true},
 	"internal/hubserver/auth.go":                     {"net/http": true},
+	// The bearer-only audit export adapter has one exact inbound route and no listener, outbound
+	// client, database implementation, connector, filesystem, process, or local-operation capability.
+	"internal/hubserver/audit_export.go": {"net/http": true, "net/url": true},
 	// Browser OIDC is a Hub-only code+PKCE broker. It accepts no local-mode traffic, uses no
 	// caller-controlled endpoint, and keeps all proofs and session JWTs server-side.
 	"internal/hubserver/browser_oidc.go": {"net": true, "net/http": true, "net/url": true},

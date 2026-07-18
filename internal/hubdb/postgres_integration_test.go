@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/ArdurAI/sith/internal/auditrecord"
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/hubauth"
 	"github.com/ArdurAI/sith/internal/hubfleet"
@@ -322,8 +323,8 @@ func assertPolicyAuditChainIntegration(
 ) {
 	t.Helper()
 
-	workspaceA := testScope(t, "user:alice", "workspace-a", tenancy.RoleReader)
-	workspaceB := testScope(t, "user:bob", "workspace-b", tenancy.RoleReader)
+	workspaceA := testScope(t, "user:alice", "workspace-a", tenancy.RoleAdmin)
+	workspaceB := testScope(t, "user:bob", "workspace-b", tenancy.RoleAdmin)
 	if err := database.Record(ctx, newPolicyAuditEvent(t, workspaceA)); err != nil {
 		t.Fatalf("Record(workspace A) error = %v", err)
 	}
@@ -355,6 +356,32 @@ func assertPolicyAuditChainIntegration(
 			t.Fatalf("VerifyPolicyAuditChain(%s) error = %v", name, err)
 		}
 	}
+	enforcer, err := pep.NewEnforcer(pep.Config{Hook: pep.AllowReadHook{}, Auditor: database})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := enforcer.AuthorizeAuditExport(ctx, workspaceA); err != nil {
+		t.Fatalf("AuthorizeAuditExport(workspace A) error = %v", err)
+	}
+	exportedA, err := database.ExportPolicyAuditChain(ctx, workspaceA)
+	if err != nil {
+		t.Fatalf("ExportPolicyAuditChain(workspace A) error = %v", err)
+	}
+	if exportedA.Schema != "sith.policy-audit-export/v1" || exportedA.WorkspaceID != "workspace-a" ||
+		exportedA.Chain.HeadSequence != concurrentAppends+2 || len(exportedA.Entries) != concurrentAppends+2 {
+		t.Fatalf("workspace A export shape = %#v", exportedA)
+	}
+	last := exportedA.Entries[len(exportedA.Entries)-1]
+	if last.Action != string(tenancy.ActionExportAudit) || last.Verb != string(pep.VerbAuditExport) ||
+		last.Verdict != string(pep.VerdictAllow) || last.ReasonCode != "phase-1-audit-export" ||
+		last.EntryHash != exportedA.Chain.HeadHash {
+		t.Fatalf("workspace A export did not include its authorizing decision: %#v", last)
+	}
+	exportedB, err := database.ExportPolicyAuditChain(ctx, workspaceB)
+	if err != nil || len(exportedB.Entries) != 1 || exportedB.WorkspaceID != "workspace-b" ||
+		exportedB.Entries[0].Actor != "user:bob" || strings.Contains(fmt.Sprintf("%#v", exportedB), "user:alice") {
+		t.Fatalf("workspace B export/error = %#v/%v", exportedB, err)
+	}
 	if err := database.InWorkspace(ctx, workspaceA, func(tx pgx.Tx) error {
 		var headCount, entryCount, foreignCount int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM sith.policy_audit_heads`).Scan(&headCount); err != nil {
@@ -368,7 +395,7 @@ func assertPolicyAuditChainIntegration(
 		`).Scan(&foreignCount); err != nil {
 			return err
 		}
-		if headCount != 1 || entryCount != concurrentAppends+1 || foreignCount != 0 {
+		if headCount != 1 || entryCount != concurrentAppends+2 || foreignCount != 0 {
 			return fmt.Errorf("workspace A audit view = heads %d entries %d foreign %d", headCount, entryCount, foreignCount)
 		}
 		return nil
@@ -424,6 +451,9 @@ func assertPolicyAuditChainIntegration(
 		}
 		if err := database.VerifyPolicyAuditChain(ctx, workspaceA); err == nil {
 			t.Fatalf("%s was not detected", name)
+		}
+		if _, err := database.ExportPolicyAuditChain(ctx, workspaceA); err == nil {
+			t.Fatalf("%s was exported", name)
 		}
 		if _, err := admin.Exec(ctx, restore, restoreArgs...); err != nil {
 			t.Fatalf("%s restore: %v", name, err)
@@ -486,6 +516,25 @@ func assertPolicyAuditChainIntegration(
 	}
 	if err := database.VerifyPolicyAuditChain(ctx, workspaceA); err != nil {
 		t.Fatalf("deleted entry restore did not recover chain: %v", err)
+	}
+	if _, err := database.ExportPolicyAuditChain(ctx, testScope(t, "user:alice", "workspace-a", tenancy.RoleReader)); err == nil {
+		t.Fatal("reader scope exported the policy audit chain")
+	}
+
+	for sequence := exportedA.Chain.HeadSequence + 1; sequence <= auditrecord.MaxEntries; sequence++ {
+		if err := database.Record(ctx, newPolicyAuditEvent(t, workspaceA)); err != nil {
+			t.Fatalf("fill bounded export at sequence %d: %v", sequence, err)
+		}
+	}
+	bounded, err := database.ExportPolicyAuditChain(ctx, workspaceA)
+	if err != nil || len(bounded.Entries) != auditrecord.MaxEntries || bounded.Chain.HeadSequence != auditrecord.MaxEntries {
+		t.Fatalf("512-entry export/error = %d/%d/%v", len(bounded.Entries), bounded.Chain.HeadSequence, err)
+	}
+	if err := database.Record(ctx, newPolicyAuditEvent(t, workspaceA)); err != nil {
+		t.Fatalf("append export overflow sentinel: %v", err)
+	}
+	if oversized, err := database.ExportPolicyAuditChain(ctx, workspaceA); err == nil || oversized.Schema != "" || len(oversized.Entries) != 0 {
+		t.Fatalf("513-entry export/error = %#v/%v", oversized, err)
 	}
 }
 

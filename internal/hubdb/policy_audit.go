@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ArdurAI/sith/internal/auditrecord"
 	"github.com/ArdurAI/sith/internal/pep"
 	"github.com/ArdurAI/sith/internal/tenancy"
 	"github.com/ArdurAI/sith/internal/tracing"
@@ -145,69 +146,149 @@ func (database *AppDB) VerifyPolicyAuditChain(ctx context.Context, scope tenancy
 		return fmt.Errorf("verify policy audit chain: database and context are required")
 	}
 	return database.inWorkspaceReadSnapshot(ctx, scope, func(tx pgx.Tx) error {
-		var headSequence int64
-		var headHash []byte
-		if err := tx.QueryRow(ctx, `
-			SELECT last_sequence, last_hash
-			FROM sith.policy_audit_heads
-			WHERE workspace_id = $1
-		`, scope.WorkspaceID()).Scan(&headSequence, &headHash); err != nil {
-			if err == pgx.ErrNoRows {
-				return fmt.Errorf("policy audit chain is not initialized")
-			}
-			return fmt.Errorf("read policy audit chain head: %w", err)
-		}
-		if headSequence <= 0 || len(headHash) != sha256.Size {
-			return fmt.Errorf("policy audit chain head is invalid")
-		}
+		_, _, _, err := readVerifiedPolicyAuditChainTx(ctx, tx, scope, 0)
+		return err
+	})
+}
 
-		rows, err := tx.Query(ctx, `
-			SELECT sequence, format_version, recorded_at, trace_id, workspace_id, actor, role,
-			       action, verb, verdict, reason_code, event_kind, evidence_digest,
-			       previous_hash, entry_hash
-			FROM sith.policy_audit_entries
-			WHERE workspace_id = $1
-			ORDER BY sequence
-		`, scope.WorkspaceID())
+// ExportPolicyAuditChain returns one complete, verified, privacy-minimized workspace chain. The
+// fixed entry ceiling bounds memory and scan cost, and inWorkspaceReadSnapshot commits before this
+// method returns, so an HTTP caller cannot hold the database transaction open while encoding.
+func (database *AppDB) ExportPolicyAuditChain(ctx context.Context, scope tenancy.Scope) (auditrecord.Export, error) {
+	if database == nil || database.pool == nil || ctx == nil {
+		return auditrecord.Export{}, fmt.Errorf("export policy audit chain: database and context are required")
+	}
+	if err := scope.Authorize(tenancy.ActionExportAudit); err != nil {
+		return auditrecord.Export{}, fmt.Errorf("export policy audit chain: admin scope is required")
+	}
+
+	var result auditrecord.Export
+	err := database.inWorkspaceReadSnapshot(ctx, scope, func(tx pgx.Tx) error {
+		entries, headSequence, headHash, err := readVerifiedPolicyAuditChainTx(ctx, tx, scope, auditrecord.MaxEntries)
 		if err != nil {
-			return fmt.Errorf("read policy audit chain: %w", err)
+			return err
 		}
-		defer rows.Close()
-
-		expectedSequence := int64(1)
-		expectedPrevious := make([]byte, sha256.Size)
-		for rows.Next() {
-			var entry policyAuditEntry
-			if err := rows.Scan(&entry.sequence, &entry.format, &entry.recordedAt, &entry.traceID,
-				&entry.workspaceID, &entry.actor, &entry.role, &entry.action, &entry.verb,
-				&entry.verdict, &entry.reasonCode, &entry.eventKind, &entry.evidence,
-				&entry.previousHash, &entry.entryHash); err != nil {
-				return fmt.Errorf("scan policy audit chain: %w", err)
-			}
-			if entry.sequence != expectedSequence ||
-				entry.workspaceID != scope.WorkspaceID() || len(entry.previousHash) != sha256.Size ||
-				len(entry.entryHash) != sha256.Size || !bytes.Equal(entry.previousHash, expectedPrevious) {
-				return fmt.Errorf("policy audit chain continuity is invalid at sequence %d", expectedSequence)
-			}
-			if err := validatePolicyAuditEntry(entry); err != nil {
-				return fmt.Errorf("policy audit chain event is invalid at sequence %d", expectedSequence)
-			}
-			calculated := policyAuditEntryHash(entry)
-			if !bytes.Equal(entry.entryHash, calculated) {
-				return fmt.Errorf("policy audit chain hash is invalid at sequence %d", expectedSequence)
-			}
-			expectedPrevious = bytes.Clone(entry.entryHash)
-			expectedSequence++
-		}
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("iterate policy audit chain: %w", err)
-		}
-		retainedSequence := expectedSequence - 1
-		if retainedSequence != headSequence || !bytes.Equal(expectedPrevious, headHash) {
-			return fmt.Errorf("policy audit chain head does not match retained history")
-		}
+		result = newPolicyAuditExport(scope.WorkspaceID(), entries, headSequence, headHash)
 		return nil
 	})
+	if err != nil {
+		return auditrecord.Export{}, fmt.Errorf("export policy audit chain: %w", err)
+	}
+	return result, nil
+}
+
+func readVerifiedPolicyAuditChainTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	scope tenancy.Scope,
+	retainLimit int,
+) ([]policyAuditEntry, int64, []byte, error) {
+	var headSequence int64
+	var headHash []byte
+	if err := tx.QueryRow(ctx, `
+		SELECT last_sequence, last_hash
+		FROM sith.policy_audit_heads
+		WHERE workspace_id = $1
+	`, scope.WorkspaceID()).Scan(&headSequence, &headHash); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, 0, nil, fmt.Errorf("policy audit chain is not initialized")
+		}
+		return nil, 0, nil, fmt.Errorf("read policy audit chain head: %w", err)
+	}
+	if headSequence <= 0 || len(headHash) != sha256.Size {
+		return nil, 0, nil, fmt.Errorf("policy audit chain head is invalid")
+	}
+	if retainLimit < 0 || (retainLimit > 0 && headSequence > int64(retainLimit)) {
+		return nil, 0, nil, fmt.Errorf("policy audit chain exceeds the online export limit")
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT sequence, format_version, recorded_at, trace_id, workspace_id, actor, role,
+		       action, verb, verdict, reason_code, event_kind, evidence_digest,
+		       previous_hash, entry_hash
+		FROM sith.policy_audit_entries
+		WHERE workspace_id = $1
+		ORDER BY sequence
+	`, scope.WorkspaceID())
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("read policy audit chain: %w", err)
+	}
+	defer rows.Close()
+
+	var retained []policyAuditEntry
+	if retainLimit > 0 {
+		retained = make([]policyAuditEntry, 0, int(headSequence))
+	}
+	expectedSequence := int64(1)
+	expectedPrevious := make([]byte, sha256.Size)
+	for rows.Next() {
+		var entry policyAuditEntry
+		if err := rows.Scan(&entry.sequence, &entry.format, &entry.recordedAt, &entry.traceID,
+			&entry.workspaceID, &entry.actor, &entry.role, &entry.action, &entry.verb,
+			&entry.verdict, &entry.reasonCode, &entry.eventKind, &entry.evidence,
+			&entry.previousHash, &entry.entryHash); err != nil {
+			return nil, 0, nil, fmt.Errorf("scan policy audit chain: %w", err)
+		}
+		if entry.sequence != expectedSequence ||
+			entry.workspaceID != scope.WorkspaceID() || len(entry.previousHash) != sha256.Size ||
+			len(entry.entryHash) != sha256.Size || !bytes.Equal(entry.previousHash, expectedPrevious) {
+			return nil, 0, nil, fmt.Errorf("policy audit chain continuity is invalid at sequence %d", expectedSequence)
+		}
+		if err := validatePolicyAuditEntry(entry); err != nil {
+			return nil, 0, nil, fmt.Errorf("policy audit chain event is invalid at sequence %d", expectedSequence)
+		}
+		calculated := policyAuditEntryHash(entry)
+		if !bytes.Equal(entry.entryHash, calculated) {
+			return nil, 0, nil, fmt.Errorf("policy audit chain hash is invalid at sequence %d", expectedSequence)
+		}
+		if retainLimit > 0 {
+			if len(retained) == retainLimit {
+				return nil, 0, nil, fmt.Errorf("policy audit chain exceeds the online export limit")
+			}
+			retained = append(retained, entry)
+		}
+		expectedPrevious = bytes.Clone(entry.entryHash)
+		expectedSequence++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, nil, fmt.Errorf("iterate policy audit chain: %w", err)
+	}
+	retainedSequence := expectedSequence - 1
+	if retainedSequence != headSequence || !bytes.Equal(expectedPrevious, headHash) {
+		return nil, 0, nil, fmt.Errorf("policy audit chain head does not match retained history")
+	}
+	return retained, headSequence, bytes.Clone(headHash), nil
+}
+
+func newPolicyAuditExport(
+	workspaceID tenancy.WorkspaceID,
+	entries []policyAuditEntry,
+	headSequence int64,
+	headHash []byte,
+) auditrecord.Export {
+	records := make([]auditrecord.Entry, len(entries))
+	for index, entry := range entries {
+		records[index] = auditrecord.Entry{
+			Sequence: entry.sequence, FormatVersion: entry.format,
+			RecordedAt: entry.recordedAt.UTC().Truncate(time.Microsecond), TraceID: string(entry.traceID),
+			Actor: entry.actor, Role: string(entry.role), Action: string(entry.action), Verb: string(entry.verb),
+			Verdict: string(entry.verdict), ReasonCode: entry.reasonCode, EventKind: entry.eventKind,
+			EvidenceDigest: entry.evidence, PreviousHash: auditHashString(entry.previousHash),
+			EntryHash: auditHashString(entry.entryHash),
+		}
+	}
+	return auditrecord.Export{
+		Schema: auditrecord.SchemaV1, WorkspaceID: string(workspaceID),
+		Chain: auditrecord.Chain{
+			HashAlgorithm: auditrecord.HashAlgorithm, HeadSequence: headSequence,
+			HeadHash: auditHashString(headHash),
+		},
+		Entries: records,
+	}
+}
+
+func auditHashString(value []byte) string {
+	return "sha256:" + hex.EncodeToString(value)
 }
 
 func auditEventScope(event pep.AuditEvent) (tenancy.Scope, error) {

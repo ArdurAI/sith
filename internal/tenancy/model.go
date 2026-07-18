@@ -35,6 +35,7 @@ type Action string
 // Supported authorization classes.
 const (
 	ActionRead            Action = "read"
+	ActionExportAudit     Action = "export-audit"
 	ActionProposeIntent   Action = "propose-intent"
 	ActionApproveIntent   Action = "approve-intent"
 	ActionManageWorkspace Action = "manage-workspace"
@@ -102,7 +103,7 @@ func (role Role) Allows(action Action) bool {
 	case RoleApprover:
 		return action == ActionRead || action == ActionApproveIntent
 	case RoleAdmin:
-		return action == ActionRead || action == ActionManageWorkspace
+		return action == ActionRead || action == ActionExportAudit || action == ActionManageWorkspace
 	default:
 		return false
 	}

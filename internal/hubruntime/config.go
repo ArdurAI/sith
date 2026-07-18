@@ -167,12 +167,19 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: HTTP handler configuration is invalid")
 	}
+	auditExportHandler, err := hubserver.NewAuditExportHandler(hubserver.AuditExportHandlerConfig{
+		Verifier: verifier, AuthObserver: authObserver, Exporter: database, PEP: enforcer,
+	})
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("construct hub runtime: audit export handler configuration is invalid")
+	}
 	probeHandler, err := hubserver.NewProbeHandler(hubserver.ProbeHandlerConfig{Checker: database, Observer: metrics})
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: probe handler configuration is invalid")
 	}
-	mux, err := newRuntimeMux(fleetHandler, probeHandler)
+	mux, err := newRuntimeMux(fleetHandler, auditExportHandler, probeHandler)
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -276,15 +283,16 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 	return &Runtime{server: server, close: cleanup}, nil
 }
 
-func newRuntimeMux(fleetHandler http.Handler, probeHandler *hubserver.ProbeHandler) (*http.ServeMux, error) {
-	if fleetHandler == nil || probeHandler == nil {
-		return nil, fmt.Errorf("construct hub runtime: fleet and probe handlers are required")
+func newRuntimeMux(fleetHandler, auditExportHandler http.Handler, probeHandler *hubserver.ProbeHandler) (*http.ServeMux, error) {
+	if fleetHandler == nil || auditExportHandler == nil || probeHandler == nil {
+		return nil, fmt.Errorf("construct hub runtime: fleet, audit export, and probe handlers are required")
 	}
 	mux := http.NewServeMux()
 	// Register without a method qualifier so HEAD and every non-GET method reach the probe's exact
 	// fail-closed request validation instead of ServeMux's implicit GET-to-HEAD behavior.
 	mux.Handle(hubserver.LivenessPath, http.HandlerFunc(probeHandler.ServeLiveness))
 	mux.Handle(hubserver.ReadinessPath, http.HandlerFunc(probeHandler.ServeReadiness))
+	mux.Handle("/v1/workspaces/{workspace}/audit/export", auditExportHandler)
 	mux.Handle("/", fleetHandler)
 	return mux, nil
 }

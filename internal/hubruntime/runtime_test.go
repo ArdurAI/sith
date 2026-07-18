@@ -108,13 +108,18 @@ func TestRuntimeMuxMountsProbesOutsideAuthenticatedFleetFallback(t *testing.T) {
 		fallbackCalls++
 		response.WriteHeader(http.StatusUnauthorized)
 	})
+	auditCalls := 0
+	audit := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		auditCalls++
+		response.WriteHeader(http.StatusTeapot)
+	})
 	probes, err := hubserver.NewProbeHandler(hubserver.ProbeHandlerConfig{
 		Checker: runtimeProbeChecker(func(context.Context) error { return nil }),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	mux, err := newRuntimeMux(fallback, probes)
+	mux, err := newRuntimeMux(fallback, audit, probes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,19 +133,26 @@ func TestRuntimeMuxMountsProbesOutsideAuthenticatedFleetFallback(t *testing.T) {
 		{method: http.MethodGet, target: hubserver.LivenessPath, status: http.StatusNoContent},
 		{method: http.MethodGet, target: hubserver.ReadinessPath, status: http.StatusNoContent},
 		{method: http.MethodHead, target: hubserver.LivenessPath, status: http.StatusNotFound},
+		{method: http.MethodGet, target: "/v1/workspaces/workspace-a/audit/export", status: http.StatusTeapot},
 		{method: http.MethodGet, target: "/v1/workspaces/workspace-a/fleet", status: http.StatusUnauthorized, calls: 1},
 	} {
 		response := httptest.NewRecorder()
 		mux.ServeHTTP(response, httptest.NewRequest(test.method, test.target, nil))
 		if response.Code != test.status || fallbackCalls != test.calls {
-			t.Fatalf("%s %s = status %d/fallback calls %d, want %d/%d", test.method, test.target, response.Code, fallbackCalls, test.status, test.calls)
+			t.Fatalf("%s %s = status %d/fallback calls %d/audit calls %d, want %d/%d", test.method, test.target, response.Code, fallbackCalls, auditCalls, test.status, test.calls)
 		}
 	}
 
-	if _, err := newRuntimeMux(nil, probes); err == nil {
+	if auditCalls != 1 {
+		t.Fatalf("audit route calls = %d, want 1", auditCalls)
+	}
+	if _, err := newRuntimeMux(nil, audit, probes); err == nil {
 		t.Fatal("newRuntimeMux accepted a missing fleet handler")
 	}
-	if _, err := newRuntimeMux(fallback, nil); err == nil {
+	if _, err := newRuntimeMux(fallback, nil, probes); err == nil {
+		t.Fatal("newRuntimeMux accepted a missing audit export handler")
+	}
+	if _, err := newRuntimeMux(fallback, audit, nil); err == nil {
 		t.Fatal("newRuntimeMux accepted a missing probe handler")
 	}
 }

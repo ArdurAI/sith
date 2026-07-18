@@ -317,10 +317,13 @@ only `POST /v1/workspaces/{workspace}/fleet:refresh`,
 `GET /v1/workspaces/{workspace}/fleet`, and
 `GET /v1/workspaces/{workspace}/fleet/images/{sha256:<64-lowercase-hex>}`, and
 `GET /v1/workspaces/{workspace}/fleet/images/{sha256:<64-lowercase-hex>}/cves`, and
-`GET /v1/workspaces/{workspace}/fleet/cves/{CVE-YYYY-N...}`. Those fleet routes require an
-exact signed Sith session, derives the workspace scope from its signed memberships, carries that
-scope through the PEP and RLS seams, accepts no query parameters, and returns only normalized
-coverage/fleet data under `Cache-Control: no-store`.
+`GET /v1/workspaces/{workspace}/fleet/cves/{CVE-YYYY-N...}`. The separate
+`GET /v1/workspaces/{workspace}/audit/export` route returns the existing retained audit chain only
+to a signed workspace admin. All of those bearer routes require an exact signed Sith session,
+derive the workspace scope from signed memberships, carry that scope through the PEP and RLS seams,
+and reject query parameters. Fleet routes return only normalized coverage/fleet data under
+`Cache-Control: no-store`; the audit-export route returns its versioned JSON attachment under the
+same bearer-only, tenant-scoped cache boundary.
 
 After deriving the signed scope, the hub mints one opaque local trace ID for the governed request.
 It strips common caller-supplied trace and correlation carriers, never echoes or forwards them,
@@ -338,6 +341,19 @@ Approval creation and consumption append distinct format-versioned lifecycle ent
 tenant chain in the exact transaction that mutates the single-use grant. An audit failure therefore
 rolls back the approval mutation. Each lifecycle pair carries only a one-way, domain-separated
 digest of the immutable grant binding—never raw targets, arguments, or justification content.
+The exact audit-export route uses the dedicated `export-audit` action and `audit.export` PEP verb.
+Sith durably appends that authorization decision before reading the export, then verifies the head
+and complete retained history in one forced-RLS repeatable-read snapshot. It commits the database
+transaction before serializing a versioned JSON attachment, so slow clients cannot pin the
+snapshot and late verification cannot produce a partial successful response. One online export is
+limited to 512 entries and the process admits at most four concurrently; oversized, uninitialized,
+or invalid chains fail with the same unavailable response. This portable document contains only
+the existing privacy-minimized policy and approval events plus their SHA-256 links. It is not the
+future intent-correlated Ardur decision ledger, pagination, WORM storage, external anchoring, or a
+claim that E6 is complete.
+The response uses `X-Content-Type-Options: nosniff` and the fixed
+`sith-policy-audit.json` attachment filename. Authentication is bearer-only; browser cookies,
+filters, and raw-payload selection are rejected.
 Either database or structured-process-log delivery failure blocks the operation, so production
 database and logging availability and latency are part of the governed-read availability budget.
 The optional loopback metrics surface exposes that boundary as
@@ -433,6 +449,8 @@ listener, creates a Kubernetes client, or starts collection.
 Migration 0011 preserves defaults for older format-1 audit writers, but older verifiers do not
 understand format-2 approval lifecycle entries. During a rolling upgrade, run the migration, upgrade
 all verifier-capable hub instances, and only then enable traffic that creates or consumes approvals.
+Migration 0012 only extends the retained action constraint with the closed `export-audit` value;
+deploy it before exposing the audit-export route so its authorizing decision can be appended.
 
 The normal hub process continues to use only `SITH_HUB_DATABASE_URL` for the non-owner application
 role. Do not reuse the migration-owner credential in the hub Deployment or place either database
