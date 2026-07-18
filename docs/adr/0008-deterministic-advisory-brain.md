@@ -24,9 +24,10 @@ bare workload name.
 1. `internal/brain` consumes a closed normalized observation envelope: entity reference, evidence
    lens, key, value, source, time, and staleness. It performs no I/O. Kubernetes decoding stays in
    `fleetcache`; cache-to-rule projection stays in one adapter.
-2. The catalog contains stable R1-R6 rules. Matching is exact and deterministic. Verdict ordering
-   is fleet-wide correlation, score, rule ID, then scope. R1 can compose as the cause of R3 when a
-   recent change and repeated failure are attached to the same entity.
+2. The catalog contains stable canonical R1-R6 rules plus the bounded adjacent R7 image-pull
+   symptom rule. Matching is exact and deterministic. Verdict ordering is fleet-wide correlation,
+   score, rule ID, then scope. R1 can compose as the cause of R3 when a recent change and repeated
+   failure are attached to the same entity.
 3. Required and strengthening lenses are checked per entity. Fleet-level connector availability
    cannot satisfy a workload's evidence gate. Missing or stale required evidence yields
    `unconfirmed`; missing variant evidence yields `detected` plus named missing lenses.
@@ -38,6 +39,23 @@ bare workload name.
 6. Local output is an inert advisory command or PR-change description. A source boundary test
    rejects imports from connector, local-operation, and MCP packages; the brain has no plan,
    execute, intent, PEP, or dispatch seam.
+
+### 2026-07-18 extension: adjacent R7 image-pull failure
+
+R7 is the first adjacent rule admitted by the existing observation schema. It matches only exact,
+case-insensitive `ImagePullBackOff` or `ErrImagePull` values from the sanitized LIVE
+`pod.reason` projection. The cited waiting reason proves an image-pull failure or backoff but does
+not identify registry authentication, image-reference, reachability, rate-limit, platform, or any
+other underlying cause. R7 therefore emits only a sensitive-marked, read-only
+`kubectl describe pod` advisory and is explicitly excluded from fleet-wide image-digest
+correlation. It adds no registry probe, credential access, Event-message retention, connector,
+write path, storage, or network egress.
+
+This boundary follows Kubernetes' documented container-state contract: a waiting container is
+still completing startup operations such as pulling its image, its `Reason` summarizes that state,
+and `kubectl describe pod` is the documented inspection surface. See the upstream
+[Pod lifecycle](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#container-states)
+and [Pod debugging](https://kubernetes.io/docs/tasks/debug/debug-application/debug-pods/) guides.
 
 ## Consequences
 

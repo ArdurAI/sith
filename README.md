@@ -550,19 +550,25 @@ normalized in-memory records; partial results name stale/unreachable contexts. T
 persisted to disk, so raw workload specifications do not become a new plaintext credential-adjacent
 artifact.
 
-`sith investigate` runs the deterministic R1-R6 catalog over the same cache: bad deploy,
-OOMKilled, CrashLoopBackOff/repeated container failure, config drift, certificate expiry, and node
-pressure. Every verdict includes its rule, exact cited signals, confidence state, missing lenses,
-and an advisory command or PR change for the operator to inspect and run. The brain performs no
-I/O and imports no connector planning, execution, intent, PEP, MCP, or local-operation path.
+`sith investigate` runs the deterministic R1-R6 catalog plus adjacent R7 over the same cache: bad
+deploy, OOMKilled, CrashLoopBackOff/repeated container failure, config drift, certificate expiry,
+node pressure, and exact `ImagePullBackOff`/`ErrImagePull` detection. R7 proves only an image-pull
+failure or backoff, not registry authentication, an invalid reference, reachability, rate limiting,
+platform mismatch, or another underlying cause. Its sensitive-marked advisory is only a read-only
+`kubectl describe pod` command; it retains no image reference, registry credential, Secret, Event
+message, or raw payload. Every verdict includes its rule, exact cited signals, confidence state,
+missing lenses, and an advisory command or PR change for the operator to inspect and run. The brain
+performs no I/O and imports no connector planning, execution, intent, PEP, MCP, or local-operation
+path.
 
 Phase-L kubeconfig hydration supplies LIVE pod/workload/node evidence and discrete Kubernetes
 Events for TIMELINE when present. DESIRED and TELEMETRY remain unavailable unless a future
 connector supplies entity-attached facts. Consequently, an OOM or repeated failure is detected
 from LIVE evidence while its leak/spike/log-cause variant remains explicitly unconfirmed. A stale
 or missing required lens downgrades the dependent verdict rather than being treated as negative
-evidence. Identical unhealthy image digests on two or more contexts produce a fleet-wide verdict
-ahead of per-cluster findings. Advisory output never executes or dispatches anything.
+evidence. For correlation-eligible canonical rules, identical unhealthy image digests on two or
+more contexts produce a fleet-wide verdict ahead of per-cluster findings; adjacent R7 remains
+entity-local. Advisory output never executes or dispatches anything.
 
 Initial list-watch hydration is a complete, consistent snapshot rather than a bounded prefix: each
 scope and kind uses 250-object pages under one request deadline, with hard limits of 10,000 objects

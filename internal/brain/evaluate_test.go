@@ -5,6 +5,7 @@ package brain
 import (
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,6 +61,149 @@ func TestEvaluateCanonicalRules(t *testing.T) {
 				t.Fatalf("verdict lacks cited evidence or advisory: %#v", result.Verdicts[0])
 			}
 		})
+	}
+}
+
+func TestEvaluateImagePullFailureRuleIsBounded(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+
+	for _, reason := range []string{"ImagePullBackOff", "imagepullbackoff", "ImAgEpUlLbAcKoFf", "ErrImagePull", "errimagepull"} {
+		reason := reason
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+			observation := observe(now, fleet.LensLive, "pod.reason", reason)
+			observation.Ref.Scope = "dev'; printf injected #"
+			observation.Ref.Namespace = "payments'; printf injected #"
+			observation.Ref.Name = "api'; printf injected #"
+
+			result, err := Evaluate(Investigation{
+				Workspace:    fleet.LocalWorkspace,
+				Observations: []Observation{observation},
+				Coverage:     covered(fleet.LensLive),
+			})
+			if err != nil {
+				t.Fatalf("Evaluate() error = %v", err)
+			}
+			if len(result.Verdicts) != 1 {
+				t.Fatalf("verdicts = %#v, want one R7 verdict", result.Verdicts)
+			}
+			verdict := result.Verdicts[0]
+			if verdict.Rule != RuleImagePull || verdict.Status != StatusConfirmed || verdict.FleetWide {
+				t.Fatalf("verdict = %#v, want confirmed non-fleet R7", verdict)
+			}
+			if len(verdict.Citations) != 1 {
+				t.Fatalf("citations = %#v, want one exact LIVE citation", verdict.Citations)
+			}
+			citation := verdict.Citations[0]
+			if !reflect.DeepEqual(citation.Ref, observation.Ref) || citation.Lens != fleet.LensLive || citation.Predicate != "pod.reason" ||
+				citation.Observed != reason || citation.Source != observation.Source || !citation.ObservedAt.Equal(now) {
+				t.Fatalf("citation = %#v, want exact source observation", citation)
+			}
+			wantCommand := "kubectl --context 'dev'\\''; printf injected #' describe pod 'api'\\''; printf injected #' -n 'payments'\\''; printf injected #'"
+			if verdict.Advisory.Command != wantCommand || verdict.Advisory.PRDiff != "" || !verdict.Advisory.Sensitive {
+				t.Fatalf("advisory = %#v, want quoted sensitive read-only describe", verdict.Advisory)
+			}
+			if !strings.Contains(verdict.Hypothesis, "does not identify") || strings.Contains(strings.ToLower(verdict.Hypothesis), "authentication failure") {
+				t.Fatalf("hypothesis = %q, want explicit cause uncertainty", verdict.Hypothesis)
+			}
+		})
+	}
+
+	for _, reason := range []string{
+		"ImagePullBackOff/registry-auth",
+		"ErrImagePull: unauthorized",
+		" ImagePullBackOff",
+		"ImagePullBackOff ",
+		"\tErrImagePull",
+		"ImagePull",
+		"PullBackOff",
+	} {
+		reason := reason
+		t.Run("reject "+reason, func(t *testing.T) {
+			t.Parallel()
+			result, err := Evaluate(Investigation{
+				Workspace:    fleet.LocalWorkspace,
+				Observations: []Observation{observe(now, fleet.LensLive, "pod.reason", reason)},
+				Coverage:     covered(fleet.LensLive),
+			})
+			if err != nil {
+				t.Fatalf("Evaluate() error = %v", err)
+			}
+			if len(result.Verdicts) != 0 {
+				t.Fatalf("caller-controlled reason %q yielded %#v", reason, result.Verdicts)
+			}
+		})
+	}
+}
+
+func TestEvaluateImagePullFailureAbstainsOnUnusableLiveEvidence(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+
+	for _, test := range []struct {
+		name        string
+		observation Observation
+		coverage    map[fleet.Lens]LensCoverage
+	}{
+		{name: "stale observation", observation: func() Observation {
+			observation := observe(now, fleet.LensLive, "pod.reason", "ImagePullBackOff")
+			observation.Stale = true
+			return observation
+		}(), coverage: covered(fleet.LensLive)},
+		{name: "stale coverage", observation: observe(now, fleet.LensLive, "pod.reason", "ImagePullBackOff"), coverage: map[fleet.Lens]LensCoverage{
+			fleet.LensLive: {Available: true, Stale: true, Reason: "watch disconnected"},
+		}},
+		{name: "unavailable coverage", observation: observe(now, fleet.LensLive, "pod.reason", "ErrImagePull"), coverage: map[fleet.Lens]LensCoverage{
+			fleet.LensLive: {Available: false, Reason: "context unreachable"},
+		}},
+		{name: "missing coverage", observation: observe(now, fleet.LensLive, "pod.reason", "ErrImagePull"), coverage: map[fleet.Lens]LensCoverage{}},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			result, err := Evaluate(Investigation{
+				Workspace:    fleet.LocalWorkspace,
+				Observations: []Observation{test.observation},
+				Coverage:     test.coverage,
+			})
+			if err != nil {
+				t.Fatalf("Evaluate() error = %v", err)
+			}
+			if len(result.Verdicts) != 1 || result.Verdicts[0].Rule != RuleImagePull ||
+				result.Verdicts[0].Status != StatusUnconfirmed ||
+				!slices.Equal(result.Verdicts[0].MissingLenses, []fleet.Lens{fleet.LensLive}) {
+				t.Fatalf("verdicts = %#v, want unconfirmed R7 with LIVE gap", result.Verdicts)
+			}
+		})
+	}
+}
+
+func TestEvaluateImagePullFailureDoesNotCorrelateFleetWide(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	const repoDigest = "registry.example/payments@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	observations := make([]Observation, 0, 4)
+	for _, cluster := range []string{"alpha", "beta"} {
+		ref := testRef()
+		ref.Scope = cluster
+		observations = append(observations,
+			Observation{Ref: ref, Lens: fleet.LensLive, Key: "pod.reason", Value: "ImagePullBackOff", ObservedAt: now, Source: "kubeconfig"},
+			Observation{Ref: ref, Lens: fleet.LensLive, Key: fleet.OTelContainerImageRepoDigests, Value: repoDigest, ObservedAt: now, Source: "kubeconfig"},
+		)
+	}
+
+	result, err := Evaluate(Investigation{Workspace: fleet.LocalWorkspace, Observations: observations, Coverage: covered(fleet.LensLive)})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if len(result.Verdicts) != 2 {
+		t.Fatalf("verdicts = %#v, want one R7 verdict per Pod", result.Verdicts)
+	}
+	for _, verdict := range result.Verdicts {
+		if verdict.Rule != RuleImagePull || verdict.FleetWide || len(verdict.Clusters) != 0 {
+			t.Fatalf("verdict = %#v, R7 must remain entity-local", verdict)
+		}
 	}
 }
 

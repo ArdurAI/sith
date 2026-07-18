@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "name": "r7-image-pull-backoff",
+  "sanitized": true,
+  "investigation": {
+    "workspace": "local",
+    "coverage": {"live": {"available": true, "stale": false}},
+    "observations": [
+      {"ref": {"source_kind": "fixture", "scope": "alpha", "kind": "Pod", "namespace": "payments", "name": "api-abc"}, "lens": "live", "key": "pod.reason", "value": "ImagePullBackOff", "observed_at": "2026-07-18T00:00:00Z", "source": "synthetic", "stale": false}
+    ]
+  },
+  "expect": {
+    "top_rule": "R7", "status": "confirmed", "scope": "alpha", "fleet_wide": false,
+    "cause_of": [],
+    "citation_evidence": [{"lens": "live", "predicate": "pod.reason", "observed": "ImagePullBackOff"}],
+    "missing_lenses": [],
+    "advisory": {"command": true, "pr_diff": false, "sensitive": true}
+  }
+}

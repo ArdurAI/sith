@@ -315,6 +315,10 @@ transparent, abstaining** reasoner over E2's four-lens graph that *proposes, nev
   advisory in local mode, governed in the hub. One brain, two modes. The AI-SRE tools become
   *clients* of this governance, not competitors — their advice becomes a typed `plan` Sith gates.
 
+The first adjacent rule, **R7**, adds exact `ImagePullBackOff` / `ErrImagePull` symptom detection
+over the existing sanitized LIVE cache. It remains local, read-only, entity-scoped, and explicitly
+uncertain about the underlying registry, reference, network, rate-limit, or platform cause.
+
 ## Integration waves (E12) — the connector coverage the brain needs
 
 Connectors ship in four waves (`docs/specs/E2-readfed-brain-integrations.md` §4), each scored by

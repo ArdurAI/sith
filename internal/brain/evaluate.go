@@ -102,7 +102,7 @@ func match(predicate predicate, observations []Observation) (Observation, bool) 
 			continue
 		}
 		for _, expected := range predicate.values {
-			if strings.EqualFold(strings.TrimSpace(observation.Value), expected) {
+			if strings.EqualFold(observation.Value, expected) {
 				if !observation.Stale {
 					return observation, true
 				}
@@ -115,7 +115,7 @@ func match(predicate predicate, observations []Observation) (Observation, bool) 
 
 func unavailable(lens fleet.Lens, coverage map[fleet.Lens]LensCoverage, observations []Observation) bool {
 	state, declared := coverage[lens]
-	if declared && (!state.Available || state.Stale) {
+	if !declared || !state.Available || state.Stale {
 		return true
 	}
 	for _, observation := range observations {
@@ -158,6 +158,9 @@ func correlateFleet(verdicts []Verdict, observations map[string][]Observation) [
 	}
 	groups := make(map[groupKey]map[string]groupMember)
 	for _, verdict := range verdicts {
+		if !supportsFleetCorrelation(verdict.Rule) {
+			continue
+		}
 		entity := entityKey(verdict.Ref)
 		for _, observation := range observations[entity] {
 			if observation.Key != fleet.OTelContainerImageRepoDigests || observation.Stale {
@@ -207,6 +210,15 @@ func correlateFleet(verdicts []Verdict, observations map[string][]Observation) [
 		result = append(result, correlated)
 	}
 	return result
+}
+
+func supportsFleetCorrelation(ruleID RuleID) bool {
+	switch ruleID {
+	case RuleBadDeploy, RuleOOMKilled, RuleCrashLoop, RuleConfigDrift, RuleCertExpiry, RuleNodePressure:
+		return true
+	default:
+		return false
+	}
 }
 
 func preferCorrelationObservation(candidate, current Observation) bool {
