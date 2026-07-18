@@ -397,3 +397,67 @@ tests:
       - eval_time: 20m
         alertname: SithHubDatabaseReadinessDegradationHigh
         exp_alerts: []
+
+  - name: initially missing Hub telemetry honors the hold then fires
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: SithHubTelemetryMissing
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: SithHubTelemetryMissing
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub telemetry is absent from the rule evaluator
+              description: No Sith build-info sample reached the rule evaluator during the last ten minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubtelemetrymissing
+
+  - name: current Hub build info stays quiet and arbitrary source labels do not matter
+    interval: 1m
+    input_series:
+      - series: 'sith_build_info{version="v1.2.3",commit="abcdef0",job="hub-a",instance="10.0.0.1:9090",workspace="must-not-propagate"}'
+        values: '1+0x20'
+      - series: 'sith_build_info{version="v1.2.4",commit="abcdef1",job="hub-b",trace="must-not-propagate"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SithHubTelemetryMissing
+        exp_alerts: []
+
+  - name: bounded Hub telemetry gap stays quiet
+    interval: 1m
+    input_series:
+      - series: 'sith_build_info{version="v1.2.3",commit="abcdef0"}'
+        values: '1+0x5 _x9 1+0x10'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: SithHubTelemetryMissing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SithHubTelemetryMissing
+        exp_alerts: []
+
+  - name: sustained Hub telemetry disappearance fires then recovery resolves
+    interval: 1m
+    input_series:
+      - series: 'sith_build_info{version="v1.2.3",commit="abcdef0",endpoint="must-not-propagate"}'
+        values: '1+0x5 _x15 1+0x10'
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: SithHubTelemetryMissing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SithHubTelemetryMissing
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub telemetry is absent from the rule evaluator
+              description: No Sith build-info sample reached the rule evaluator during the last ten minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubtelemetrymissing
+      - eval_time: 21m
+        alertname: SithHubTelemetryMissing
+        exp_alerts: []
