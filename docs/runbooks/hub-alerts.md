@@ -1,9 +1,10 @@
 # Sith hub alert runbook
 
 These alerts consume only Sith's fixed-cardinality, process-wide metrics. They are a portable
-F10.4a baseline, not the complete F10.4 SLO and error-budget contract. They do not cover read
-freshness, governed dispatch success, PDP latency, KMS/signing, or the availability of the scrape
-and notification pipeline.
+F10.4a/F10.4b baseline, not the complete F10.4 SLO and error-budget contract. The fleet-read alert
+covers sustained aggregate coverage degradation but does not establish snapshot-age freshness.
+The rules do not cover governed dispatch success, PDP latency, KMS/signing, or the availability of
+the scrape and notification pipeline.
 
 The rules aggregate away every input-series label before producing an alert. Configure stable
 Prometheus external labels if the notification must identify an environment. Do not add workspace,
@@ -80,11 +81,37 @@ formal read-freshness SLO.
 4. Confirm the success counter resumes and the failure ratio falls naturally. Do not delete stale
    evidence or force a refresh outside the governed read path.
 
+## SithHubFleetReadCoverageDegradationHigh
+
+**Meaning.** More than 5% of at least 20 aggregate eligible fleet reads were `degraded` or `error`
+over 15 minutes, and the condition persisted for 10 minutes. Eligible outcomes are `complete`,
+`degraded`, and `error`. `degraded` includes incomplete or internally inconsistent coverage;
+`error` means the authorized persisted read failed. A `complete` outcome means the existing coverage
+contract reported no gaps—it does not guarantee snapshot age. Legitimate internally consistent
+`empty` reads are excluded from the ratio.
+
+**Triage.**
+
+1. Compare the aggregate `degraded` and `error` counters. Do not add tenant, workspace, spoke,
+   resource, principal, trace, endpoint, age, or raw-error labels to the metric or alert.
+2. For `degraded`, use the tenant-scoped fleet API and its named stale, unreachable, truncated,
+   unaccounted, and inconsistent coverage gaps to identify affected scopes. Keep PEP and RLS
+   boundaries intact; the process-wide alert cannot safely identify them.
+3. For `error`, inspect PostgreSQL availability, connection saturation, migrations, and the Hub
+   process through their operator-owned observability surfaces. Do not expose wrapped reader errors
+   as metric labels or alert annotations.
+4. Confirm eligible reads resume with `complete` outcomes and the ratio falls naturally. Do not
+   suppress evidence by treating degraded reads as complete, excluding scopes, bypassing the PEP,
+   or weakening RLS.
+
 ## Threshold and cost notes
 
-The three expressions evaluate once per minute over existing series and produce at most three alert
+The four expressions evaluate once per minute over existing series and produce at most four alert
 instances per rule evaluator. They create no recording series, listener, exporter, remote-write
-path, or storage. The 5%/20-attempt/10-minute snapshot threshold suppresses low-volume and transient
-noise; change it only through a reviewed local override backed by observed traffic and an explicit
-response owner. Full SLO thresholds and burn-rate alerts wait for the missing freshness, dispatch,
-and PDP production signals.
+path, or storage. Both ratio alerts use a 5% threshold and a 10-minute hold, with the minimum volume
+defined independently by each expression. The snapshot ratio requires 20 aggregate attempts. The
+fleet-read ratio requires 20 eligible `complete|degraded|error` reads and excludes `empty` from
+numerator and denominator, so legitimate zero-scope traffic neither fires nor hides the alert.
+Change these thresholds only through a reviewed local override backed by observed traffic and an
+explicit response owner. Full SLO thresholds and burn-rate alerts wait for negotiated objectives
+and the missing freshness, dispatch, and PDP production signals.

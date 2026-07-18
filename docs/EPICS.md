@@ -2623,6 +2623,13 @@ Hub symptoms: fail-closed policy-audit errors, lost authentication-refusal deliv
 sustained aggregate snapshot failure ratio. It deliberately adds no remote scrape path or monitoring
 CRD and does not claim the still-missing read-freshness, dispatch-success, or PDP-latency SLOs.
 
+**Implementation note (F10.4b).** A fourth portable warning consumes the bounded F10.1d outcome
+counter and fires only when more than five percent of at least twenty aggregate eligible fleet reads
+are `degraded` or `error` over fifteen minutes for ten minutes. Eligible outcomes are `complete`,
+`degraded`, and `error`; legitimate `empty` reads are excluded from both numerator and denominator.
+This is a user-visible coverage symptom, not a snapshot-age guarantee, SLO target, error budget, or
+burn-rate page.
+
 ### F10.5 — Crown-jewel hardening
 
 **What it is.** The hardening the hub demands as the highest-value target: signer-key protection,
