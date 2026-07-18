@@ -475,6 +475,16 @@ hub). Weights are indicative, to be tuned against real incidents.
 `FailingDependency` (mesh/trace-driven), `Pipeline/SyncFailure` (Argo/CI), `HPA-thrash`,
 `PVC-full / volume-bind`. The schema in §3.3 admits them without change.
 
+**Implemented adjacent rule R7 (2026-07-18):** R7 consumes only the existing sanitized LIVE
+`pod.reason` projection and matches exact, case-insensitive `ImagePullBackOff` or `ErrImagePull`.
+Those reasons establish the image-pull symptom, not its underlying cause; R7 does not claim
+registry authentication, bad reference, reachability, rate-limit, platform, or another variant.
+It cites the single Pod observation and emits only a sensitive-marked, read-only
+`kubectl describe pod` advisory. It retains no image reference, registry credential, Secret,
+Event message, or raw payload and performs no probe, connector call, write, governed-plan handoff,
+or fleet-wide correlation. Stale or unavailable LIVE evidence produces an `unconfirmed` verdict
+with the LIVE gap named.
+
 ### 3.5 Rule composition and arbitration
 
 Real incidents fire several rules at once. The Brain resolves them via the graph and the timeline:

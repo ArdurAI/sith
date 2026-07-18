@@ -33,6 +33,39 @@ func TestFromCacheProjectsLiveFactsAndHonestCoverage(t *testing.T) {
 	}
 }
 
+func TestFromCacheProjectsExactImagePullReasons(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+
+	for _, reason := range []string{"ImagePullBackOff", "ErrImagePull"} {
+		reason := reason
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+			input := FromCache(fleet.LocalWorkspace, fleetcache.Snapshot{
+				Coverage: fleet.Coverage{Requested: 1, Reachable: 1},
+				Records: []fleetcache.Record{{
+					Fact: fleet.Fact{Evidence: fleet.Evidence{
+						Ref:    fleet.ResourceRef{SourceKind: "kubeconfig", Scope: "alpha", Kind: "Pod", Namespace: "prod", Name: "payments-0"},
+						Source: "alpha",
+					}, Workspace: fleet.LocalWorkspace},
+					Workspace: fleet.LocalWorkspace, Kind: "Pod", Cluster: "alpha", Namespace: "prod", Name: "payments-0",
+					Reasons: []string{reason}, ObservedAt: now,
+				}},
+			})
+			if len(input.Observations) != 1 || input.Observations[0].Key != "pod.reason" || input.Observations[0].Value != reason {
+				t.Fatalf("observations = %#v, want one exact sanitized reason", input.Observations)
+			}
+			result, err := Evaluate(input)
+			if err != nil {
+				t.Fatalf("Evaluate() error = %v", err)
+			}
+			if len(result.Verdicts) != 1 || result.Verdicts[0].Rule != RuleImagePull {
+				t.Fatalf("verdicts = %#v, want R7", result.Verdicts)
+			}
+		})
+	}
+}
+
 func TestFromCacheExplainsTruncatedLiveCoverage(t *testing.T) {
 	t.Parallel()
 	input := FromCache(fleet.LocalWorkspace, fleetcache.Snapshot{

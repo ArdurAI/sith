@@ -64,4 +64,10 @@ var catalog = []rule{
 		required: []fleet.Lens{fleet.LensLive}, strengthener: []fleet.Lens{fleet.LensTelemetry},
 		advisory: Advisory{Command: "inspect capacity and autoscaler state for node {name} before any cordon or drain", Sensitive: true},
 	},
+	{
+		id: RuleImagePull, failureMode: "image pull failure", rootCause: "Kubernetes reports that it cannot pull a Pod image; the waiting reason does not identify the underlying registry, reference, network, rate-limit, or platform cause",
+		trigger:  predicate{fleet.LensLive, "pod.reason", []string{"imagepullbackoff", "errimagepull"}, 3},
+		required: []fleet.Lens{fleet.LensLive},
+		advisory: Advisory{Command: "kubectl --context {context} describe pod {name} -n {namespace}", Sensitive: true},
+	},
 }

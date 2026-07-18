@@ -39,6 +39,23 @@ bare workload name.
    rejects imports from connector, local-operation, and MCP packages; the brain has no plan,
    execute, intent, PEP, or dispatch seam.
 
+### 2026-07-18 extension: adjacent R7 image-pull failure
+
+R7 is the first adjacent rule admitted by the existing observation schema. It matches only exact,
+case-insensitive `ImagePullBackOff` or `ErrImagePull` values from the sanitized LIVE
+`pod.reason` projection. The cited waiting reason proves an image-pull failure or backoff but does
+not identify registry authentication, image-reference, reachability, rate-limit, platform, or any
+other underlying cause. R7 therefore emits only a sensitive-marked, read-only
+`kubectl describe pod` advisory and is explicitly excluded from fleet-wide image-digest
+correlation. It adds no registry probe, credential access, Event-message retention, connector,
+write path, storage, or network egress.
+
+This boundary follows Kubernetes' documented container-state contract: a waiting container is
+still completing startup operations such as pulling its image, its `Reason` summarizes that state,
+and `kubectl describe pod` is the documented inspection surface. See the upstream
+[Pod lifecycle](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#container-states)
+and [Pod debugging](https://kubernetes.io/docs/tasks/debug/debug-application/debug-pods/) guides.
+
 ## Consequences
 
 - Investigations are offline, reproducible, replayable, and inspectable. The same observation

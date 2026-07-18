@@ -5,6 +5,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -84,5 +85,52 @@ func TestInvestigationSurfaceRendersR1ThroughR4Fixtures(t *testing.T) {
 				t.Fatalf("result/output = %#v/%q", result, output.String())
 			}
 		})
+	}
+}
+
+func TestInvestigationSurfaceRendersBoundedImagePullFailure(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	ref := fleet.ResourceRef{SourceKind: "fixture", Scope: "alpha", Kind: "Pod", Namespace: "prod", Name: "payments-0"}
+	result, err := brain.Evaluate(brain.Investigation{
+		Workspace: fleet.LocalWorkspace,
+		Coverage:  map[fleet.Lens]brain.LensCoverage{fleet.LensLive: {Available: true}},
+		Observations: []brain.Observation{{
+			Ref: ref, Lens: fleet.LensLive, Key: "pod.reason", Value: "ErrImagePull", ObservedAt: now, Source: "fixture",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+
+	var textOutput bytes.Buffer
+	textCommand := &cobra.Command{}
+	textCommand.SetOut(&textOutput)
+	if err := writeInvestigation(textCommand, "text", result); err != nil {
+		t.Fatalf("writeInvestigation(text) error = %v", err)
+	}
+	for _, expected := range []string{
+		"R7 image pull failure [confirmed]",
+		"evidence: live pod.reason=ErrImagePull",
+		"suggested: kubectl --context 'alpha' describe pod 'payments-0' -n 'prod'",
+		"sensitive: human review required",
+	} {
+		if !strings.Contains(textOutput.String(), expected) {
+			t.Errorf("text output = %q, want %q", textOutput.String(), expected)
+		}
+	}
+
+	var jsonOutput bytes.Buffer
+	jsonCommand := &cobra.Command{}
+	jsonCommand.SetOut(&jsonOutput)
+	if err := writeInvestigation(jsonCommand, "json", result); err != nil {
+		t.Fatalf("writeInvestigation(json) error = %v", err)
+	}
+	var decoded brain.Result
+	if err := json.Unmarshal(jsonOutput.Bytes(), &decoded); err != nil {
+		t.Fatalf("unmarshal R7 JSON: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded JSON = %#v, want %#v", decoded, result)
 	}
 }
