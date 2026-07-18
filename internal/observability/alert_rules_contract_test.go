@@ -44,11 +44,11 @@ func TestPortableAlertRulesStayBoundedAndStatic(t *testing.T) {
 		t.Fatalf("rule groups = %d, want 1", len(file.Groups))
 	}
 	group := file.Groups[0]
-	if group.Name != "sith-hub.failure-signals" || group.Interval != "1m" || group.Limit != 7 {
+	if group.Name != "sith-hub.failure-signals" || group.Interval != "1m" || group.Limit != 8 {
 		t.Errorf("rule group contract = %#v", group)
 	}
-	if len(group.Rules) != 7 {
-		t.Fatalf("alert rules = %d, want 7", len(group.Rules))
+	if len(group.Rules) != 8 {
+		t.Fatalf("alert rules = %d, want 8", len(group.Rules))
 	}
 
 	want := map[string]struct {
@@ -61,6 +61,12 @@ func TestPortableAlertRulesStayBoundedAndStatic(t *testing.T) {
 		"SithHubPolicyAuditFailure": {
 			severity: "critical", hold: "2m",
 			expr: `sum(increase(sith_policy_audit_attempts_total{outcome="error"}[5m])) > 0`,
+		},
+		"SithHubPolicyDecisionErrorRatioHigh": {
+			severity: "warning", hold: "10m",
+			expr:        `( sum(increase(sith_policy_decisions_total{outcome="error"}[15m])) / clamp_min(sum(increase(sith_policy_decisions_total{outcome=~"allow|deny|require-approval|error"}[15m])), 1) ) > 0.05 and sum(increase(sith_policy_decisions_total{outcome=~"allow|deny|require-approval|error"}[15m])) >= 20`,
+			summary:     "Sith hub policy decisions are returning sustained errors",
+			description: "More than five percent of at least twenty aggregate eligible policy decisions ended in error over fifteen minutes.",
 		},
 		"SithHubAuthRefusalDeliveryDrop": {
 			severity: "warning", hold: "5m",

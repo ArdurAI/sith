@@ -1,7 +1,8 @@
 # Sith hub alert runbook
 
 These alerts consume only Sith's fixed-cardinality, process-wide metrics. They are a portable
-F10.4a/F10.4b/F10.4c/F10.4d/F10.4e baseline, not the complete F10.4 SLO and error-budget contract.
+F10.4a/F10.4b/F10.4c/F10.4d/F10.4e/F10.4f baseline, not the complete F10.4 SLO and error-budget
+contract.
 The two fleet-read alerts cover sustained aggregate coverage degradation and proven stale reads;
 neither defines a freshness objective or continuously monitors snapshot age without request traffic.
 The rules do not cover governed dispatch success, PDP latency, or KMS/signing. The missing-telemetry
@@ -51,6 +52,27 @@ fails the governed read closed, so this is an immediate user-visible availabilit
 
 Do not bypass either sink to recover availability. That would turn an observable outage into an
 unlogged authorization path.
+
+## SithHubPolicyDecisionErrorRatioHigh
+
+**Meaning.** More than 5% of at least 20 aggregate eligible
+`allow|deny|require-approval|error` policy decisions ended in `error` over 15 minutes, and the
+condition persisted for 10 minutes. `error` means the policy hook failed, returned an invalid
+decision, or mandatory policy-audit delivery failed. Every case blocks the governed operation.
+`deny` and `require-approval` are valid decisions and remain in the denominator, not the numerator.
+This is a PEP symptom, not an external Ardur PDP-latency signal or SLO.
+
+**Triage.**
+
+1. Compare aggregate `error` with `allow`, `deny`, and `require-approval`. Do not add verb, tenant,
+   workspace, actor, intent, trace, request, reason, credential, endpoint, selector, or raw-error
+   labels to the alert.
+2. Check the policy hook's availability and decision-contract validation through operator-owned
+   logs and traces. Keep hook errors and decision payloads out of metric labels and annotations.
+3. Check both mandatory audit sinks and PostgreSQL health. The existing critical
+   `SithHubPolicyAuditFailure` alert is the more immediate signal for any individual sink error.
+4. Confirm valid decisions resume and the ratio resolves naturally. Do not bypass policy or audit,
+   reinterpret errors as denies, or weaken the fail-closed path to recover availability.
 
 ## SithHubAuthRefusalDeliveryDrop
 
@@ -170,9 +192,9 @@ expected Hub metrics, loopback scrape, or forwarding path is missing.
 
 ## Threshold and cost notes
 
-The seven expressions evaluate once per minute over existing series and produce at most seven alert
+The eight expressions evaluate once per minute over existing series and produce at most eight alert
 instances per rule evaluator. They create no recording series, listener, exporter, remote-write
-path, or storage. The four ratio alerts use a 5% threshold and a 10-minute hold, with the minimum
+path, or storage. The five ratio alerts use a 5% threshold and a 10-minute hold, with the minimum
 volume defined independently by each expression. The snapshot ratio requires 20 aggregate attempts. The
 fleet-read ratio requires 20 eligible `complete|degraded|error` reads and excludes `empty` from
 numerator and denominator, so legitimate zero-scope traffic neither fires nor hides the alert.
@@ -181,6 +203,8 @@ The fleet-read staleness ratio separately requires 20 eligible `fresh|stale` rea
 or dilute the warning.
 The database-readiness ratio requires 20 aggregate `ready|unavailable` checks, uses the same 5%
 threshold and 10-minute hold, and cannot divide by zero.
+The policy-decision ratio requires 20 aggregate `allow|deny|require-approval|error` decisions and
+counts only `error` as failure. It aggregates away the closed verb and every source label.
 The missing-telemetry warning evaluates the existing traffic-independent `sith_build_info` gauge,
 tolerates the most recent ten minutes of samples, and then requires five continuous minutes of
 absence. Its installation precondition is the operator's explicit expectation signal; the rule

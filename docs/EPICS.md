@@ -2686,6 +2686,15 @@ label and adds no scrape, storage, remote-write, notification, or cloud infrastr
 request-time aggregate symptom, not continuous freshness monitoring, an SLO, an error budget, or a
 page.
 
+**Implementation note (F10.4f).** An eighth portable warning consumes only the existing bounded
+`sith_policy_decisions_total{verb,outcome}` counter. It fires when more than five percent of at least
+twenty aggregate eligible `allow|deny|require-approval|error` decisions end in `error` over fifteen minutes
+and the condition persists for ten minutes. `deny` and `require-approval` are valid decisions and
+remain in the denominator, not the numerator. The expression aggregates away `verb` and every
+source label and adds no runtime, scrape, storage, remote-write, notification, or cloud
+infrastructure. This is a fail-closed PEP symptom, not external Ardur PDP latency, an SLO, an error
+budget, a page, or a dispatch-success signal.
+
 ### F10.5 — Crown-jewel hardening
 
 **What it is.** The hardening the hub demands as the highest-value target: signer-key protection,
