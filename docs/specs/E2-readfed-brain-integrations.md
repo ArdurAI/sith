@@ -472,7 +472,7 @@ hub). Weights are indicative, to be tuned against real incidents.
 ---
 
 **Future adjacent rules (same pattern, add as coverage lands):** `FailingDependency`
-(mesh/trace-driven), CI-specific pipeline failure, `HPA-thrash`, and `PVC-full / volume-bind`.
+(mesh/trace-driven), `HPA-thrash`, and `PVC-full / volume-bind`.
 The schema in §3.3 admits them without change.
 
 **Implemented adjacent rule R7 (2026-07-18):** R7 consumes only the existing sanitized LIVE
@@ -498,7 +498,26 @@ hook, network, Kubernetes API, resource, and other causes, and offers only a sen
 read-only `kubectl describe application.argoproj.io` advisory. R8 performs no Argo fetch, client
 call, storage, alert, SLO, typed intent, PEP handoff, dispatch, mutation, execution, or fleet
 correlation. The cache-backed local CLI cannot produce R8 until a future reader supplies validated
-Argo graph facts and explicit TIMELINE coverage; CI-specific pipeline failure remains future work.
+Argo graph facts and explicit TIMELINE coverage.
+
+**Implemented adjacent rule R9 (2026-07-18):** R9 completes the GitHub Actions half of the earlier
+`Pipeline/SyncFailure` candidate. A bounded `workflow-runs/2026-03-10` projector consumes one
+already-authorized GitHub REST `Get a workflow run` response and emits one unattached TIMELINE fact
+only when trusted host/owner/repository/run identity agrees with the response, IDs and event time are
+valid, status is exact `completed`, and conclusion is `failure`, `timed_out`, or `startup_failure`.
+Incomplete and completed non-failure runs abstain; unknown states, duplicate JSON members,
+identity/time inconsistencies, malformed input, and ambiguous graph facts fail closed. The bridge
+requires exact `github` source/provenance, protocol, WorkflowRun identity, a closed payload,
+consistent run/attempt/native identity, matching event time, and explicit caller-declared TIMELINE
+coverage. It emits only canonical `change.kind=workflow-run-failed`, so workflow ID, conclusion,
+jobs, steps, logs, actors, branches, commits, URLs, unknown source fields, and raw response data are
+discarded before evaluation and output. R9 states only that GitHub reported a completed failed run,
+does not diagnose code/configuration/credential/permission/capacity/dependency or another cause,
+and offers only sensitive human guidance to inspect failed jobs and logs before considering a
+rerun. It performs no client call, token loading, fetch, retention, alerting, SLO evaluation,
+repository-to-workload or fleet correlation, typed intent, PEP handoff, dispatch, mutation, or
+execution. The cache-backed local CLI cannot produce R9 until a future reader supplies validated
+workflow-run graph facts and explicit TIMELINE coverage.
 
 ### 3.5 Rule composition and arbitration
 
@@ -573,7 +592,7 @@ the *reasoning*. Decision deferred to the owner (see §7).
 | Connector | Kind | Verbs | Lenses | Tier | Mode | Notes |
 |---|---|---|---|---|---|---|
 | **Kubernetes** (core) | RA + TA | di, rd, qy, df, (pl/ex/vf via actions) | LIVE, TIMELINE (Events/RS history), DESIRED (last-applied), GRAPH | **T0** | both | The substrate — this *is* F2.1/F11.1. Feeds every rule. |
-| **GitHub** | RA + TA | di, rd, qy, df, **pl/ex** (`gitops.open-pr`), vf | DESIRED (manifests), TIMELINE (commits/PR/deploys) | **T1** | read=local, write=hub | Read (desired/timeline) local via user token; `gitops.open-pr` is the first governed write (P2). |
+| **GitHub** | RA + TA | di, rd, qy, df, **pl/ex** (`gitops.open-pr`), vf | DESIRED (manifests), TIMELINE (commits/PR/deploys) | **T1** | read=local, write=hub | Bounded pure projectors now normalize caller-fetched merged-PR and completed workflow-run failure evidence; the HTTP/token reader remains future. `gitops.open-pr` is the first governed write (P2). |
 | **ArgoCD** | RA + BR + TA | di, rd, qy, **df**, pl/ex (`argocd.sync`,`argocd.rollback`), vf | DESIRED, LIVE, TIMELINE (sync history), drift | **T1** | read=local, sync=hub | Richest single connector — 3 lenses + the exemplar of the `diff` verb. Central to R1, R4. Application CRDs read via kubeconfig. |
 | **Prometheus** | RA + query-through | di, **qy**, rd (alerts) | TELEMETRY | **T1** | local-if-reachable / hub | Query-through, not retained. Central to R2, R5, R6 and R1 validation. |
 | **Elasticsearch** | RA + query-through | di, **qy** | TELEMETRY (logs) | **T2** | hub (local if creds) | Log search for R3. Auth/index-mapping variance → T2. |
@@ -736,7 +755,7 @@ the plan-renderer forks.
    "what changed recently" useful without drifting toward a store. Recommendation: a small fixed
    window (e.g. last N events / last 24–72h), tuned against real incidents; explicitly *not* a series.
 4. **Rule weights and thresholds.** The §3.4 weights are indicative. A versioned, synthetic replay
-   harness in `internal/brain/testdata/replays` now guards the six canonical rules, adjacent R7/R8,
+   harness in `internal/brain/testdata/replays` now guards the six canonical rules, adjacent R7-R9,
    coverage abstention, cause chaining, and safe fleet correlation. Future tuning should add
    sanitized incident shapes to that corpus and preserve its exact expected verdict contract.
 5. **Cross-cluster remediation surface for node/cluster-level causes (R6).** Node/nodegroup/autoscaler

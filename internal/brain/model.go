@@ -15,7 +15,7 @@ import (
 // RuleID identifies one stable hypothesis rule.
 type RuleID string
 
-// Canonical rule identifiers.
+// Stable rule identifiers.
 const (
 	RuleBadDeploy    RuleID = "R1"
 	RuleOOMKilled    RuleID = "R2"
@@ -25,6 +25,7 @@ const (
 	RuleNodePressure RuleID = "R6"
 	RuleImagePull    RuleID = "R7"
 	RuleArgoSyncFail RuleID = "R8"
+	RuleWorkflowFail RuleID = "R9"
 )
 
 // Status is the confidence state of a verdict.

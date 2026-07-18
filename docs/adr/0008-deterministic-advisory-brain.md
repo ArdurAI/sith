@@ -24,10 +24,11 @@ bare workload name.
 1. `internal/brain` consumes a closed normalized observation envelope: entity reference, evidence
    lens, key, value, source, time, and staleness. It performs no I/O. Kubernetes decoding stays in
    `fleetcache`; cache-to-rule projection stays in one adapter.
-2. The catalog contains stable canonical R1-R6 rules plus bounded adjacent R7 image-pull and R8
-   Argo sync-operation failure rules. Matching is exact and deterministic. Verdict ordering is
-   fleet-wide correlation, score, rule ID, then scope. R1 can compose as the cause of R3 when a
-   recent change and repeated failure are attached to the same entity.
+2. The catalog contains stable canonical R1-R6 rules plus bounded adjacent R7 image-pull, R8 Argo
+   sync-operation failure, and R9 GitHub Actions workflow-run failure rules. Matching is exact and
+   deterministic. Verdict ordering is fleet-wide correlation, score, rule ID, then scope. R1 can
+   compose as the cause of R3 when a recent change and repeated failure are attached to the same
+   entity.
 3. Required and strengthening lenses are checked per entity. Fleet-level connector availability
    cannot satisfy a workload's evidence gate. Missing or stale required evidence yields
    `unconfirmed`; missing variant evidence yields `detected` plus named missing lenses.
@@ -80,6 +81,32 @@ defined by `app.status?.operationState.phase` being `Error` or `Failed`, and the
 [notification triggers](https://argo-cd.readthedocs.io/en/stable/operator-manual/notifications/triggers/)
 and [notification catalog](https://argo-cd.readthedocs.io/en/stable/operator-manual/notifications/catalog/).
 
+### 2026-07-18 extension: adjacent R9 GitHub Actions workflow-run failure
+
+R9 consumes one already-authorized GitHub REST `Get a workflow run` response through a pure
+projector. Trusted host, owner, repository, run ID, and collection time remain caller-supplied. The
+response must agree with that identity, contain a positive workflow ID and attempt, use a recognized
+status and conclusion, and provide a bounded event timestamp. Only exact status `completed` paired
+with `failure`, `timed_out`, or `startup_failure` emits an unattached TIMELINE `FactChange`;
+incomplete and completed non-failure runs abstain, while unknown or internally inconsistent input
+fails closed. Unknown source fields are deliberately discarded, but duplicate JSON members are
+rejected before decoding.
+
+`FromGraphFacts` admits that fact only when source kind and provenance adapter are `github`, protocol
+is `workflow-runs/2026-03-10`, the resource is an unattached `WorkflowRun`, host/owner/run/attempt and
+native identities agree, the closed payload carries an accepted failure conclusion, and its event
+time equals the fact observation time. The evaluator sees only canonical
+`change.kind=workflow-run-failed`; conclusion, workflow ID, job and step data, logs, actors, branches,
+commits, URLs, unknown response fields, and raw JSON do not enter its observation or output.
+
+R9 states only that GitHub reported a completed failed run. It does not choose among code,
+configuration, credential, permission, capacity, dependency, or other causes, and it does not infer
+repository-to-workload or cross-host relationships. Its only advisory is sensitive human guidance
+to inspect failed jobs and logs before considering a rerun. GitHub documents the REST response
+contract in [Workflow runs](https://docs.github.com/en/rest/actions/workflow-runs?apiVersion=2026-03-10)
+and the closed conclusion vocabulary in
+[Checks](https://docs.github.com/en/rest/guides/using-the-rest-api-to-interact-with-checks).
+
 ## Consequences
 
 - Investigations are offline, reproducible, replayable, and inspectable. The same observation
@@ -88,11 +115,12 @@ and [notification catalog](https://argo-cd.readthedocs.io/en/stable/operator-man
   telemetry-dependent cause variant. This is intentionally less confident than an opaque guess.
 - Phase L does not auto-port-forward to Prometheus/Loki, retain telemetry series, read Git desired
   state, or infer absent evidence. Those connectors can later emit the same observation contract.
-- The existing cache-backed CLI does not fetch Argo Applications. R8 is available only to callers
-  that already possess validated graph facts and explicitly declare TIMELINE coverage.
+- The existing cache-backed CLI does not fetch Argo Applications or GitHub workflow runs. R8 and R9
+  are available only to callers that already possess validated graph facts and explicitly declare
+  TIMELINE coverage.
 - There is no hosted or cloud cost. Runtime cost is one existing tier-1 hydration pass plus
   in-memory rule evaluation over the returned records or an existing bounded graph. No extra
-  Kubernetes watch, Argo request, storage, or network egress is introduced.
+  Kubernetes watch, Argo/GitHub request, storage, or network egress is introduced.
 - Advisory strings are not shell execution. Operators remain responsible for reviewing and
   running a suggestion with their own kubeconfig identity.
 

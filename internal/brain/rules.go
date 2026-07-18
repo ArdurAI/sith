@@ -81,4 +81,12 @@ var catalog = []rule{
 		required:     []fleet.Lens{fleet.LensTimeline},
 		advisory:     Advisory{Command: "kubectl --context {context} describe application.argoproj.io {name} -n {namespace}", Sensitive: true},
 	},
+	{
+		id: RuleWorkflowFail, failureMode: "GitHub Actions workflow-run failure", rootCause: "GitHub reports that the completed workflow run failed; the normalized conclusion does not identify which job or step failed, or whether the underlying cause is code, configuration, credentials, permissions, capacity, a dependency, or another failure",
+		sourceKind: githubGraphSource, resourceKind: "WorkflowRun",
+		exactTrigger: true,
+		trigger:      predicate{fleet.LensTimeline, "change.kind", []string{"workflow-run-failed"}, 3},
+		required:     []fleet.Lens{fleet.LensTimeline},
+		advisory:     Advisory{Command: "inspect GitHub Actions workflow run {name} owned by {namespace} and its failed jobs and logs before considering a rerun", Sensitive: true},
+	},
 }

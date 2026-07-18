@@ -102,7 +102,7 @@ func TestIncidentReplayCorpusCoversRequiredSafetyCases(t *testing.T) {
 		hasNonFleet = hasNonFleet || !fixture.Expect.FleetWide
 		hasUnconfirmed = hasUnconfirmed || fixture.Expect.Status == StatusUnconfirmed
 	}
-	for _, ruleID := range []RuleID{RuleBadDeploy, RuleOOMKilled, RuleCrashLoop, RuleConfigDrift, RuleCertExpiry, RuleNodePressure, RuleImagePull, RuleArgoSyncFail} {
+	for _, ruleID := range []RuleID{RuleBadDeploy, RuleOOMKilled, RuleCrashLoop, RuleConfigDrift, RuleCertExpiry, RuleNodePressure, RuleImagePull, RuleArgoSyncFail, RuleWorkflowFail} {
 		if _, found := seenRules[ruleID]; !found {
 			t.Fatalf("replay corpus does not cover %s", ruleID)
 		}

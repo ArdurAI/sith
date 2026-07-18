@@ -326,6 +326,17 @@ It does not equate `OutOfSync` or degraded health with a failed operation, retai
 revision or raw payload, diagnose the underlying cause, or correlate fleet-wide. R8 is available
 to reviewed graph-fact callers; the cache-backed local CLI still has no Argo fetch path.
 
+The third adjacent rule, **R9**, consumes only an unattached, workspace-valid GitHub `WorkflowRun`
+TIMELINE fact from the bounded `workflow-runs/2026-03-10` projector. The projector requires trusted
+repository and run identity, exact status `completed`, and conclusion `failure`, `timed_out`, or
+`startup_failure`; incomplete and completed non-failure runs abstain. The graph bridge requires
+matching source/provenance, run/attempt/native identity, event time, a closed payload, and explicit
+caller-declared TIMELINE coverage. R9 retains no job, step, log, actor, branch, commit, URL, or raw
+response data, makes no root-cause claim, and remains source-native and entity-local. It offers only
+sensitive human inspection guidance and adds no GitHub client, token, storage, alert, correlation,
+typed intent, policy handoff, mutation, or execution. The cache-backed local CLI still has no
+workflow-run fetch path.
+
 ## Integration waves (E12) — the connector coverage the brain needs
 
 Connectors ship in four waves (`docs/specs/E2-readfed-brain-integrations.md` §4), each scored by
@@ -346,6 +357,10 @@ need:**
   consistent. Caller-provided repository identity remains authoritative, sensitive response fields
   are discarded, and the event stays unattached until an explicit repository-to-workload relation
   exists. This slice adds no HTTP client, token loading, persistence, or GitHub write capability.
+  Issue #278 adds the equally bounded workflow-run failure contract: one already-fetched REST
+  response becomes an unattached TIMELINE fact only for an exact completed failure conclusion.
+  Unknown and ambiguous evidence fails closed, non-failure runs abstain, sensitive response fields
+  are discarded, and no fetch, token, persistence, correlation, alert, or write path is added.
   Issue #214 establishes the Elasticsearch log-evidence contract: one already-fetched, complete
   Search API response using the current ECS Kubernetes field profile becomes at most three bounded
   TELEMETRY cause facts for R3. Cluster, namespace, and Pod identity must match the trusted caller.
