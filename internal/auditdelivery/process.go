@@ -159,7 +159,7 @@ func (observer *ProcessObserver) ObserveAuth(event hubserver.AuthEvent) {
 }
 
 func encodeAuthRefusal(event hubserver.AuthEvent) []byte {
-	if event.Validate() != nil {
+	if event.Validate() != nil || event.Outcome != hubserver.AuthOutcomeRefused {
 		return nil
 	}
 	return []byte{authRecordVersion, authRecordRefused}

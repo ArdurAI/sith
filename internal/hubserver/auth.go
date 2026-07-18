@@ -27,9 +27,9 @@ func Authenticate(verifier Verifier, next http.Handler) (http.Handler, error) {
 	return AuthenticateWithObserver(verifier, nil, next)
 }
 
-// AuthenticateWithObserver constructs authentication middleware with one passive refusal
-// observer. The observer is never given request metadata, credentials, verifier errors, or caller
-// correlation values, and cannot alter the uniform unauthorized response.
+// AuthenticateWithObserver constructs authentication middleware with one passive outcome observer.
+// The observer is never given request metadata, credentials, verifier errors, or caller correlation
+// values, and cannot alter the uniform unauthorized response or successful handler path.
 func AuthenticateWithObserver(verifier Verifier, observer AuthObserver, next http.Handler) (http.Handler, error) {
 	if verifier == nil {
 		return nil, fmt.Errorf("construct authentication middleware: verifier is required")
@@ -53,6 +53,7 @@ func AuthenticateWithObserver(verifier Verifier, observer AuthObserver, next htt
 			refuseAuthentication(observer, response)
 			return
 		}
+		ObserveAuth(observer, AuthEvent{Outcome: AuthOutcomeAccepted})
 		ctx := context.WithValue(cloned.Context(), principalContextKey{}, principal)
 		next.ServeHTTP(response, cloned.WithContext(ctx))
 	}), nil

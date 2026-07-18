@@ -2496,7 +2496,7 @@ and alerting · F10.5 crown-jewel hardening.
 ### F10.1 — Metrics
 
 **What it is.** Metrics about Sith's own health and behavior: control-plane liveness, federation
-freshness, intent throughput, sanitized authentication-refusal counts, and future derived rates
+freshness, intent throughput, bounded sanitized authentication-outcome counts, and future derived rates
 where trustworthy denominators exist, abstention rates, and PDP latency.
 
 **How it works.**
@@ -2560,9 +2560,21 @@ Runtime fanout independently reaches the existing process audit observer and the
 observer panics cannot suppress a later destination or alter the uniform HTTP 401 response. The
 counter carries no reason, credential mode, tenant, workspace, actor, principal, token, IP, path,
 request, trace, or correlation label. It does not count successful authentication, OIDC provider
-exchange/callback failures, authorization denials, or every future authentication mode. Without a
-success or attempt denominator it is not a ratio, brute-force detector, alert threshold, SLO,
-error budget, page, or complete security-monitoring control.
+exchange/callback failures, authorization denials, or every future authentication mode. The legacy
+counter alone is not a denominator and remains compatible with existing scrapes.
+
+**Implementation note (F10.1h).** Each completed local bearer-token or browser-session verifier
+decision increments one of exactly two preinitialized
+`sith_auth_attempts_total{outcome="accepted|refused"}` series. `accepted` is emitted immediately
+after verifier success and before workspace authorization; a later forbidden authorization is
+therefore not misclassified as failed authentication. Every `refused` outcome also increments the
+legacy unlabeled refusal counter exactly once. Metrics consume both outcomes, while the process
+audit observer and structured-log adapter remain refusal-only and accepted observations cannot
+write a datagram, log, or delivery-drop count. The outcome label is closed and carries no
+credential mode, reason, tenant, workspace, actor, principal, token, IP, path, method, request,
+trace, correlation, authorization, or handler-result dimension. The counters exclude provider
+exchange/callback failures and define no ratio, alert, brute-force detector, SLO, error budget,
+page, listener, exporter, persistence, remote write, or cloud resource.
 
 ### F10.2 — Distributed tracing
 

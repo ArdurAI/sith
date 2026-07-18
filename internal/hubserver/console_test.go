@@ -174,7 +174,7 @@ func TestConsoleRoutesResolveWorkspaceThroughServeMux(t *testing.T) {
 
 func TestConsoleHandlerForwardsUniformAuthRefusalsToConfiguredObserver(t *testing.T) {
 	now := time.Date(2026, 7, 18, 8, 0, 0, 0, time.UTC)
-	verifier, _ := fleetTestVerifier(t, now)
+	verifier, privateKey := fleetTestVerifier(t, now)
 	var events []AuthEvent
 	handler, err := NewConsoleHandler(ConsoleHandlerConfig{
 		Verifier: verifier, AuthObserver: AuthObserverFunc(func(event AuthEvent) {
@@ -202,8 +202,20 @@ func TestConsoleHandlerForwardsUniformAuthRefusalsToConfiguredObserver(t *testin
 			t.Fatalf("session %q status/body = %d/%q", session, response.Code, response.Body.String())
 		}
 	}
-	if len(events) != 2 || events[0] != (AuthEvent{Outcome: AuthOutcomeRefused}) || events[1] != events[0] {
-		t.Fatalf("console authentication events = %#v, want two uniform refusals", events)
+	foreign := consoleTestRequest(
+		http.MethodGet,
+		"/v1/workspaces/workspace-b/console",
+		"workspace-b",
+		signHubTestToken(t, hubValidClaims(now), privateKey),
+	)
+	foreignResponse := httptest.NewRecorder()
+	handler.ServePage(foreignResponse, foreign)
+	if foreignResponse.Code != http.StatusForbidden || foreignResponse.Body.String() != "{\"error\":\"forbidden\"}\n" {
+		t.Fatalf("foreign workspace status/body = %d/%q", foreignResponse.Code, foreignResponse.Body.String())
+	}
+	if len(events) != 3 || events[0] != (AuthEvent{Outcome: AuthOutcomeRefused}) || events[1] != events[0] ||
+		events[2] != (AuthEvent{Outcome: AuthOutcomeAccepted}) {
+		t.Fatalf("console authentication events = %#v, want two refusals then accepted before authorization", events)
 	}
 }
 

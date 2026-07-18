@@ -29,6 +29,7 @@ func TestProcessObserverDeliversOnlyFixedRecordAndReapsChild(t *testing.T) {
 	defer writer.Close()
 	observer := newTestProcessObserver(t, writer, nil)
 
+	observer.ObserveAuth(hubserver.AuthEvent{Outcome: hubserver.AuthOutcomeAccepted})
 	observer.ObserveAuth(hubserver.AuthEvent{Outcome: "token=secret"})
 	observer.ObserveAuth(hubserver.AuthEvent{Outcome: hubserver.AuthOutcomeRefused})
 	line := make(chan string, 1)
@@ -51,6 +52,19 @@ func TestProcessObserverDeliversOnlyFixedRecordAndReapsChild(t *testing.T) {
 	closeObserverWithin(t, observer)
 	if observer.command.ProcessState == nil {
 		t.Fatal("child process was not reaped")
+	}
+}
+
+func TestProcessObserverNeverDeliversOrDropsAcceptedAuthentication(t *testing.T) {
+	var drops atomic.Uint64
+	observer := &ProcessObserver{drops: dropObserverFunc(func() { drops.Add(1) })}
+	observer.ObserveAuth(hubserver.AuthEvent{Outcome: hubserver.AuthOutcomeAccepted})
+	if drops.Load() != 0 {
+		t.Fatalf("accepted authentication delivery drops = %d, want 0", drops.Load())
+	}
+	observer.ObserveAuth(hubserver.AuthEvent{Outcome: hubserver.AuthOutcomeRefused})
+	if drops.Load() != 1 {
+		t.Fatalf("refused authentication delivery drops = %d, want 1", drops.Load())
 	}
 }
 
