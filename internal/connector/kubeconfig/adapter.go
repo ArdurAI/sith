@@ -304,11 +304,12 @@ func (*Adapter) Capabilities() []connector.Capability {
 // Descriptor returns immutable registration metadata for this adapter.
 func (adapter *Adapter) Descriptor() connector.Descriptor {
 	return connector.Descriptor{
-		Kind:         adapter.Kind(),
-		ConnKind:     connector.KindReadAdapter,
-		ProtocolV:    protocolVersion,
-		Owner:        "sith-core",
-		Capabilities: adapter.Capabilities(),
+		Kind:           adapter.Kind(),
+		ConnKind:       connector.KindReadAdapter,
+		WireVersions:   []connector.WireVersion{connector.CurrentWireVersion()},
+		AdapterVersion: protocolVersion,
+		Owner:          "sith-core",
+		Capabilities:   adapter.Capabilities(),
 	}
 }
 

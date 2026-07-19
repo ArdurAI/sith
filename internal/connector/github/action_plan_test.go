@@ -35,7 +35,8 @@ func TestOpenPRPlannerRegistersOnlyBoundedPlanningCapability(t *testing.T) {
 		t.Fatalf("descriptors = %#v", descriptors)
 	}
 	descriptor := descriptors[0]
-	if descriptor.Kind != Kind || descriptor.ConnKind != connector.KindTypedAction || descriptor.ProtocolV != "gitops-open-pr/2026-03-10" ||
+	if descriptor.Kind != Kind || descriptor.ConnKind != connector.KindTypedAction || descriptor.AdapterVersion != "gitops-open-pr/2026-03-10" ||
+		!slices.Equal(descriptor.WireVersions, []connector.WireVersion{connector.CurrentWireVersion()}) ||
 		!slices.Equal(descriptor.Capabilities, []connector.Capability{connector.CapPlan}) ||
 		!slices.Equal(descriptor.Verbs, []intent.Verb{intent.VerbGitOpsOpenPR}) || len(descriptor.ArgSchemas) != 1 {
 		t.Fatalf("descriptor = %#v", descriptor)

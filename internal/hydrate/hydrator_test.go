@@ -237,11 +237,12 @@ func (*fakeReader) Capabilities() []connector.Capability {
 
 func (reader *fakeReader) Descriptor() connector.Descriptor {
 	return connector.Descriptor{
-		Kind:         reader.Kind(),
-		ConnKind:     connector.KindReadAdapter,
-		ProtocolV:    "1.0.0",
-		Owner:        "test",
-		Capabilities: reader.Capabilities(),
+		Kind:           reader.Kind(),
+		ConnKind:       connector.KindReadAdapter,
+		WireVersions:   []connector.WireVersion{connector.CurrentWireVersion()},
+		AdapterVersion: "1.0.0",
+		Owner:          "test",
+		Capabilities:   reader.Capabilities(),
 	}
 }
 

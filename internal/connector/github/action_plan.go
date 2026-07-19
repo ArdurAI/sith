@@ -168,7 +168,8 @@ func (*OpenPRPlanner) Capabilities() []connector.Capability {
 // Descriptor binds gitops.open-pr to its exact handler-owned argument schema.
 func (*OpenPRPlanner) Descriptor() connector.Descriptor {
 	return connector.Descriptor{
-		Kind: Kind, ConnKind: connector.KindTypedAction, ProtocolV: openPRProtocolVersion, Owner: "sith",
+		Kind: Kind, ConnKind: connector.KindTypedAction,
+		WireVersions: []connector.WireVersion{connector.CurrentWireVersion()}, AdapterVersion: openPRProtocolVersion, Owner: "sith",
 		Capabilities: []connector.Capability{connector.CapPlan},
 		Verbs:        []intent.Verb{intent.VerbGitOpsOpenPR},
 		ArgSchemas:   map[intent.Verb]json.RawMessage{intent.VerbGitOpsOpenPR: json.RawMessage(openPRSchema)},

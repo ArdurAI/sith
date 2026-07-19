@@ -2961,18 +2961,21 @@ Guardrail: the taxonomy is closed; "re-skin a tool" is not an expressible connec
 
 ### F12.3 — Versioning and one-canonical-connector policy
 
-**What it is.** A minor-additive protocol contract and a rule of one canonical connector per
-tool — the Terraform discipline that prevents the Backstage redundancy/abandonment failure.
+**What it is.** A structured, explicitly negotiated framework wire contract, a separate opaque
+adapter/evidence contract version, and a rule of one canonical connector per tool — the Terraform
+discipline that prevents the Backstage redundancy/abandonment failure.
 
 **How it works.**
-1. Major protocol versions delineate compatibility; minor versions are strictly additive.
-2. The registry admits **one** canonical connector per target tool, with declared ownership.
-3. Breaking a connector's contract is a major-version, reviewed change — never a silent minor bump.
+1. Endpoints advertise exact structured `{major, minor}` framework wire versions; the highest
+   exact common version is selected. No common major or no explicitly common minor fails closed.
+2. Adapter/evidence contract versions remain opaque provenance and never drive wire compatibility.
+3. The registry admits **one** canonical connector per target tool, with declared ownership.
+4. Breaking the framework contract is a major-version, reviewed change — never a silent minor bump.
 
 ```mermaid
 flowchart TD
     A["Connector change"] --> B{"Breaking?"}
-    B -- "no" --> C["Minor: additive, compatible"]
+    B -- "no" --> C["Minor: additive and explicitly advertised"]
     B -- "yes" --> D["Major: reviewed compatibility break"]
     E["New connector for tool T"] --> F{"Canonical connector for T exists?"}
     F -- "yes" --> G["Improve the canonical one (no duplicate)"]
@@ -2980,7 +2983,8 @@ flowchart TD
 ```
 
 **Acceptance criteria.**
-- Minor protocol changes are additive; breaks require a major version and review.
+- Wire versions and opaque adapter versions are separate; only explicitly shared wire versions
+  negotiate, additive minors remain reviewed, and breaks require a major version and review.
 - The registry holds one canonical connector per tool with a named owner.
 
 **Key risk / guardrail.** Overlapping half-maintained connectors (the Backstage marketplace).
