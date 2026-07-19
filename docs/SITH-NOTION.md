@@ -3122,6 +3122,21 @@ flowchart TD
 **Key risk / guardrail.** Over-claiming per-workload GPU precision. Guardrail: attribution is
 best-effort and labelled; physical-GPU-level data is not presented as per-pod truth.
 
+**Current bounded slice (F13.3a, #286).** `internal/connector/dcgm` accepts one already-fetched
+successful Prometheus instant vector for the exact caller-asserted expression
+`DCGM_FI_DEV_GPU_UTIL`, with API series limiting and per-query lookback override disabled. It emits
+deterministic TELEMETRY derived facts with explicit
+`physical_gpu`, `mig_instance`, or `workload_best_effort` attribution. MIG ID/profile and
+namespace/pod/container labels are each all-or-nothing; physical or MIG device scope remains
+explicit when workload labels exist. Raw GPU UUID, hostname, PCI bus, scrape target, arbitrary pod
+labels, endpoint data, and credentials are discarded; only a SHA-256 native identity survives.
+Warnings, infos, ambiguous or duplicate identity, invalid percentages/timestamps, partial label
+groups, malformed/duplicate JSON, and resource-bound violations fail atomically. A successful
+empty vector returns zero facts and makes no coverage claim. The slice adds no client, network,
+credentials, RBAC, arbitrary PromQL, range aggregation, stale policy, persistence, runtime wiring,
+cost/idle-cost join, team mapping, UI/API, billing, optimization, mutation, or execution, and
+therefore does not complete F13.3.
+
 ### F13.4 — Freshness and non-goal guard
 
 **What it is.** The guard that keeps the overlay a *read* — freshness on every cost fact and a

@@ -648,12 +648,35 @@ Every fact is revalidated before all component and total amounts are summed with
 arithmetic. A rollup carries the source window end only when at least one scope reported and selects
 no stale threshold.
 
-The rollup is an offline workspace computation core, not a live Hub feature. This library path adds
+The rollup is an offline workspace computation core, not a live Hub feature. The OpenCost path adds
 no OpenCost client, port-forward, service or ingress discovery, arbitrary endpoint, credentials,
 Kubernetes Service-proxy RBAC, OCM transport, persistence, runtime wiring, per-team attribution,
 UI/API, billing, optimization, mutation, currency conversion, freshness objective, or
 GPU-utilization claim. The current CLI and Hub do not fetch, persist, roll up, or display these
 facts yet.
+
+The bounded F13.3 GPU boundary separately exposes a pure DCGM
+`prometheus/gpu-utilization-vector-v1` projector for callers that already hold one authorized
+Prometheus instant-vector response and assert the exact query `DCGM_FI_DEV_GPU_UTIL`, with the API
+series limit and per-query lookback override both disabled. This avoids a caller presenting an
+API-truncated vector as complete while leaving the server's configured lookback/freshness policy
+explicitly unresolved. It requires
+the reviewed current dcgm-exporter whole-GPU identity labels, accepts paired `GPU_I_ID` and
+`GPU_I_PROFILE` MIG evidence, and treats `namespace`/`pod`/`container` only as an all-or-nothing
+`workload_best_effort` attribution. A fact always distinguishes its physical-GPU or MIG device
+scope; exporter workload labels are never presented as precise per-workload accounting. Values
+must be exact decimal percentages from 0 through 100 at the asserted query time. Unknown labels are
+bounded but discarded, while raw GPU UUID, hostname, PCI bus, scrape target, job, instance, and
+arbitrary pod-label data never enter the fact payload, display fields, or graph entity; selected
+native identity is represented only by SHA-256. Duplicate projected identities, partial MIG or
+workload labels, warnings or infos, non-vector or duplicate-key JSON, timestamp mismatch,
+non-finite/out-of-range samples, and oversized input fail atomically. A successful empty vector
+emits zero facts and does not by itself prove DCGM coverage.
+
+This DCGM core adds no Prometheus or DCGM client, discovery, endpoint or credential handling, new
+RBAC, arbitrary PromQL, range aggregation, stale threshold, coverage rollup, persistence, cost or
+idle-cost join, team mapping, UI/API, billing, optimization, rightsizing, mutation, or execution.
+The current CLI and Hub do not fetch, persist, aggregate, or display these GPU utilization facts.
 
 Every verdict includes its rule, exact cited signals, confidence state, missing lenses, and an
 advisory command or PR change for the operator to inspect and run. The brain performs no I/O and
