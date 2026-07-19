@@ -3087,6 +3087,18 @@ flowchart TD
 
 **Key risk / guardrail.** A partial rollup read as complete. Guardrail: coverage is always shown.
 
+**Current bounded slice (F13.2a, #284).** `internal/connector/opencost` preserves every successful
+F13.1a projection in a per-scope snapshot, including a complete empty allocation set, and computes
+one deterministic workspace USD total for an exact caller-bound window. The caller supplies the
+unique expected cluster set; output separately names expected, reported, successful-empty, and
+missing scopes, so missing OpenCost coverage never becomes zero cost or a complete rollup. Every
+fact is revalidated against workspace, cluster, namespace, window, currency, lens, provenance,
+canonical payload, and native identity before all monetary components and totals are summed with
+exact decimal arithmetic. The rollup uses the window end as observation time only when at least one
+scope reported. It adds no live transport, endpoint, credential, persistence, Hub/runtime wiring,
+team/label attribution, UI, stale threshold, conversion, billing, optimization, GPU-efficiency
+inference, or write path, and therefore does not complete F13.2.
+
 ### F13.3 — GPU cost columns (DCGM)
 
 **What it is.** GPU cost/utilization columns in the fleet cost view where DCGM metrics exist —
