@@ -98,7 +98,9 @@ type DisplayField struct {
 
 // Provenance identifies how to trace an observation back to its native source.
 type Provenance struct {
-	Adapter   string `json:"adapter"`
+	Adapter string `json:"adapter"`
+	// ProtocolV is the adapter/evidence contract identifier retained for serialized compatibility.
+	// It is not the E12 framework wire version used for out-of-process negotiation.
 	ProtocolV string `json:"protocol_version"`
 	NativeID  string `json:"native_id,omitempty"`
 	DeepLink  string `json:"deep_link,omitempty"`

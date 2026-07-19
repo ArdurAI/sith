@@ -3,9 +3,11 @@
 package connector
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sync/atomic"
 	"testing"
 
@@ -125,12 +127,25 @@ func TestRegistryRejectsInvalidConnectors(t *testing.T) {
 		name      string
 		connector Connector
 	}{
-		{name: "unknown taxonomy", connector: identityOnlyConnector{descriptor: Descriptor{Kind: "bad", ConnKind: "other", ProtocolV: "1.0.0", Owner: "test"}}},
-		{name: "declared but not implemented", connector: identityOnlyConnector{descriptor: Descriptor{Kind: "bad", ConnKind: KindReadAdapter, ProtocolV: "1.0.0", Owner: "test", Capabilities: []Capability{CapRead}}}},
-		{name: "unknown capability", connector: identityOnlyConnector{descriptor: Descriptor{Kind: "bad", ConnKind: KindReadAdapter, ProtocolV: "1.0.0", Owner: "test", Capabilities: []Capability{"shell"}}}},
-		{name: "read adapter with verbs", connector: identityOnlyConnector{descriptor: Descriptor{Kind: "bad", ConnKind: KindReadAdapter, ProtocolV: "1.0.0", Owner: "test", Verbs: []intent.Verb{intent.VerbGitOpsOpenPR}}}},
-		{name: "action without verbs", connector: testExecutor{descriptor: Descriptor{Kind: "bad", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test", Capabilities: []Capability{CapExecute}}}},
-		{name: "action with unknown verb", connector: testExecutor{descriptor: Descriptor{Kind: "bad", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test", Capabilities: []Capability{CapExecute}, Verbs: []intent.Verb{"shell.exec"}}}},
+		{name: "unknown taxonomy", connector: identityOnlyConnector{descriptor: testDescriptor("bad", "other")}},
+		{name: "missing wire versions", connector: identityOnlyConnector{descriptor: Descriptor{Kind: "bad", ConnKind: KindReadAdapter, AdapterVersion: "1.0.0", Owner: "test"}}},
+		{name: "zero wire major", connector: identityOnlyConnector{descriptor: Descriptor{Kind: "bad", ConnKind: KindReadAdapter, WireVersions: []WireVersion{{Minor: 1}}, AdapterVersion: "1.0.0", Owner: "test"}}},
+		{name: "duplicate wire version", connector: identityOnlyConnector{descriptor: Descriptor{Kind: "bad", ConnKind: KindReadAdapter, WireVersions: []WireVersion{CurrentWireVersion(), CurrentWireVersion()}, AdapterVersion: "1.0.0", Owner: "test"}}},
+		{name: "missing adapter version", connector: identityOnlyConnector{descriptor: Descriptor{Kind: "bad", ConnKind: KindReadAdapter, WireVersions: []WireVersion{CurrentWireVersion()}, Owner: "test"}}},
+		{name: "blank adapter version", connector: identityOnlyConnector{descriptor: Descriptor{Kind: "bad", ConnKind: KindReadAdapter, WireVersions: []WireVersion{CurrentWireVersion()}, AdapterVersion: " \t", Owner: "test"}}},
+		{name: "declared but not implemented", connector: identityOnlyConnector{descriptor: testDescriptorWithCapabilities("bad", KindReadAdapter, CapRead)}},
+		{name: "unknown capability", connector: identityOnlyConnector{descriptor: testDescriptorWithCapabilities("bad", KindReadAdapter, "shell")}},
+		{name: "read adapter with verbs", connector: identityOnlyConnector{descriptor: func() Descriptor {
+			descriptor := testDescriptor("bad", KindReadAdapter)
+			descriptor.Verbs = []intent.Verb{intent.VerbGitOpsOpenPR}
+			return descriptor
+		}()}},
+		{name: "action without verbs", connector: testExecutor{descriptor: testDescriptorWithCapabilities("bad", KindTypedAction, CapExecute)}},
+		{name: "action with unknown verb", connector: testExecutor{descriptor: func() Descriptor {
+			descriptor := testDescriptorWithCapabilities("bad", KindTypedAction, CapExecute)
+			descriptor.Verbs = []intent.Verb{"shell.exec"}
+			return descriptor
+		}()}},
 	}
 
 	for _, test := range tests {
@@ -161,6 +176,26 @@ func TestRegistryRejectsDuplicateKind(t *testing.T) {
 	}
 }
 
+func TestRegistryRejectsDuplicateCanonicalToolAcrossTaxonomies(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	reader := newTestReader("github")
+	if err := registry.Register(func() (Connector, error) { return reader, nil }); err != nil {
+		t.Fatalf("first Register() error = %v", err)
+	}
+	brokered := identityOnlyConnector{descriptor: testDescriptor("github", KindBrokeredRead)}
+	brokered.descriptor.AdapterVersion = "deep-link/v1"
+	if err := registry.Register(func() (Connector, error) { return brokered, nil }); err == nil {
+		t.Fatal("second canonical connector for github was accepted")
+	}
+	got, ok := registry.ByKind("github")
+	gotReader, isReader := got.(testReader)
+	if !ok || !isReader || gotReader.descriptor.AdapterVersion != reader.descriptor.AdapterVersion {
+		t.Fatalf("canonical github connector changed after rejection: %v/%t", got, ok)
+	}
+}
+
 func TestRegistryWithCapabilityIsDeterministic(t *testing.T) {
 	t.Parallel()
 
@@ -181,18 +216,50 @@ func TestRegistryWithCapabilityIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestRegistryCanonicalizesWireVersionsAndJSONDomains(t *testing.T) {
+	t.Parallel()
+
+	reader := newTestReader("versions")
+	reader.descriptor.WireVersions = []WireVersion{
+		{Major: 2, Minor: 0},
+		{Major: 1, Minor: 2},
+		CurrentWireVersion(),
+	}
+	reader.descriptor.AdapterVersion = "search/ecs-v1"
+	registry := NewRegistry()
+	if err := registry.Register(func() (Connector, error) { return reader, nil }); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	descriptor := registry.Descriptors()[0]
+	want := []WireVersion{CurrentWireVersion(), {Major: 1, Minor: 2}, {Major: 2, Minor: 0}}
+	if !slices.Equal(descriptor.WireVersions, want) {
+		t.Fatalf("WireVersions = %#v, want %#v", descriptor.WireVersions, want)
+	}
+	document, err := json.Marshal(descriptor)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if !bytes.Contains(document, []byte(`"wire_versions":[{"major":1,"minor":0}`)) ||
+		!bytes.Contains(document, []byte(`"adapter_version":"search/ecs-v1"`)) ||
+		bytes.Contains(document, []byte(`"protocol_version"`)) {
+		t.Fatalf("descriptor JSON = %s", document)
+	}
+}
+
 func TestRegistryExecutorRequiresTypedAction(t *testing.T) {
 	t.Parallel()
 
 	registry := NewRegistry()
 	executor := testExecutor{descriptor: Descriptor{
-		Kind:         "argocd",
-		ConnKind:     KindTypedAction,
-		ProtocolV:    "1.0.0",
-		Owner:        "test",
-		Capabilities: []Capability{CapExecute},
-		Verbs:        []intent.Verb{intent.VerbArgoCDSync},
-		ArgSchemas:   testArgSchemas(intent.VerbArgoCDSync),
+		Kind:           "argocd",
+		ConnKind:       KindTypedAction,
+		WireVersions:   []WireVersion{CurrentWireVersion()},
+		AdapterVersion: "1.0.0",
+		Owner:          "test",
+		Capabilities:   []Capability{CapExecute},
+		Verbs:          []intent.Verb{intent.VerbArgoCDSync},
+		ArgSchemas:     testArgSchemas(intent.VerbArgoCDSync),
 	}}
 	if err := registry.Register(func() (Connector, error) { return executor, nil }); err != nil {
 		t.Fatalf("Register() error = %v", err)
@@ -229,12 +296,12 @@ func TestRegistryRejectsDuplicateVerbOwnershipAtomically(t *testing.T) {
 
 	registry := NewRegistry()
 	first := testExecutor{descriptor: Descriptor{
-		Kind: "first", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test",
+		Kind: "first", ConnKind: KindTypedAction, WireVersions: []WireVersion{CurrentWireVersion()}, AdapterVersion: "1.0.0", Owner: "test",
 		Capabilities: []Capability{CapExecute}, Verbs: []intent.Verb{intent.VerbGitOpsOpenPR},
 		ArgSchemas: testArgSchemas(intent.VerbGitOpsOpenPR),
 	}}
 	second := testExecutor{descriptor: Descriptor{
-		Kind: "second", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test",
+		Kind: "second", ConnKind: KindTypedAction, WireVersions: []WireVersion{CurrentWireVersion()}, AdapterVersion: "1.0.0", Owner: "test",
 		Capabilities: []Capability{CapExecute}, Verbs: []intent.Verb{intent.VerbGitOpsOpenPR, intent.VerbArgoCDSync},
 		ArgSchemas: testArgSchemas(intent.VerbGitOpsOpenPR, intent.VerbArgoCDSync),
 	}}
@@ -260,7 +327,7 @@ func TestRegistryVerbLookupFailsClosed(t *testing.T) {
 
 	registry := NewRegistry()
 	executor := testExecutor{descriptor: Descriptor{
-		Kind: "git", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test",
+		Kind: "git", ConnKind: KindTypedAction, WireVersions: []WireVersion{CurrentWireVersion()}, AdapterVersion: "1.0.0", Owner: "test",
 		Capabilities: []Capability{CapExecute}, Verbs: []intent.Verb{intent.VerbGitOpsOpenPR},
 		ArgSchemas: testArgSchemas(intent.VerbGitOpsOpenPR),
 	}}
@@ -289,7 +356,7 @@ func TestRegistryVerbLookupRoutesDeclaredCapabilities(t *testing.T) {
 
 	registry := NewRegistry()
 	action := testExecutor{descriptor: Descriptor{
-		Kind: "git", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test",
+		Kind: "git", ConnKind: KindTypedAction, WireVersions: []WireVersion{CurrentWireVersion()}, AdapterVersion: "1.0.0", Owner: "test",
 		Capabilities: []Capability{CapPlan, CapExecute, CapVerify}, Verbs: []intent.Verb{intent.VerbGitOpsOpenPR},
 		ArgSchemas: testArgSchemas(intent.VerbGitOpsOpenPR),
 	}}
@@ -327,7 +394,7 @@ func TestRegistryRejectsInvalidSchemaOwnershipAtomically(t *testing.T) {
 			t.Parallel()
 			registry := NewRegistry()
 			action := testExecutor{descriptor: Descriptor{
-				Kind: "git", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test",
+				Kind: "git", ConnKind: KindTypedAction, WireVersions: []WireVersion{CurrentWireVersion()}, AdapterVersion: "1.0.0", Owner: "test",
 				Capabilities: []Capability{CapPlan}, Verbs: []intent.Verb{intent.VerbGitOpsOpenPR}, ArgSchemas: test.schemas,
 			}}
 			if err := registry.Register(func() (Connector, error) { return action, nil }); err == nil {
@@ -350,7 +417,7 @@ func TestRegistryPlanValidatesBeforePlanner(t *testing.T) {
 	planCalls := &atomic.Int64{}
 	plannedArgs := &json.RawMessage{}
 	action := testExecutor{descriptor: Descriptor{
-		Kind: "scale", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test",
+		Kind: "scale", ConnKind: KindTypedAction, WireVersions: []WireVersion{CurrentWireVersion()}, AdapterVersion: "1.0.0", Owner: "test",
 		Capabilities: []Capability{CapPlan}, Verbs: []intent.Verb{intent.VerbDeploymentScale},
 		ArgSchemas: map[intent.Verb]json.RawMessage{intent.VerbDeploymentScale: json.RawMessage(`{
 		  "$schema":"https://json-schema.org/draft/2020-12/schema",
@@ -404,7 +471,7 @@ func TestRegistryDescriptorsCloneArgumentSchemas(t *testing.T) {
 
 	registry := NewRegistry()
 	action := testExecutor{descriptor: Descriptor{
-		Kind: "git", ConnKind: KindTypedAction, ProtocolV: "1.0.0", Owner: "test",
+		Kind: "git", ConnKind: KindTypedAction, WireVersions: []WireVersion{CurrentWireVersion()}, AdapterVersion: "1.0.0", Owner: "test",
 		Capabilities: []Capability{CapPlan}, Verbs: []intent.Verb{intent.VerbGitOpsOpenPR},
 		ArgSchemas: testArgSchemas(intent.VerbGitOpsOpenPR),
 	}}
@@ -415,11 +482,15 @@ func TestRegistryDescriptorsCloneArgumentSchemas(t *testing.T) {
 	document := descriptors[0].ArgSchemas[intent.VerbGitOpsOpenPR]
 	document[0] = '!'
 	delete(descriptors[0].ArgSchemas, intent.VerbGitOpsOpenPR)
+	descriptors[0].WireVersions[0] = WireVersion{Major: 9, Minor: 9}
 
 	again := registry.Descriptors()
 	got := again[0].ArgSchemas[intent.VerbGitOpsOpenPR]
 	if len(got) == 0 || got[0] == '!' {
 		t.Fatal("Descriptors() exposed mutable argument schema storage")
+	}
+	if again[0].WireVersions[0] != CurrentWireVersion() {
+		t.Fatal("Descriptors() exposed mutable wire-version storage")
 	}
 }
 
@@ -428,13 +499,26 @@ func newTestReader(kind string) testReader {
 	return testReader{
 		kind: kind,
 		descriptor: Descriptor{
-			Kind:         kind,
-			ConnKind:     KindReadAdapter,
-			ProtocolV:    "1.0.0",
-			Owner:        "test",
-			Capabilities: capabilities,
+			Kind:           kind,
+			ConnKind:       KindReadAdapter,
+			WireVersions:   []WireVersion{CurrentWireVersion()},
+			AdapterVersion: "1.0.0",
+			Owner:          "test",
+			Capabilities:   capabilities,
 		},
 	}
+}
+
+func testDescriptor(kind string, connKind ConnectorKind) Descriptor {
+	return Descriptor{
+		Kind: kind, ConnKind: connKind, WireVersions: []WireVersion{CurrentWireVersion()}, AdapterVersion: "1.0.0", Owner: "test",
+	}
+}
+
+func testDescriptorWithCapabilities(kind string, connKind ConnectorKind, capabilities ...Capability) Descriptor {
+	descriptor := testDescriptor(kind, connKind)
+	descriptor.Capabilities = capabilities
+	return descriptor
 }
 
 func testArgSchemas(verbs ...intent.Verb) map[intent.Verb]json.RawMessage {

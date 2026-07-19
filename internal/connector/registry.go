@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/ArdurAI/sith/internal/intent"
@@ -309,8 +310,13 @@ func validateConnector(candidate Connector) (registryEntry, error) {
 	if !descriptor.ConnKind.Valid() {
 		return registryEntry{}, fmt.Errorf("invalid connector kind %q", descriptor.ConnKind)
 	}
-	if descriptor.ProtocolV == "" {
-		return registryEntry{}, fmt.Errorf("protocol version must not be empty")
+	wireVersions, err := canonicalWireVersions(descriptor.WireVersions)
+	if err != nil {
+		return registryEntry{}, err
+	}
+	descriptor.WireVersions = wireVersions
+	if strings.TrimSpace(descriptor.AdapterVersion) == "" {
+		return registryEntry{}, fmt.Errorf("adapter version must not be empty")
 	}
 	if descriptor.Owner == "" {
 		return registryEntry{}, fmt.Errorf("owner must not be empty")
@@ -436,6 +442,7 @@ func connectorIsNil(candidate Connector) bool {
 }
 
 func cloneDescriptor(descriptor Descriptor) Descriptor {
+	descriptor.WireVersions = append([]WireVersion(nil), descriptor.WireVersions...)
 	descriptor.Capabilities = append([]Capability(nil), descriptor.Capabilities...)
 	descriptor.Verbs = append([]intent.Verb(nil), descriptor.Verbs...)
 	if descriptor.ArgSchemas != nil {
