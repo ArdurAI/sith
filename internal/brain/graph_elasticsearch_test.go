@@ -214,6 +214,12 @@ func TestFromGraphFactsFailsClosedOnAmbiguousElasticsearchLogCauseFacts(t *testi
 		{name: "protocol mismatch", mutate: func(fact *fleet.GraphFact) {
 			fact.Fact.Provenance.ProtocolV = "search/ecs-v2"
 		}},
+		{name: "unexpected provenance deep link", mutate: func(fact *fleet.GraphFact) {
+			fact.Fact.Provenance.DeepLink = "https://private.example.invalid/logs"
+		}},
+		{name: "unexpected provenance collector", mutate: func(fact *fleet.GraphFact) {
+			fact.Fact.Provenance.Collector = "unreviewed-collector"
+		}},
 		{name: "resource kind mismatch", mutate: func(fact *fleet.GraphFact) { fact.Fact.Ref.Kind = "OtherSignal" }},
 		{name: "resource scope missing", mutate: func(fact *fleet.GraphFact) {
 			fact.Fact.Ref.Scope = ""
@@ -396,6 +402,16 @@ func TestFromGraphFactsFailsClosedOnAmbiguousElasticsearchLogCauseFacts(t *testi
 				t.Fatalf("FromGraphFacts() error = nil for %#v", fact)
 			}
 		})
+	}
+}
+
+func TestDecodeElasticsearchLogCausePayloadRejectsInvalidUTF8(t *testing.T) {
+	t.Parallel()
+	raw := append([]byte(`{"key":"logs.cause","value":"panic","count":1,"first_event_at":"2026-07-18T23:30:00Z","last_event_at":"2026-07-18T23:30:00Z","container":"`), 0xff)
+	raw = append(raw, []byte(`"}`)...)
+
+	if _, err := decodeElasticsearchLogCausePayload(raw); err == nil || !strings.Contains(err.Error(), "invalid UTF-8") {
+		t.Fatalf("decodeElasticsearchLogCausePayload() error = %v, want invalid UTF-8", err)
 	}
 }
 

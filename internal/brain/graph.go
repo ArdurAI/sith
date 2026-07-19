@@ -229,6 +229,11 @@ func observationFromElasticsearchLogCauseGraphFact(fact fleet.GraphFact) (Observ
 			provenance.ProtocolV,
 		)
 	}
+	if provenance.DeepLink != "" || provenance.Collector != "" {
+		return Observation{}, false, fmt.Errorf(
+			"project Elasticsearch log-cause fact: unexpected provenance metadata",
+		)
+	}
 	if ref.Kind != "LogSignal" || ref.Scope == "" || ref.Namespace == "" {
 		return Observation{}, false, fmt.Errorf("project Elasticsearch log-cause fact: resource identity is invalid")
 	}
@@ -451,6 +456,11 @@ func decodeGitHubWorkflowChangePayload(raw json.RawMessage) (githubWorkflowChang
 }
 
 func decodeElasticsearchLogCausePayload(raw json.RawMessage) (elasticsearchLogCausePayload, error) {
+	if !utf8.Valid(raw) {
+		return elasticsearchLogCausePayload{}, fmt.Errorf(
+			"project Elasticsearch log-cause fact: decode payload: invalid UTF-8",
+		)
+	}
 	if err := rejectDuplicateGraphJSON(raw); err != nil {
 		return elasticsearchLogCausePayload{}, fmt.Errorf(
 			"project Elasticsearch log-cause fact: decode payload: %w",

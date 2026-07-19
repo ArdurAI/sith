@@ -98,7 +98,7 @@ path, or recurring cost. A future live reader remains responsible for TLS, least
 
 Create one signed DCO/GSTACK commit, publish and verify the exact PR head, require hosted CI,
 CodeQL, and CodeRabbit, merge without rewriting the signed head, prove exact post-merge `dev`, close
-#280, update #46 without claiming E14 complete, recheck all GitHub security queues, and synchronize
+issue 280, update #46 without claiming E14 complete, recheck all GitHub security queues, and synchronize
 Notion and Obsidian.
 
 ## [C] Checkpoint #1
@@ -106,3 +106,15 @@ Notion and Obsidian.
 Pending signed implementation commit — issue, design, production bridge, identity hardening,
 adversarial tests, replay, CLI privacy proof, documentation, full local gate matrix, repeated
 zero-finding review, and clean Kind teardown are frozen in the EXTENDED worktree.
+
+## [C] Checkpoint #2
+
+The explicit hosted review identified two valid fail-closed gaps and one Markdown lint defect.
+The bridge now rejects unreviewed provenance metadata and malformed UTF-8 before decoding; dedicated
+regressions cover both paths. The session note no longer starts a line with a malformed issue token.
+The complete post-remediation local matrix is green: `make ci` with brain coverage at 88.7% and no
+lint or vulnerability findings; 296,650 native fuzz executions; PostgreSQL forced-RLS and both
+50,000-execution workspace-isolation fuzzers; reproducible release, SPDX SBOM, Homebrew, and
+multi-platform distroless OCI proof; and pinned Kubernetes 1.36.1 two-cluster Kind in 246.857
+seconds with clean teardown. Two consecutive complete local CodeRabbit reviews report zero findings
+across all 13 changed files. A new signed commit and fresh exact-head hosted proof remain required.
