@@ -640,9 +640,20 @@ IDs, labels, annotations, workload identity, endpoints, and unknown fields. Any 
 partial, duplicate-key, identity/window-mismatched, oversized, or invalid-total response is rejected
 as a whole and emits zero facts; invalid rows are never filtered into a partial success. A successful
 empty allocation map also emits zero facts, while missing OpenCost coverage is never estimated. This
-library path adds no OpenCost client, service discovery, credentials, persistence,
-billing, optimization, mutation, fleet/team rollup, currency conversion, freshness objective, or
-GPU-utilization claim. The current CLI and Hub do not fetch or display these facts yet.
+package can preserve each successful projection in a per-scope snapshot, including an empty fact
+set, and combine snapshots for one exact window into a deterministic workspace USD total. The
+caller supplies the complete expected-scope set; output names every expected, reported,
+successful-empty, and missing scope, and missing scopes never contribute synthetic zero cost.
+Every fact is revalidated before all component and total amounts are summed with exact decimal
+arithmetic. A rollup carries the source window end only when at least one scope reported and selects
+no stale threshold.
+
+The rollup is an offline workspace computation core, not a live Hub feature. This library path adds
+no OpenCost client, port-forward, service or ingress discovery, arbitrary endpoint, credentials,
+Kubernetes Service-proxy RBAC, OCM transport, persistence, runtime wiring, per-team attribution,
+UI/API, billing, optimization, mutation, currency conversion, freshness objective, or
+GPU-utilization claim. The current CLI and Hub do not fetch, persist, roll up, or display these
+facts yet.
 
 Every verdict includes its rule, exact cited signals, confidence state, missing lenses, and an
 advisory command or PR change for the operator to inspect and run. The brain performs no I/O and
