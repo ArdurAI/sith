@@ -107,6 +107,40 @@ contract in [Workflow runs](https://docs.github.com/en/rest/actions/workflow-run
 and the closed conclusion vocabulary in
 [Checks](https://docs.github.com/en/rest/guides/using-the-rest-api-to-interact-with-checks).
 
+### 2026-07-18 extension: Elasticsearch log-cause graph bridge for R3
+
+R3 continues to use its existing generic `logs.cause` TELEMETRY strengthener. The extension is a
+narrow graph admission path for the already-reviewed Elasticsearch projector, not a new rule.
+`FromGraphFacts` first validates the workspace-bounded graph, then admits only an attached
+TELEMETRY `FactDerived` whose resource is an Elasticsearch `LogSignal`, source kind and provenance
+adapter are both `elasticsearch`, protocol is `search/ecs-v1`, source/scope/namespace agree, and
+the entity carries exactly one Pod identity. The source hash uses only the retained workspace,
+scope, namespace, Pod, optional container, cause, count, first/last event times, and collection
+time, allowing the bridge to recompute both the full native ID and resource-name prefix. Extra
+resource attributes, display fields, entity dimensions, cross-Pod retargeting, and malformed,
+noncanonical, or mismatched SHA-256 identities fail closed.
+
+The exact-case payload is closed to `key`, `value`, `count`, `first_event_at`, `last_event_at`, and
+optional `container`. The bridge revalidates the source projector's byte, count, event-window,
+clock-skew, and text bounds, accepts only `logs.cause` with `panic`, `missing-config`, or
+`dependency-failure`, then discards count, container, and the source payload. The resulting
+observation retains only exact Pod identity, the closed cause, last classified event time, source,
+and stale flag. Graph fact presence never creates TELEMETRY coverage; missing, unavailable, stale,
+or observation-stale TELEMETRY evidence therefore cannot produce a fully confirmed R3 result.
+Entity grouping uses exact scope, namespace, kind, and name, so evidence attached to one Pod cannot
+strengthen another Pod or create a fleet-wide cause claim.
+
+Raw messages are classified and discarded by the source projector before this bridge runs. Index
+and document IDs, query text, labels, URLs, credentials, user data, and container/count metadata do
+not enter the observation, citation, replay, or renderer. The extension adds bounded in-memory JSON
+validation only: no HTTP/TLS client, endpoint/index configuration, API key, mapping discovery,
+query execution, pagination, retention, socket, filesystem, database, process, correlation, typed
+intent, dispatch, mutation, or cloud resource. Elastic documents the underlying Search API and
+selected-field behavior in [Search](https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-search)
+and [Retrieve selected fields](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/retrieve-selected-fields),
+and the normalized identity fields in [ECS orchestrator fields](https://www.elastic.co/docs/reference/ecs/ecs-orchestrator)
+and [Filebeat Kubernetes fields](https://www.elastic.co/docs/reference/beats/filebeat/exported-fields-kubernetes-processor).
+
 ## Consequences
 
 - Investigations are offline, reproducible, replayable, and inspectable. The same observation
@@ -115,12 +149,12 @@ and the closed conclusion vocabulary in
   telemetry-dependent cause variant. This is intentionally less confident than an opaque guess.
 - Phase L does not auto-port-forward to Prometheus/Loki, retain telemetry series, read Git desired
   state, or infer absent evidence. Those connectors can later emit the same observation contract.
-- The existing cache-backed CLI does not fetch Argo Applications or GitHub workflow runs. R8 and R9
-  are available only to callers that already possess validated graph facts and explicitly declare
-  TIMELINE coverage.
+- The existing cache-backed CLI does not fetch Argo Applications, GitHub workflow runs, or
+  Elasticsearch logs. R8, R9, and Elasticsearch-strengthened R3 are available only to callers that
+  already possess validated graph facts and explicitly declare the relevant lens coverage.
 - There is no hosted or cloud cost. Runtime cost is one existing tier-1 hydration pass plus
   in-memory rule evaluation over the returned records or an existing bounded graph. No extra
-  Kubernetes watch, Argo/GitHub request, storage, or network egress is introduced.
+  Kubernetes watch, Argo/GitHub/Elasticsearch request, storage, or network egress is introduced.
 - Advisory strings are not shell execution. Operators remain responsible for reviewing and
   running a suggestion with their own kubeconfig identity.
 

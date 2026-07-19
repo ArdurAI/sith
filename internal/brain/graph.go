@@ -4,11 +4,15 @@ package brain
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/ArdurAI/sith/internal/fleet"
 )
@@ -21,7 +25,15 @@ const (
 	githubGraphSource                  = "github"
 	githubWorkflowGraphProtocolVersion = "workflow-runs/2026-03-10"
 	maxGitHubWorkflowChangePayload     = 4 << 10
-	maxGraphJSONDepth                  = 64
+
+	elasticsearchGraphSource          = "elasticsearch"
+	elasticsearchGraphProtocolVersion = "search/ecs-v1"
+	maxElasticsearchLogCausePayload   = 4 << 10
+	maxElasticsearchCauseCount        = 128
+	maxElasticsearchCauseWindow       = 15 * time.Minute
+	maxElasticsearchClockSkew         = 5 * time.Minute
+
+	maxGraphJSONDepth = 64
 )
 
 type argoChangePayload struct {
@@ -40,6 +52,15 @@ type githubWorkflowChangePayload struct {
 	ChangeKind string    `json:"change_kind"`
 	Conclusion string    `json:"conclusion"`
 	EventAt    time.Time `json:"event_at"`
+}
+
+type elasticsearchLogCausePayload struct {
+	Key          string    `json:"key"`
+	Value        string    `json:"value"`
+	Count        int       `json:"count"`
+	FirstEventAt time.Time `json:"first_event_at"`
+	LastEventAt  time.Time `json:"last_event_at"`
+	Container    string    `json:"container,omitempty"`
 }
 
 // FromGraphFacts converts reviewed graph facts into normalized brain observations while preserving
@@ -93,8 +114,15 @@ func FromGraphFacts(
 func observationFromGraphFact(fact fleet.GraphFact) (Observation, bool, error) {
 	provenance := fact.Fact.Provenance
 	ref := fact.Fact.Ref
+	if provenance.ProtocolV == elasticsearchGraphProtocolVersion {
+		return observationFromElasticsearchLogCauseGraphFact(fact)
+	}
 	if provenance.ProtocolV == githubWorkflowGraphProtocolVersion {
 		return observationFromGitHubWorkflowGraphFact(fact)
+	}
+	if (ref.SourceKind == elasticsearchGraphSource || provenance.Adapter == elasticsearchGraphSource) &&
+		ref.Kind == "LogSignal" {
+		return observationFromElasticsearchLogCauseGraphFact(fact)
 	}
 	if fact.Fact.Kind != fleet.FactChange || fact.Lens != fleet.LensTimeline {
 		return Observation{}, false, nil
@@ -178,6 +206,125 @@ func observationFromArgoGraphFact(fact fleet.GraphFact) (Observation, bool, erro
 		Key:        "change.kind",
 		Value:      "sync-failed",
 		ObservedAt: fact.Fact.ObservedAt,
+		Source:     fact.Fact.Source,
+		Stale:      fact.Fact.Stale,
+	}, true, nil
+}
+
+func observationFromElasticsearchLogCauseGraphFact(fact fleet.GraphFact) (Observation, bool, error) {
+	provenance := fact.Fact.Provenance
+	ref := fact.Fact.Ref
+	if fact.Fact.Kind != fleet.FactDerived || fact.Lens != fleet.LensTelemetry {
+		return Observation{}, false, fmt.Errorf("project Elasticsearch log-cause fact: fact must be derived TELEMETRY")
+	}
+	if ref.SourceKind != elasticsearchGraphSource || provenance.Adapter != elasticsearchGraphSource {
+		return Observation{}, false, fmt.Errorf(
+			"project Elasticsearch log-cause fact: source and provenance must both be %q",
+			elasticsearchGraphSource,
+		)
+	}
+	if provenance.ProtocolV != elasticsearchGraphProtocolVersion {
+		return Observation{}, false, fmt.Errorf(
+			"project Elasticsearch log-cause fact: unsupported protocol version %q",
+			provenance.ProtocolV,
+		)
+	}
+	if ref.Kind != "LogSignal" || ref.Scope == "" || ref.Namespace == "" {
+		return Observation{}, false, fmt.Errorf("project Elasticsearch log-cause fact: resource identity is invalid")
+	}
+	if fact.Entity == nil {
+		return Observation{}, false, fmt.Errorf("project Elasticsearch log-cause fact: Pod entity is required")
+	}
+	entity := *fact.Entity
+	if entity.Cluster != ref.Scope || entity.Namespace != ref.Namespace || entity.Pod == "" ||
+		entity.Kind != "" || entity.Name != "" || entity.Node != "" || entity.ImageDigest != "" {
+		return Observation{}, false, fmt.Errorf(
+			"project Elasticsearch log-cause fact: source and entity must identify one exact Pod",
+		)
+	}
+	if fact.Fact.Source != ref.Scope {
+		return Observation{}, false, fmt.Errorf(
+			"project Elasticsearch log-cause fact: evidence source must match the Elasticsearch scope",
+		)
+	}
+	if len(ref.Attributes) != 0 || len(fact.Fact.Display) != 0 {
+		return Observation{}, false, fmt.Errorf(
+			"project Elasticsearch log-cause fact: unexpected attributes or display fields",
+		)
+	}
+	if len(fact.Fact.Observed) == 0 || len(fact.Fact.Observed) > maxElasticsearchLogCausePayload {
+		return Observation{}, false, fmt.Errorf(
+			"project Elasticsearch log-cause fact: payload must be between 1 and %d bytes",
+			maxElasticsearchLogCausePayload,
+		)
+	}
+
+	payload, err := decodeElasticsearchLogCausePayload(fact.Fact.Observed)
+	if err != nil {
+		return Observation{}, false, err
+	}
+	if payload.Key != "logs.cause" {
+		return Observation{}, false, fmt.Errorf(
+			"project Elasticsearch log-cause fact: unsupported key %q",
+			payload.Key,
+		)
+	}
+	switch payload.Value {
+	case "panic", "missing-config", "dependency-failure":
+	default:
+		return Observation{}, false, fmt.Errorf(
+			"project Elasticsearch log-cause fact: unsupported cause %q",
+			payload.Value,
+		)
+	}
+	if payload.Count <= 0 || payload.Count > maxElasticsearchCauseCount {
+		return Observation{}, false, fmt.Errorf(
+			"project Elasticsearch log-cause fact: count must be between 1 and %d",
+			maxElasticsearchCauseCount,
+		)
+	}
+	if payload.FirstEventAt.IsZero() || payload.LastEventAt.IsZero() ||
+		payload.LastEventAt.Before(payload.FirstEventAt) ||
+		payload.LastEventAt.Sub(payload.FirstEventAt) > maxElasticsearchCauseWindow {
+		return Observation{}, false, fmt.Errorf(
+			"project Elasticsearch log-cause fact: event interval is invalid",
+		)
+	}
+	if payload.LastEventAt.After(fact.Fact.ObservedAt.Add(maxElasticsearchClockSkew)) {
+		return Observation{}, false, fmt.Errorf(
+			"project Elasticsearch log-cause fact: last event exceeds collection clock skew",
+		)
+	}
+	if payload.Container != "" && !validElasticsearchGraphText(payload.Container) {
+		return Observation{}, false, fmt.Errorf(
+			"project Elasticsearch log-cause fact: container identity is invalid",
+		)
+	}
+	digest, valid := validElasticsearchNativeID(provenance.NativeID)
+	if !valid {
+		return Observation{}, false, fmt.Errorf(
+			"project Elasticsearch log-cause fact: native identity is inconsistent with the log signal",
+		)
+	}
+	wantDigest, err := elasticsearchLogCauseDigest(fact, payload)
+	if err != nil || digest != wantDigest || ref.Name != "log-"+wantDigest[:32] {
+		return Observation{}, false, fmt.Errorf(
+			"project Elasticsearch log-cause fact: native identity is inconsistent with the log signal",
+		)
+	}
+
+	return Observation{
+		Ref: fleet.ResourceRef{
+			SourceKind: elasticsearchGraphSource,
+			Scope:      entity.Cluster,
+			Kind:       "Pod",
+			Namespace:  entity.Namespace,
+			Name:       entity.Pod,
+		},
+		Lens:       fleet.LensTelemetry,
+		Key:        "logs.cause",
+		Value:      payload.Value,
+		ObservedAt: payload.LastEventAt,
 		Source:     fact.Fact.Source,
 		Stale:      fact.Fact.Stale,
 	}, true, nil
@@ -301,6 +448,114 @@ func decodeGitHubWorkflowChangePayload(raw json.RawMessage) (githubWorkflowChang
 		return githubWorkflowChangePayload{}, fmt.Errorf("project GitHub workflow-run fact: decode payload trailer: %w", err)
 	}
 	return payload, nil
+}
+
+func decodeElasticsearchLogCausePayload(raw json.RawMessage) (elasticsearchLogCausePayload, error) {
+	if err := rejectDuplicateGraphJSON(raw); err != nil {
+		return elasticsearchLogCausePayload{}, fmt.Errorf(
+			"project Elasticsearch log-cause fact: decode payload: %w",
+			err,
+		)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return elasticsearchLogCausePayload{}, fmt.Errorf(
+			"project Elasticsearch log-cause fact: decode payload fields: %w",
+			err,
+		)
+	}
+	for field := range fields {
+		switch field {
+		case "key", "value", "count", "first_event_at", "last_event_at", "container":
+		default:
+			return elasticsearchLogCausePayload{}, fmt.Errorf(
+				"project Elasticsearch log-cause fact: payload field %q is unsupported",
+				field,
+			)
+		}
+	}
+	if container, present := fields["container"]; present && bytes.Equal(bytes.TrimSpace(container), []byte("null")) {
+		return elasticsearchLogCausePayload{}, fmt.Errorf(
+			"project Elasticsearch log-cause fact: container must be a non-null string",
+		)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var payload elasticsearchLogCausePayload
+	if err := decoder.Decode(&payload); err != nil {
+		return elasticsearchLogCausePayload{}, fmt.Errorf(
+			"project Elasticsearch log-cause fact: decode payload: %w",
+			err,
+		)
+	}
+	var trailer json.RawMessage
+	if err := decoder.Decode(&trailer); err != io.EOF {
+		if err == nil {
+			return elasticsearchLogCausePayload{}, fmt.Errorf(
+				"project Elasticsearch log-cause fact: payload must contain one JSON value",
+			)
+		}
+		return elasticsearchLogCausePayload{}, fmt.Errorf(
+			"project Elasticsearch log-cause fact: decode payload trailer: %w",
+			err,
+		)
+	}
+	if _, present := fields["container"]; present && payload.Container == "" {
+		return elasticsearchLogCausePayload{}, fmt.Errorf(
+			"project Elasticsearch log-cause fact: container must be a non-empty string when present",
+		)
+	}
+	return payload, nil
+}
+
+func validElasticsearchNativeID(nativeID string) (string, bool) {
+	digest, found := strings.CutPrefix(nativeID, "sha256:")
+	if !found || len(digest) != 64 {
+		return "", false
+	}
+	for _, character := range digest {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return "", false
+		}
+	}
+	return digest, true
+}
+
+func elasticsearchLogCauseDigest(fact fleet.GraphFact, payload elasticsearchLogCausePayload) (string, error) {
+	identity, err := json.Marshal(struct {
+		Workspace    string    `json:"workspace"`
+		Scope        string    `json:"scope"`
+		Namespace    string    `json:"namespace"`
+		Pod          string    `json:"pod"`
+		Container    string    `json:"container,omitempty"`
+		Cause        string    `json:"cause"`
+		Count        int       `json:"count"`
+		FirstEventAt time.Time `json:"first_event_at"`
+		LastEventAt  time.Time `json:"last_event_at"`
+		ObservedAt   time.Time `json:"observed_at"`
+	}{
+		Workspace: fact.Fact.Workspace, Scope: fact.Fact.Ref.Scope, Namespace: fact.Fact.Ref.Namespace,
+		Pod: fact.Entity.Pod, Container: payload.Container, Cause: payload.Value, Count: payload.Count,
+		FirstEventAt: payload.FirstEventAt, LastEventAt: payload.LastEventAt,
+		ObservedAt: fact.Fact.ObservedAt,
+	})
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(identity)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func validElasticsearchGraphText(value string) bool {
+	if value == "" || len(value) > 253 || !utf8.ValidString(value) || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return false
+		}
+	}
+	return true
 }
 
 func rejectDuplicateGraphJSON(document []byte) error {

@@ -403,6 +403,20 @@ hub). Weights are indicative, to be tuned against real incidents.
   advisory* accordingly.
 - **Coverage gate.** LIVE + logs(TELEMETRY) are the crux; DESIRED/TIMELINE disambiguate.
 
+**Implemented Elasticsearch graph seam (#280).** The bounded `search/ecs-v1` projector described
+in #214 can feed this existing signal without exposing raw logs to the brain. `FromGraphFacts`
+accepts only an attached Pod TELEMETRY `FactDerived` whose source kind and provenance adapter are
+both `elasticsearch`, protocol is exact, source/scope/namespace agree, and the SHA-256
+native/resource identity recomputes from the retained workspace, Pod, aggregate, and collection
+fields. The payload contains only `key`, `value`, `count`,
+`first_event_at`, `last_event_at`, and optional `container`. The key must be `logs.cause`; the value
+must be `panic`, `missing-config`, or `dependency-failure`; source projector count, time-window,
+clock-skew, and optional-container bounds are revalidated. Only the Pod identity, cause, last event
+time, source, and stale flag survive as an observation. Count and container metadata are discarded.
+Caller-declared coverage is copied exactly and never inferred from fact presence. Different Pods
+remain different evaluator entities, so log evidence for one Pod cannot strengthen another Pod's
+CrashLoop. This is an in-memory graph bridge, not an Elasticsearch reader or freshness claim.
+
 #### R4 — Config drift (live diverged from desired)
 
 - **Symptom.** Live ≠ desired for a workload/Application (Argo `OutOfSync`, or `diff` verb shows a
@@ -595,7 +609,7 @@ the *reasoning*. Decision deferred to the owner (see §7).
 | **GitHub** | RA + TA | di, rd, qy, df, **pl/ex** (`gitops.open-pr`), vf | DESIRED (manifests), TIMELINE (commits/PR/deploys) | **T1** | read=local, write=hub | Bounded pure projectors now normalize caller-fetched merged-PR and completed workflow-run failure evidence; the HTTP/token reader remains future. `gitops.open-pr` is the first governed write (P2). |
 | **ArgoCD** | RA + BR + TA | di, rd, qy, **df**, pl/ex (`argocd.sync`,`argocd.rollback`), vf | DESIRED, LIVE, TIMELINE (sync history), drift | **T1** | read=local, sync=hub | Richest single connector — 3 lenses + the exemplar of the `diff` verb. Central to R1, R4. Application CRDs read via kubeconfig. |
 | **Prometheus** | RA + query-through | di, **qy**, rd (alerts) | TELEMETRY | **T1** | local-if-reachable / hub | Query-through, not retained. Central to R2, R5, R6 and R1 validation. |
-| **Elasticsearch** | RA + query-through | di, **qy** | TELEMETRY (logs) | **T2** | hub (local if creds) | Log search for R3. Auth/index-mapping variance → T2. |
+| **Elasticsearch** | RA + query-through | di, **qy** | TELEMETRY (logs) | **T2** | hub (local if creds) | Bounded sanitized `search/ecs-v1` cause facts now bridge into R3; HTTP/auth/index/query execution remains future. Auth/index-mapping variance → T2. |
 | **AWS** | RA (enum/cred) | di, rd, (qy CloudWatch later) | LIVE (nodes/infra), TIMELINE (CloudTrail later) | **T2** | cluster-enum local; deep facts hub | Enumeration + short-lived token minting (no long-lived keys). Feeds R6 (nodegroup/autoscaler). |
 
 #### Wave 2 — the desired-state / diff pipeline

@@ -520,17 +520,24 @@ func buildFact(input Projection, cause string, aggregate causeAggregate) (fleet.
 		return fleet.GraphFact{}, fmt.Errorf("elasticsearch log-cause fact exceeds %d encoded bytes", maxFactPayloadBytes)
 	}
 
+	// Bind the source identity only to fields that survive sanitization so downstream graph
+	// consumers can independently revalidate the exact workspace, Pod, aggregate, and collection.
 	identity, err := json.Marshal(struct {
-		Scope       string    `json:"scope"`
-		Namespace   string    `json:"namespace"`
-		Pod         string    `json:"pod"`
-		Container   string    `json:"container,omitempty"`
-		Cause       string    `json:"cause"`
-		WindowStart time.Time `json:"window_start"`
-		WindowEnd   time.Time `json:"window_end"`
+		Workspace    string    `json:"workspace"`
+		Scope        string    `json:"scope"`
+		Namespace    string    `json:"namespace"`
+		Pod          string    `json:"pod"`
+		Container    string    `json:"container,omitempty"`
+		Cause        string    `json:"cause"`
+		Count        int       `json:"count"`
+		FirstEventAt time.Time `json:"first_event_at"`
+		LastEventAt  time.Time `json:"last_event_at"`
+		ObservedAt   time.Time `json:"observed_at"`
 	}{
-		Scope: input.Scope, Namespace: input.Namespace, Pod: input.Pod, Container: input.Container,
-		Cause: cause, WindowStart: input.WindowStart.UTC(), WindowEnd: input.WindowEnd.UTC(),
+		Workspace: input.Workspace, Scope: input.Scope, Namespace: input.Namespace, Pod: input.Pod,
+		Container: input.Container, Cause: cause, Count: aggregate.Count,
+		FirstEventAt: aggregate.First.UTC(), LastEventAt: aggregate.Last.UTC(),
+		ObservedAt: input.ObservedAt.UTC(),
 	})
 	if err != nil {
 		return fleet.GraphFact{}, fmt.Errorf("encode Elasticsearch log-cause identity: %w", err)
