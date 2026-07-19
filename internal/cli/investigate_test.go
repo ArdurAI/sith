@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ArdurAI/sith/internal/brain"
+	connectorelasticsearch "github.com/ArdurAI/sith/internal/connector/elasticsearch"
 	"github.com/ArdurAI/sith/internal/fleet"
 )
 
@@ -39,6 +40,93 @@ func TestInvestigateJSONUsesStableVerdictSchema(t *testing.T) {
 	}
 	if len(result.Verdicts) != 1 || result.Verdicts[0].Rule != brain.RuleCrashLoop || result.Verdicts[0].Status != brain.StatusDetected {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestInvestigationSurfaceRendersSanitizedElasticsearchR3Evidence(t *testing.T) {
+	t.Parallel()
+	eventAt := time.Date(2026, 7, 18, 23, 30, 0, 0, time.UTC)
+	rawMarker := "DISCARD_RAW_PASSWORD=https://user:pass@example.invalid"
+	containerMarker := "discard-container-metadata"
+	response, err := json.Marshal(map[string]any{
+		"timed_out": false,
+		"_shards": map[string]any{
+			"total": 1, "successful": 1, "skipped": 0, "failed": 0,
+		},
+		"hits": map[string]any{
+			"hits": []any{map[string]any{
+				"fields": map[string]any{
+					"@timestamp":                []string{eventAt.Format(time.RFC3339Nano)},
+					"message":                   []string{"missing required environment variable " + rawMarker},
+					"orchestrator.cluster.name": []string{"alpha"},
+					"kubernetes.namespace":      []string{"synthetic"},
+					"kubernetes.pod.name":       []string{"payments-0"},
+					"kubernetes.container.name": []string{containerMarker},
+				},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal Elasticsearch response: %v", err)
+	}
+	facts, err := connectorelasticsearch.ProjectLogCauses(connectorelasticsearch.Projection{
+		Workspace: fleet.LocalWorkspace, Scope: "alpha", Namespace: "synthetic", Pod: "payments-0",
+		Container: containerMarker, WindowStart: eventAt.Add(-time.Minute), WindowEnd: eventAt,
+		ObservedAt: eventAt.Add(time.Minute), Response: response,
+	})
+	if err != nil {
+		t.Fatalf("ProjectLogCauses() error = %v", err)
+	}
+	input, err := brain.FromGraphFacts(
+		fleet.LocalWorkspace,
+		facts,
+		map[fleet.Lens]brain.LensCoverage{
+			fleet.LensLive:      {Available: true},
+			fleet.LensTelemetry: {Available: true},
+		},
+	)
+	if err != nil {
+		t.Fatalf("FromGraphFacts() error = %v", err)
+	}
+	input.Observations = append(input.Observations, brain.Observation{
+		Ref: fleet.ResourceRef{
+			SourceKind: "kubeconfig", Scope: "alpha", Kind: "Pod",
+			Namespace: "synthetic", Name: "payments-0",
+		},
+		Lens: fleet.LensLive, Key: "pod.failure", Value: "CrashLoopBackOff",
+		ObservedAt: eventAt.Add(time.Minute), Source: "alpha",
+	})
+	result, err := brain.Evaluate(input)
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if len(result.Verdicts) != 1 || result.Verdicts[0].Rule != brain.RuleCrashLoop ||
+		result.Verdicts[0].Status != brain.StatusConfirmed || result.Verdicts[0].FleetWide {
+		t.Fatalf("result = %#v, want confirmed entity-local R3", result)
+	}
+
+	for _, format := range []string{"text", "json"} {
+		format := format
+		t.Run(format, func(t *testing.T) {
+			t.Parallel()
+			var output bytes.Buffer
+			command := &cobra.Command{}
+			command.SetOut(&output)
+			if err := writeInvestigation(command, format, result); err != nil {
+				t.Fatalf("writeInvestigation(%s) error = %v", format, err)
+			}
+			encoded := output.String()
+			for _, expected := range []string{"R3", "logs.cause", "missing-config"} {
+				if !strings.Contains(encoded, expected) {
+					t.Errorf("output = %q, want %q", encoded, expected)
+				}
+			}
+			for _, discarded := range []string{rawMarker, containerMarker, "example.invalid", `"count"`, `"first_event_at"`, `"last_event_at"`} {
+				if strings.Contains(encoded, discarded) {
+					t.Errorf("output retained discarded Elasticsearch data %q: %s", discarded, encoded)
+				}
+			}
+		})
 	}
 }
 

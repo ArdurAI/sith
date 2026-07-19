@@ -616,6 +616,19 @@ retention, repository-to-workload correlation, alert, typed intent, PEP handoff,
 execution. The cache-backed `sith investigate` path cannot produce R9 until a future reader supplies
 validated workflow-run graph facts and explicit TIMELINE coverage.
 
+The brain's existing R3 CrashLoop rule can also consume the bounded Elasticsearch
+`search/ecs-v1` facts produced from an already-fetched, complete Search API response. The graph
+bridge requires exact Elasticsearch source/provenance, an attached Pod identity, a SHA-256
+native/resource identity that recomputes from the retained sanitized aggregate and Pod, and the
+closed `logs.cause` values `panic`, `missing-config`, or
+`dependency-failure`. It revalidates source bounds, discards count/container/window metadata, and
+preserves only the Pod, cause, last classified event time, source, and stale flag. Fact presence
+does not infer TELEMETRY coverage, and evidence for one Pod cannot strengthen another. Raw logs,
+index/document IDs, query text, labels, URLs, credentials, and user data do not enter the brain or
+CLI output. This path adds no Elasticsearch HTTP client, endpoint/index configuration, credential,
+query execution, persistence, fleet correlation, typed intent, mutation, or execution; the
+cache-backed `sith investigate` command still does not fetch Elasticsearch data.
+
 Every verdict includes its rule, exact cited signals, confidence state, missing lenses, and an
 advisory command or PR change for the operator to inspect and run. The brain performs no I/O and
 imports no connector planning, execution, intent, PEP, MCP, or local-operation path.

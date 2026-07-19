@@ -33,7 +33,7 @@ var allowedProductionImports = map[string]bool{
 }
 
 var allowedProductionFiles = map[string]string{
-	"project.go": "8084eb3558bd7055c4524e3e2fa9c08504bd99662c75b2596bb256b8c2adaa56",
+	"project.go": "965301c6aff18bb9dd8fd5415f8c7781b3cb3557c21d1564eb268860ad2340c1",
 }
 
 var allowedProductionDeclarations = map[string]bool{

@@ -98,6 +98,63 @@ func TestProjectLogCausesIsDeterministicAcrossHitOrder(t *testing.T) {
 	}
 }
 
+func TestLogCauseNativeIdentityBindsRetainedAggregateAndPod(t *testing.T) {
+	t.Parallel()
+	input := testProjection(t)
+	aggregate := causeAggregate{
+		Count: 2,
+		First: testObservedAt.Add(-8 * time.Minute),
+		Last:  testObservedAt.Add(-2 * time.Minute),
+	}
+	base, err := buildFact(input, "panic", aggregate)
+	if err != nil {
+		t.Fatalf("buildFact() error = %v", err)
+	}
+	workspaceChanged := input
+	workspaceChanged.Workspace = "workspace-b"
+	scopeChanged := input
+	scopeChanged.Scope = "beta"
+	namespaceChanged := input
+	namespaceChanged.Namespace = "other"
+	podChanged := input
+	podChanged.Pod = "api-other"
+	containerChanged := input
+	containerChanged.Container = "worker"
+	observedAtChanged := input
+	observedAtChanged.ObservedAt = observedAtChanged.ObservedAt.Add(time.Second)
+	tests := []struct {
+		name      string
+		input     Projection
+		cause     string
+		aggregate causeAggregate
+	}{
+		{name: "workspace", input: workspaceChanged, cause: "panic", aggregate: aggregate},
+		{name: "scope", input: scopeChanged, cause: "panic", aggregate: aggregate},
+		{name: "namespace", input: namespaceChanged, cause: "panic", aggregate: aggregate},
+		{name: "Pod", input: podChanged, cause: "panic", aggregate: aggregate},
+		{name: "container", input: containerChanged, cause: "panic", aggregate: aggregate},
+		{name: "cause", input: input, cause: "missing-config", aggregate: aggregate},
+		{name: "count", input: input, cause: "panic", aggregate: causeAggregate{Count: 3, First: aggregate.First, Last: aggregate.Last}},
+		{name: "first event", input: input, cause: "panic", aggregate: causeAggregate{Count: aggregate.Count, First: aggregate.First.Add(time.Second), Last: aggregate.Last}},
+		{name: "last event", input: input, cause: "panic", aggregate: causeAggregate{Count: aggregate.Count, First: aggregate.First, Last: aggregate.Last.Add(time.Second)}},
+		{name: "observed at", input: observedAtChanged, cause: "panic", aggregate: aggregate},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			changed, err := buildFact(test.input, test.cause, test.aggregate)
+			if err != nil {
+				t.Fatalf("buildFact() error = %v", err)
+			}
+			if changed.Fact.Provenance.NativeID == base.Fact.Provenance.NativeID ||
+				changed.Fact.Ref.Name == base.Fact.Ref.Name {
+				t.Fatalf("identity did not bind %s: base=%#v changed=%#v", test.name, base.Fact, changed.Fact)
+			}
+		})
+	}
+}
+
 func TestProjectLogCausesAbstainsForUnclassifiedAndEmptySuccess(t *testing.T) {
 	t.Parallel()
 	for _, hits := range [][]map[string]any{

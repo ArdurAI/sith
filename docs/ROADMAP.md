@@ -337,6 +337,17 @@ sensitive human inspection guidance and adds no GitHub client, token, storage, a
 typed intent, policy handoff, mutation, or execution. The cache-backed local CLI still has no
 workflow-run fetch path.
 
+The existing **R3** rule now also accepts the reviewed Elasticsearch `search/ecs-v1` graph fact
+through a narrow bridge. Only an attached Pod TELEMETRY `FactDerived` with exact Elasticsearch
+source/provenance, matching scope and namespace, a revalidated SHA-256 native/resource identity
+bound to the retained workspace, Pod, aggregate, and collection fields, and a closed `logs.cause`
+payload can become an observation. The accepted values remain `panic`,
+`missing-config`, and `dependency-failure`; count, container, event-window metadata, and the source
+fact payload are discarded after validation. The last classified event time and stale flag are
+preserved, while TELEMETRY coverage remains entirely caller-declared. Evidence attached to another
+Pod cannot strengthen the CrashLoop verdict. This bridge adds no Elasticsearch client, endpoint,
+index, query execution, credential, persistence, correlation, typed intent, mutation, or execution.
+
 ## Integration waves (E12) — the connector coverage the brain needs
 
 Connectors ship in four waves (`docs/specs/E2-readfed-brain-integrations.md` §4), each scored by
@@ -372,6 +383,10 @@ need:**
   Raw messages are classified in memory and discarded.
   Missing cluster identity, partial or failed shards, `_source`, unknown fields, and ambiguous values
   fail closed. This slice adds no HTTP client, index discovery, credentials, persistence, or writes.
+  Issue #280 connects those already-reviewed facts to R3 without widening the source contract:
+  exact `elasticsearch` / `search/ecs-v1` provenance and Pod identity are validated again, only the
+  closed cause classification enters the brain, cross-Pod evidence stays separate, and declared
+  TELEMETRY coverage and staleness remain authoritative.
   Issue #216 establishes the AWS autoscaler-evidence contract: one already-fetched EKS
   `DescribeNodegroup` response becomes a bounded LIVE inventory fact and a bounded LIVE
   provider-health fact attached to an already-trusted Sith cluster. The response's partition,
