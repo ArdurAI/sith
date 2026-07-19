@@ -3139,6 +3139,18 @@ flowchart TD
 **Key risk / guardrail.** Inventing costs for clusters that don't report them. Guardrail: no
 OpenCost → no cost fact; the gap is shown, never estimated silently.
 
+**Current bounded slice (F13.1a, #282).** `internal/connector/opencost` accepts one
+already-authorized OpenCost v1.120.2 `/allocation` response for an explicit UTC window,
+`aggregate=namespace`, and one set covering the window. Idle, sharing, filtering, accumulation,
+and aggregated metadata are disabled. Because the allocation response does not prove currency,
+the slice requires a trusted USD assertion and rejects every other unit. It emits deterministic
+namespace-attached TELEMETRY `cost` facts with exact five-decimal component validation and uses the
+window end as source observation time. A successful empty allocation map returns zero facts;
+malformed,
+identity-mismatched, warned, partial, or synthetic/unscoped rows fail atomically. The slice performs
+no network access and does not complete the live adapter, fleet/team rollup, freshness policy,
+currency conversion, billing, optimization, or GPU-utilization work.
+
 ### F13.2 — Hub fleet cost rollup (per-workspace / per-team)
 
 **What it is.** The capability none of the OSS tools ship free: aggregate per-cluster costs across
