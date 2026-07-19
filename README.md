@@ -629,6 +629,21 @@ CLI output. This path adds no Elasticsearch HTTP client, endpoint/index configur
 query execution, persistence, fleet correlation, typed intent, mutation, or execution; the
 cache-backed `sith investigate` command still does not fetch Elasticsearch data.
 
+The E13 cost boundary likewise exposes a pure OpenCost `allocation/namespace-usd-v1` projector to
+callers that already hold one authorized `/allocation` response for an explicit UTC window. It
+accepts only the exact namespace aggregation contract with one set, disabled idle/sharing options,
+and a trusted USD source assertion. Every valid Kubernetes namespace becomes exactly one
+`FactCost` / `LensTelemetry` fact attached to its exact `{cluster, namespace}` identity, with
+canonical five-decimal USD amounts and an observation time equal to the allocation-window end. The
+projector validates the exact OpenCost component total with decimal arithmetic and discards provider
+IDs, labels, annotations, workload identity, endpoints, and unknown fields. Any malformed, warned,
+partial, duplicate-key, identity/window-mismatched, oversized, or invalid-total response is rejected
+as a whole and emits zero facts; invalid rows are never filtered into a partial success. A successful
+empty allocation map also emits zero facts, while missing OpenCost coverage is never estimated. This
+library path adds no OpenCost client, service discovery, credentials, persistence,
+billing, optimization, mutation, fleet/team rollup, currency conversion, freshness objective, or
+GPU-utilization claim. The current CLI and Hub do not fetch or display these facts yet.
+
 Every verdict includes its rule, exact cited signals, confidence state, missing lenses, and an
 advisory command or PR change for the operator to inspect and run. The brain performs no I/O and
 imports no connector planning, execution, intent, PEP, MCP, or local-operation path.
