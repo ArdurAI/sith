@@ -58,7 +58,8 @@ correlating Pods, or adding any read, credential, storage, mutation, or executio
   never appears in output.
 - Native Go fuzzing completed 653,689 post-hardening executions in fifteen seconds without a panic
   or closed contract escape.
-- Focused race coverage is green: Elasticsearch 95.7%, brain 88.6%, and CLI 62.7%.
+- Focused race coverage on the original feature-head local run is green: Elasticsearch 95.7%,
+  brain 88.6%, and CLI 62.7%.
 - CodeRabbit's first complete uncommitted review found one valid defense-in-depth improvement: make
   the non-empty source scope requirement explicit at the Elasticsearch bridge even though graph
   validation already enforces it. The explicit check and regression are present, focused race tests
