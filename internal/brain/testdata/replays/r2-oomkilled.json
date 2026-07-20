@@ -26,6 +26,17 @@
       {"lens": "telemetry", "predicate": "memory.variant", "observed": "near-limit"}
     ],
     "missing_lenses": [],
-    "advisory": {"command": false, "pr_diff": true, "sensitive": false}
+    "advisory": {"command": false, "pr_diff": true, "sensitive": false},
+    "remediation_candidate": {
+      "verb": "gitops.open-pr",
+      "required_provenance": [
+        "git.repository",
+        "git.base-ref",
+        "git.base-commit",
+        "git.file-path",
+        "git.observed-blob",
+        "git.desired-content"
+      ]
+    }
   }
 }

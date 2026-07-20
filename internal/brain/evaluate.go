@@ -60,6 +60,7 @@ func evaluateRule(candidate rule, observations []Observation, coverage map[fleet
 	verdict := Verdict{
 		Rule: candidate.id, FailureMode: candidate.failureMode, Status: StatusConfirmed,
 		Hypothesis: candidate.rootCause, Scope: ref.Scope, Ref: ref, Advisory: renderAdvisory(candidate.advisory, ref),
+		RemediationCandidate: remediationCandidateFor(candidate.remediation),
 	}
 	verdict.Citations = append(verdict.Citations, citation(candidate.trigger, trigger))
 	verdict.Score += candidate.trigger.weight
@@ -213,6 +214,7 @@ func correlateFleet(verdicts []Verdict, observations map[string][]Observation) [
 			continue
 		}
 		correlated := group[0]
+		correlated.RemediationCandidate = cloneRemediationCandidate(correlated.RemediationCandidate)
 		correlated.FleetWide = true
 		correlated.Scope = "fleet"
 		correlated.Clusters = clusters
