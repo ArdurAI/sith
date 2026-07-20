@@ -28,15 +28,16 @@ type replayFixture struct {
 }
 
 type replayExpectation struct {
-	TopRule          RuleID                    `json:"top_rule"`
-	Status           Status                    `json:"status"`
-	Scope            string                    `json:"scope"`
-	FleetWide        bool                      `json:"fleet_wide"`
-	Clusters         []string                  `json:"clusters"`
-	CauseOf          []RuleID                  `json:"cause_of"`
-	CitationEvidence []replayCitationEvidence  `json:"citation_evidence"`
-	MissingLenses    []fleet.Lens              `json:"missing_lenses"`
-	Advisory         replayAdvisoryExpectation `json:"advisory"`
+	TopRule              RuleID                    `json:"top_rule"`
+	Status               Status                    `json:"status"`
+	Scope                string                    `json:"scope"`
+	FleetWide            bool                      `json:"fleet_wide"`
+	Clusters             []string                  `json:"clusters"`
+	CauseOf              []RuleID                  `json:"cause_of"`
+	CitationEvidence     []replayCitationEvidence  `json:"citation_evidence"`
+	MissingLenses        []fleet.Lens              `json:"missing_lenses"`
+	Advisory             replayAdvisoryExpectation `json:"advisory"`
+	RemediationCandidate *RemediationCandidate     `json:"remediation_candidate"`
 }
 
 type replayCitationEvidence struct {
@@ -93,6 +94,7 @@ func TestIncidentReplayFixturesAreDeterministic(t *testing.T) {
 
 func TestIncidentReplayCorpusCoversRequiredSafetyCases(t *testing.T) {
 	seenRules := make(map[RuleID]struct{})
+	seenRemediationRules := make(map[RuleID]struct{})
 	var hasCauseChain, hasFleetWide, hasNonFleet, hasUnconfirmed bool
 	for _, path := range replayFixturePaths(t, "testdata/replays") {
 		fixture := loadReplayFixture(t, path)
@@ -101,6 +103,9 @@ func TestIncidentReplayCorpusCoversRequiredSafetyCases(t *testing.T) {
 		hasFleetWide = hasFleetWide || fixture.Expect.FleetWide
 		hasNonFleet = hasNonFleet || !fixture.Expect.FleetWide
 		hasUnconfirmed = hasUnconfirmed || fixture.Expect.Status == StatusUnconfirmed
+		if fixture.Expect.RemediationCandidate != nil {
+			seenRemediationRules[fixture.Expect.TopRule] = struct{}{}
+		}
 	}
 	for _, ruleID := range []RuleID{RuleBadDeploy, RuleOOMKilled, RuleCrashLoop, RuleConfigDrift, RuleCertExpiry, RuleNodePressure, RuleImagePull, RuleArgoSyncFail, RuleWorkflowFail} {
 		if _, found := seenRules[ruleID]; !found {
@@ -109,6 +114,14 @@ func TestIncidentReplayCorpusCoversRequiredSafetyCases(t *testing.T) {
 	}
 	if !hasCauseChain || !hasFleetWide || !hasNonFleet || !hasUnconfirmed {
 		t.Fatalf("replay corpus lacks required safety cases: cause_chain=%t fleet_wide=%t non_fleet=%t unconfirmed=%t", hasCauseChain, hasFleetWide, hasNonFleet, hasUnconfirmed)
+	}
+	for _, ruleID := range []RuleID{RuleBadDeploy, RuleOOMKilled, RuleConfigDrift} {
+		if _, found := seenRemediationRules[ruleID]; !found {
+			t.Fatalf("replay corpus does not cover %s remediation candidate", ruleID)
+		}
+	}
+	if len(seenRemediationRules) != 3 {
+		t.Fatalf("replay corpus names unreviewed remediation rules: %#v", seenRemediationRules)
 	}
 }
 
@@ -224,6 +237,11 @@ func (fixture replayFixture) Validate() error {
 	}
 	if fixture.Expect.Advisory.Command == nil || fixture.Expect.Advisory.PRDiff == nil || fixture.Expect.Advisory.Sensitive == nil {
 		return fmt.Errorf("replay expectation must declare every advisory shape field")
+	}
+	if fixture.Expect.RemediationCandidate != nil {
+		if err := fixture.Expect.RemediationCandidate.Validate(); err != nil {
+			return fmt.Errorf("replay remediation candidate is invalid: %w", err)
+		}
 	}
 	if fixture.Expect.FleetWide {
 		if fixture.Expect.Scope != "fleet" || len(fixture.Expect.Clusters) < 2 {
@@ -353,6 +371,14 @@ func assertReplayExpectation(t *testing.T, fixture replayFixture, result Result)
 	}
 	if top.Advisory.Sensitive != *want.Advisory.Sensitive {
 		t.Fatalf("advisory sensitive = %t, want %t", top.Advisory.Sensitive, *want.Advisory.Sensitive)
+	}
+	if (top.RemediationCandidate == nil) != (want.RemediationCandidate == nil) {
+		t.Fatalf("remediation candidate = %#v, want %#v", top.RemediationCandidate, want.RemediationCandidate)
+	}
+	if top.RemediationCandidate != nil &&
+		(top.RemediationCandidate.Verb != want.RemediationCandidate.Verb ||
+			!slices.Equal(top.RemediationCandidate.RequiredProvenance, want.RemediationCandidate.RequiredProvenance)) {
+		t.Fatalf("remediation candidate = %#v, want %#v", top.RemediationCandidate, want.RemediationCandidate)
 	}
 }
 

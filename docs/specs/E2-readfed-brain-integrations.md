@@ -566,6 +566,29 @@ rendering* and the *gating* differ. This is the "one engine, two modes" thesis a
 the local wedge ships "k9s for your whole fleet **that also tells you why payments is down**," and the
 same brain, in the hub, proposes a governed remediation.
 
+#### 3.6.1 Staged governed-plan boundary
+
+F14.6 does not translate rendered local advisory strings into writes. Its first contract is an
+inert, rule-owned `RemediationCandidate` containing only one reviewed closed `intent.Verb` and an
+ordered set of closed provenance requirements. It carries no resolved target, handler arguments,
+actor, workspace, credential, signature, dispatch state, or execution capability. Candidate
+presence is not evidence readiness or authorization; the existing advisory remains the verdict's
+operator-facing output.
+
+The initial reviewed mappings are deliberately narrow:
+
+- R1 may name `argocd.rollback` only with requirements for an authoritative Argo Application target
+  and exact revision.
+- R2 and R4 may name `gitops.open-pr` only with requirements for repository, base ref, expected base
+  commit, file path, observed blob identity, and exact bounded desired content.
+- R3, R5, R6, R7, R8, and R9 remain advisory-only.
+
+A later reviewed provenance adapter may materialize a PEP proposal only after every requirement is
+satisfied from authoritative evidence and every handler-owned argument validates. Until then no PEP
+import, proposal, approval, persistence, network, dispatch, mutation, or execution belongs in the
+Brain. This preserves the same deterministic rules across local and hub modes without allowing
+human prose to become an implicit action contract.
+
 ### 3.7 Where the Brain lives (open decision)
 
 Two placements, both viable:

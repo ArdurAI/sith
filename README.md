@@ -679,8 +679,11 @@ idle-cost join, team mapping, UI/API, billing, optimization, rightsizing, mutati
 The current CLI and Hub do not fetch, persist, aggregate, or display these GPU utilization facts.
 
 Every verdict includes its rule, exact cited signals, confidence state, missing lenses, and an
-advisory command or PR change for the operator to inspect and run. The brain performs no I/O and
-imports no connector planning, execution, intent, PEP, MCP, or local-operation path.
+advisory command or PR change for the operator to inspect and run. R1, R2, and R4 additionally name
+an inert closed remediation verb plus the authoritative provenance a later reviewed renderer would
+require; the candidate contains no target, arguments, approval, or execution capability. The brain
+performs no I/O. It imports only the side-effect-free closed intent vocabulary—not connector
+planning or execution, PEP, MCP, persistence, network, or local-operation paths.
 
 Phase-L kubeconfig hydration supplies LIVE pod/workload/node evidence and discrete Kubernetes
 Events for TIMELINE when present. DESIRED and TELEMETRY remain unavailable unless a future

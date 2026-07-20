@@ -84,19 +84,20 @@ type Advisory struct {
 
 // Verdict is one ranked and coverage-honest hypothesis.
 type Verdict struct {
-	Rule          RuleID            `json:"rule"`
-	FailureMode   string            `json:"failure_mode"`
-	Status        Status            `json:"status"`
-	Hypothesis    string            `json:"hypothesis"`
-	Scope         string            `json:"scope"`
-	Ref           fleet.ResourceRef `json:"ref"`
-	Score         int               `json:"score"`
-	FleetWide     bool              `json:"fleet_wide"`
-	Clusters      []string          `json:"clusters,omitempty"`
-	CauseOf       []RuleID          `json:"cause_of,omitempty"`
-	MissingLenses []fleet.Lens      `json:"missing_lenses,omitempty"`
-	Citations     []Citation        `json:"citations"`
-	Advisory      Advisory          `json:"advisory"`
+	Rule                 RuleID                `json:"rule"`
+	FailureMode          string                `json:"failure_mode"`
+	Status               Status                `json:"status"`
+	Hypothesis           string                `json:"hypothesis"`
+	Scope                string                `json:"scope"`
+	Ref                  fleet.ResourceRef     `json:"ref"`
+	Score                int                   `json:"score"`
+	FleetWide            bool                  `json:"fleet_wide"`
+	Clusters             []string              `json:"clusters,omitempty"`
+	CauseOf              []RuleID              `json:"cause_of,omitempty"`
+	MissingLenses        []fleet.Lens          `json:"missing_lenses,omitempty"`
+	Citations            []Citation            `json:"citations"`
+	Advisory             Advisory              `json:"advisory"`
+	RemediationCandidate *RemediationCandidate `json:"remediation_candidate,omitempty"`
 }
 
 // Result is a deterministic ranked investigation answer.
