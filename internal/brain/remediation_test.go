@@ -84,6 +84,8 @@ func TestRemediationCandidateWireBoundaryIsCanonical(t *testing.T) {
 		`{"verb":"argocd.rollback","required_provenance":["argocd.revision","argocd.application.target"]}`,
 		`{"verb":"argocd.rollback","required_provenance":["argocd.application.target","argocd.revision"],"target":"forged"}`,
 		`{"verb":"argocd.rollback","verb":"argocd.rollback","required_provenance":["argocd.application.target","argocd.revision"]}`,
+		`{"Verb":"argocd.rollback","required_provenance":["argocd.application.target","argocd.revision"]}`,
+		`{"verb":"argocd.rollback","Required_Provenance":["argocd.application.target","argocd.revision"]}`,
 		`{"verb":"shell.exec","required_provenance":["argocd.application.target","argocd.revision"]}`,
 		`{"verb":"argocd.rollback","required_provenance":["argocd.application.target","argocd.revision"]}{}`,
 	} {

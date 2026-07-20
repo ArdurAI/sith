@@ -90,3 +90,18 @@ The approved decision, bounded issue, implementation, adversarial tests, replay 
 import-boundary guard, README/spec updates, Notion/Obsidian records, and complete local gate matrix
 are frozen on exact base `76f8f8fb3c630d755eb47d4cc006fa1decae551a`. Remaining gates are the signed
 commit, exact-head hosted proof and review, merge, and exact post-merge `dev` proof.
+
+## [C] Checkpoint #2
+
+The complete committed-diff review found two valid fail-closed gaps. Candidate JSON now rejects
+case-variant field aliases before Go's case-insensitive struct matching, and the Brain side-effect
+import classifier now rejects every listed package tree, including `net/rpc`, `os/user`,
+`database/sql/driver`, and gRPC subpackages. Dedicated regressions cover both boundaries. The
+remediation-only independent review reports zero findings across all three changed files.
+
+The complete post-remediation matrix is green: twenty focused race repetitions, focused vet and
+zero-issue lint, full CI with no vulnerability findings and Brain coverage at 88.3%, PostgreSQL
+forced-RLS plus both 50,000-execution isolation fuzzers, reproducible release/SBOM/formula/OCI
+proof, and pinned Kubernetes 1.36.1 Kind in 237.037 seconds with clean teardown. A new signed
+checkpoint commit, fresh exact-head hosted CI/CodeQL/review, merge, and exact post-merge `dev` proof
+remain required.

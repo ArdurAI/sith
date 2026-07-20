@@ -111,6 +111,9 @@ func rejectDuplicateRemediationCandidateMembers(payload []byte) error {
 		if !ok {
 			return fmt.Errorf("JSON object contains an invalid member")
 		}
+		if name != "verb" && name != "required_provenance" {
+			return fmt.Errorf("JSON object contains an unknown member")
+		}
 		if _, duplicate := seen[name]; duplicate {
 			return fmt.Errorf("JSON object contains a duplicate member")
 		}

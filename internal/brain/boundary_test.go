@@ -35,11 +35,44 @@ func TestBrainHasNoWritePathImports(t *testing.T) {
 					t.Fatalf("brain imports forbidden write-capable package %q", path)
 				}
 			}
-			for _, forbidden := range []string{"database/sql", "net", "net/http", "os", "os/exec", "google.golang.org/grpc"} {
-				if path == forbidden {
-					t.Fatalf("brain imports forbidden side-effect package %q", path)
-				}
+			if forbiddenBrainSideEffectImport(path) {
+				t.Fatalf("brain imports forbidden side-effect package %q", path)
 			}
 		}
 	}
+}
+
+func TestForbiddenBrainSideEffectImportRejectsPackageTrees(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		path      string
+		forbidden bool
+	}{
+		{path: "database/sql", forbidden: true},
+		{path: "database/sql/driver", forbidden: true},
+		{path: "net", forbidden: true},
+		{path: "net/http", forbidden: true},
+		{path: "net/rpc", forbidden: true},
+		{path: "os", forbidden: true},
+		{path: "os/exec", forbidden: true},
+		{path: "os/user", forbidden: true},
+		{path: "google.golang.org/grpc", forbidden: true},
+		{path: "google.golang.org/grpc/credentials", forbidden: true},
+		{path: "encoding/json", forbidden: false},
+		{path: "github.com/ArdurAI/sith/internal/intent", forbidden: false},
+	}
+	for _, test := range tests {
+		if got := forbiddenBrainSideEffectImport(test.path); got != test.forbidden {
+			t.Errorf("forbiddenBrainSideEffectImport(%q) = %t, want %t", test.path, got, test.forbidden)
+		}
+	}
+}
+
+func forbiddenBrainSideEffectImport(path string) bool {
+	for _, forbidden := range []string{"database/sql", "net", "net/http", "os", "os/exec", "google.golang.org/grpc"} {
+		if path == forbidden || strings.HasPrefix(path, forbidden+"/") {
+			return true
+		}
+	}
+	return false
 }
