@@ -13,9 +13,12 @@ governance, not the product.**
 Verified MCP facts (July 2026):
 - Tool annotations (`readOnlyHint`/`destructiveHint`/`idempotentHint`/`openWorldHint`)
   shipped in the **2025-03-26** spec and are **hints, not guarantees — enforce server-side**.
-- **Elicitation** (a server requesting structured user input mid-flow via `elicitation/create`
-  + JSON schema) shipped in the **2025-06-18** spec — the native primitive for
-  human-in-the-loop approval.
+- **Elicitation** (a server requesting structured user input mid-flow via `elicitation/create`)
+  shipped in the **2025-06-18** spec. The latest published
+  [**2025-11-25** contract](https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation)
+  adds URL mode;
+  Sith uses form mode with a constrained schema for non-secret human approval. MCP does not define
+  the lifetime of the resulting server-side grant, so Sith enforces that boundary independently.
 
 Ardur (ArdurAI's runtime-governance runtime) is purpose-built to be a policy decision point,
 identity broker, and decision-ledger for agent actions.
@@ -29,6 +32,9 @@ identity broker, and decision-ledger for agent actions.
   carry `destructiveHint: true` (+ correct `idempotentHint`), and require **Elicitation-based
   approval bound to a hash of the resolved args** (the agent cannot approve-then-swap).
   `intent.gitops-open-pr` ships first.
+- The durable approval is single-use and valid for one immutable absolute 10-minute window.
+  PostgreSQL statement time mints and consumes it; the same atomic update requires
+  `approved_at <= consumed_at < expires_at`, and the lifecycle evidence digest binds the expiry.
 - **Annotations are hints ⇒ enforcement is server-side.** The MCP layer is a **thin adapter
   over the same PEP** the UI uses. There is no privileged agent path: an external agent
   (Claude Code, Codex, kagent) gets **exactly** the governance a human does.

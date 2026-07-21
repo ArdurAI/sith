@@ -92,6 +92,26 @@ func TestApprovalAuditEntryHashBindsLifecycleMetadata(t *testing.T) {
 	}
 }
 
+func TestExpiringApprovalAuditEntryUsesDistinctFormatDomain(t *testing.T) {
+	t.Parallel()
+
+	legacy := policyAuditTestEntry()
+	legacy.format = approvalAuditFormatVersion
+	legacy.role = tenancy.RoleApprover
+	legacy.action = tenancy.ActionApproveIntent
+	legacy.verb = approvalAuditVerb
+	legacy.reasonCode = approvalCreatedEventKind
+	legacy.eventKind = approvalCreatedEventKind
+	legacy.evidence = "sha256:" + strings.Repeat("a", 64)
+
+	expiring := legacy
+	expiring.format = approvalExpiryAuditFormatVersion
+	legacyHash, expiringHash := policyAuditEntryHash(legacy), policyAuditEntryHash(expiring)
+	if len(legacyHash) != 32 || len(expiringHash) != 32 || bytes.Equal(legacyHash, expiringHash) {
+		t.Fatal("format 2 and format 3 lifecycle records did not use distinct valid hash domains")
+	}
+}
+
 func TestApprovalGrantEvidenceDigestBindsImmutableGrant(t *testing.T) {
 	t.Parallel()
 
@@ -116,6 +136,35 @@ func TestApprovalGrantEvidenceDigestBindsImmutableGrant(t *testing.T) {
 		if changed == base {
 			t.Fatalf("evidence digest did not bind immutable field %d", index)
 		}
+	}
+}
+
+func TestExpiringApprovalGrantEvidenceDigestBindsImmutableExpiry(t *testing.T) {
+	t.Parallel()
+
+	approvedAt := time.Date(2026, time.July, 21, 12, 34, 56, 123456000, time.UTC)
+	expiresAt := approvedAt.Add(10 * time.Minute)
+	base := expiringApprovalGrantEvidenceDigest(
+		"workspace-a", "AAAAAAAAAAAAAAAAAAAAAA", "intent-a", "user:operator",
+		"user:approver", "sha256:"+strings.Repeat("a", 64), approvedAt, expiresAt,
+	)
+	if !approvalEvidencePattern.MatchString(base) {
+		t.Fatalf("expiring evidence digest = %q, want canonical SHA-256", base)
+	}
+	if want := "sha256:25edbb61ecc55494ed155e14b30733b08ab090469a789b79eed3bf871ddbd1b4"; base != want {
+		t.Fatalf("expiring evidence digest = %q, want golden %q", base, want)
+	}
+	if base == approvalGrantEvidenceDigest(
+		"workspace-a", "AAAAAAAAAAAAAAAAAAAAAA", "intent-a", "user:operator",
+		"user:approver", "sha256:"+strings.Repeat("a", 64), approvedAt,
+	) {
+		t.Fatal("expiring evidence reused the legacy evidence domain")
+	}
+	if changed := expiringApprovalGrantEvidenceDigest(
+		"workspace-a", "AAAAAAAAAAAAAAAAAAAAAA", "intent-a", "user:operator",
+		"user:approver", "sha256:"+strings.Repeat("a", 64), approvedAt, expiresAt.Add(time.Microsecond),
+	); changed == base {
+		t.Fatal("expiring evidence digest did not bind expires_at")
 	}
 }
 
@@ -269,6 +318,29 @@ func FuzzApprovalGrantEvidenceDigestUsesLengthFraming(f *testing.F) {
 		)
 		if first == second {
 			t.Fatal("length-delimited approval evidence fields produced an ambiguous digest")
+		}
+	})
+}
+
+func FuzzExpiringApprovalGrantEvidenceDigestUsesLengthFraming(f *testing.F) {
+	f.Add("a", "bc")
+	f.Add("user:operator", "user:approver")
+	f.Fuzz(func(t *testing.T, left, right string) {
+		if left == "" || right == "" || len(left)+len(right) > 512 {
+			t.Skip()
+		}
+		approvedAt := time.Date(2026, time.July, 21, 12, 34, 56, 123456000, time.UTC)
+		expiresAt := approvedAt.Add(10 * time.Minute)
+		first := expiringApprovalGrantEvidenceDigest(
+			"workspace-a", "AAAAAAAAAAAAAAAAAAAAAA", left, right, "user:approver",
+			"sha256:"+strings.Repeat("a", 64), approvedAt, expiresAt,
+		)
+		second := expiringApprovalGrantEvidenceDigest(
+			"workspace-a", "AAAAAAAAAAAAAAAAAAAAAA", left+right, "user:operator", "user:approver",
+			"sha256:"+strings.Repeat("a", 64), approvedAt, expiresAt,
+		)
+		if first == second {
+			t.Fatal("length-delimited expiring approval evidence fields produced an ambiguous digest")
 		}
 	})
 }

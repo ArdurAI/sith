@@ -12,6 +12,8 @@ import (
 	"github.com/ArdurAI/sith/internal/tenancy"
 )
 
+const expiringApprovalEvidenceFixture = "sha256:25edbb61ecc55494ed155e14b30733b08ab090469a789b79eed3bf871ddbd1b4"
+
 func TestExportValidateForWorkspaceAcceptsClosedPortableChain(t *testing.T) {
 	t.Parallel()
 
@@ -30,6 +32,11 @@ func TestExportValidateForWorkspaceAcceptsClosedPortableChain(t *testing.T) {
 	approval.Entries[0].EvidenceDigest = hash("b")
 	if err := approval.ValidateForWorkspace("workspace-a"); err != nil {
 		t.Fatalf("approval ValidateForWorkspace() error = %v", err)
+	}
+	approval.Entries[0].FormatVersion = 3
+	approval.Entries[0].EvidenceDigest = expiringApprovalEvidenceFixture
+	if err := approval.ValidateForWorkspace("workspace-a"); err != nil {
+		t.Fatalf("expiring approval ValidateForWorkspace() error = %v", err)
 	}
 }
 
@@ -95,6 +102,7 @@ func TestRecomputeEntryHashGoldenFormats(t *testing.T) {
 	}{
 		{name: "format 1 policy decision", entry: mixed.Entries[0], want: "sha256:67544ba8ac180f834bc221aa136c7d121c0e63228b02bc7c7dce2508de26c4ea"},
 		{name: "format 2 approval lifecycle", entry: mixed.Entries[1], want: "sha256:dfbfb98dda5768b259314faa5ed57f40ae4575c466e899ad79c23cea06277ece"},
+		{name: "format 3 expiring approval lifecycle", entry: mixed.Entries[2], want: "sha256:3cd45877bc466f0a61700a8f13b91e1f5b31c2b9ac382032be2410131d4da338"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -233,8 +241,21 @@ func validMixedTestExport() Export {
 	}
 	second.EntryHash = secondHash
 	exported.Entries = append(exported.Entries, second)
-	exported.Chain.HeadSequence = 2
-	exported.Chain.HeadHash = secondHash
+	third := Entry{
+		Sequence: 3, FormatVersion: 3,
+		RecordedAt: time.Date(2026, time.July, 18, 9, 32, 0, 123456000, time.UTC),
+		TraceID:    strings.Repeat("3", 32), Actor: "user:alice", Role: "operator", Action: "propose-intent",
+		Verb: "approval.grant", Verdict: "allow", ReasonCode: "approval-consumed",
+		EventKind: "approval-consumed", EvidenceDigest: expiringApprovalEvidenceFixture, PreviousHash: secondHash,
+	}
+	thirdHash, err := RecomputeEntryHash("workspace-a", third)
+	if err != nil {
+		panic(err)
+	}
+	third.EntryHash = thirdHash
+	exported.Entries = append(exported.Entries, third)
+	exported.Chain.HeadSequence = 3
+	exported.Chain.HeadHash = thirdHash
 	return exported
 }
 

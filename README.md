@@ -362,6 +362,11 @@ Approval creation and consumption append distinct format-versioned lifecycle ent
 tenant chain in the exact transaction that mutates the single-use grant. An audit failure therefore
 rolls back the approval mutation. Each lifecycle pair carries only a one-way, domain-separated
 digest of the immutable grant binding—never raw targets, arguments, or justification content.
+New grants use format 3: PostgreSQL mints one immutable absolute expiry exactly 10 minutes after
+approval, checks `approved_at <= statement_timestamp() < expires_at` in the same conditional
+consumption update, and binds both timestamps into the lifecycle evidence digest. An expired,
+legacy, missing, foreign, mismatched, or replayed grant returns the same unavailable result; an
+expired refusal retains the row, leaves `consumed_at` unset, and appends no success event.
 Both audit routes use the dedicated `export-audit` action and `audit.export` PEP verb. Sith durably
 appends an authorization decision before every read. The complete route verifies the head and all
 retained history in one forced-RLS Repeatable Read snapshot and remains limited to 512 entries. For
@@ -515,15 +520,22 @@ migration ledger, creates the tenant-scoped policy-audit chain and exact single-
 store, narrows the application role's audit and approval-table privileges, audits forced RLS plus
 both immutable-entry contracts, attempts to close its one owner connection, and exits. Approval
 rows contain only opaque identifiers, proposer/approver identity, the resolved proposal digest,
-and lifecycle timestamps. The application role may insert them and update only `consumed_at`; it
-cannot rewrite or delete the approved identity or digest. The migration process never opens the hub
-listener, creates a Kubernetes client, or starts collection.
+an evidence version, and lifecycle timestamps. The application role may insert them and update only
+`consumed_at`; it cannot rewrite or delete the approved identity, digest, approval time, expiry, or
+evidence version. The migration process never opens the hub listener, creates a Kubernetes client,
+or starts collection.
 
 Migration 0011 preserves defaults for older format-1 audit writers, but older verifiers do not
 understand format-2 approval lifecycle entries. During a rolling upgrade, run the migration, upgrade
 all verifier-capable hub instances, and only then enable traffic that creates or consumes approvals.
 Migration 0012 only extends the retained action constraint with the closed `export-audit` value;
 deploy it before exposing the audit-export route so its authorizing decision can be appended.
+Migration 0013 backfills legacy approval rows under one transactional access-exclusive owner lock,
+immediately restores forced RLS, and marks those rows as legacy so they cannot be consumed by the
+new evidence contract. It also enables audit format 3. Run the migration before deploying format-3
+writers and upgrade every verifier before enabling approval traffic; older writers fail closed
+because the new immutable fields have no permissive defaults. Sith currently exposes no runtime
+approval/dispatch path, so this ordering does not interrupt a supported write API.
 
 The normal hub process continues to use only `SITH_HUB_DATABASE_URL` for the non-owner application
 role. Do not reuse the migration-owner credential in the hub Deployment or place either database

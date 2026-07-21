@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"os/exec"
@@ -65,8 +66,48 @@ func TestPostgresRLSBackstop(t *testing.T) {
 	ownerURL := databaseURL(adminURL, ownerRole, ownerPassword)
 	owner := connectPostgres(t, ctx, ownerURL)
 	defer owner.Close(context.Background())
+	applyLegacyMigrations(t, ctx, owner, "0013_approval_grant_expiry.sql")
+	if err := pgx.BeginTxFunc(ctx, owner, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT set_config('sith.workspace_id', 'workspace-legacy', true)`); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			INSERT INTO sith.workspaces(id, name, tenant_key)
+			VALUES ('workspace-legacy', 'Legacy Workspace', 'legacy-display-key');
+			INSERT INTO sith.approval_grants(
+				workspace_id, id, intent_id, proposer, approver, resolved_digest, approved_at
+			) VALUES (
+				'workspace-legacy', 'LLLLLLLLLLLLLLLLLLLLLL', 'intent-legacy-upgrade',
+				'user:legacy-operator', 'user:legacy-approver',
+				'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+				statement_timestamp() - interval '1 hour'
+			)
+		`)
+		return err
+	}); err != nil {
+		t.Fatalf("seed pre-0013 approval grant: %v", err)
+	}
 	if err := Migrate(ctx, MigrationConfig{OwnerURL: ownerURL, ApplicationRole: appRole, AllowInsecureLocal: true}); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
+	}
+	var legacyVersioned, legacyLifetimeFixed, legacyUnconsumed bool
+	if err := pgx.BeginTxFunc(ctx, owner, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT set_config('sith.workspace_id', 'workspace-legacy', true)`); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `
+			SELECT evidence_version = 1,
+			       expires_at = approved_at + interval '10 minutes',
+			       consumed_at IS NULL
+			FROM sith.approval_grants
+			WHERE workspace_id = 'workspace-legacy' AND id = 'LLLLLLLLLLLLLLLLLLLLLL'
+		`).Scan(&legacyVersioned, &legacyLifetimeFixed, &legacyUnconsumed)
+	}); err != nil {
+		t.Fatalf("inspect upgraded legacy approval grant: %v", err)
+	}
+	if !legacyVersioned || !legacyLifetimeFixed || !legacyUnconsumed {
+		t.Fatalf("legacy approval upgrade = versioned:%t lifetime:%t unconsumed:%t",
+			legacyVersioned, legacyLifetimeFixed, legacyUnconsumed)
 	}
 	if err := Migrate(ctx, MigrationConfig{OwnerURL: ownerURL, ApplicationRole: appRole, AllowInsecureLocal: true}); err != nil {
 		t.Fatalf("idempotent Migrate() error = %v", err)
@@ -161,9 +202,11 @@ func TestPostgresRLSBackstop(t *testing.T) {
 			VALUES ('workspace-b', 'https://idp.example', 'upstream:mallory', 'user:bob')`},
 		{name: "cloud identity binding", statement: "INSERT INTO sith.cloud_identity_bindings(workspace_id, provider, realm, upstream_subject, member_subject)\n\t\t\tVALUES ('workspace-b', 'aws', '222222222222', 'AROAX:mallory', 'user:bob')"},
 		{name: "approval grant", statement: `INSERT INTO sith.approval_grants(
-			workspace_id, id, intent_id, proposer, approver, resolved_digest, approved_at
+			workspace_id, id, intent_id, proposer, approver, resolved_digest,
+			evidence_version, approved_at, expires_at
 		) VALUES ('workspace-b', 'ZZZZZZZZZZZZZZZZZZZZZZ', 'intent-foreign', 'user:operator',
-			'user:approver', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', now())`},
+			'user:approver', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+			2, statement_timestamp(), statement_timestamp() + interval '10 minutes')`},
 	}
 	for _, test := range foreignWrites {
 		t.Run("foreign "+test.name+" write denied", func(t *testing.T) {
@@ -630,7 +673,7 @@ func assertApprovalGrantIntegration(
 	create := func(intentID, arguments string) (pep.ApprovalBinding, ApprovalGrantID) {
 		t.Helper()
 		binding := postgresApprovalBinding(t, intentID, "workspace-a", proposerA.Subject(), arguments)
-		identifier, err := database.CreateApprovalGrant(ctx, approverA, binding, now)
+		identifier, err := database.CreateApprovalGrant(ctx, approverA, binding)
 		if err != nil {
 			t.Fatalf("CreateApprovalGrant(%s) error = %v", intentID, err)
 		}
@@ -641,7 +684,20 @@ func assertApprovalGrantIntegration(
 	}
 
 	baseBinding, baseID := create("intent-250-base", "replicas=3")
-	if _, err := database.CreateApprovalGrant(ctx, approverA, baseBinding, now); !errors.Is(err, ErrApprovalGrantUnavailable) {
+	var baseApprovedAt, baseExpiresAt time.Time
+	var baseEvidenceVersion int16
+	if err := admin.QueryRow(ctx, `
+		SELECT approved_at, expires_at, evidence_version
+		FROM sith.approval_grants WHERE workspace_id = 'workspace-a' AND id = $1
+	`, baseID).Scan(&baseApprovedAt, &baseExpiresAt, &baseEvidenceVersion); err != nil {
+		t.Fatalf("inspect expiring approval grant: %v", err)
+	}
+	if baseEvidenceVersion != approvalGrantEvidenceVersion ||
+		baseExpiresAt.Sub(baseApprovedAt) != 10*time.Minute ||
+		baseApprovedAt.Before(now.Add(-time.Minute)) || baseApprovedAt.After(time.Now().Add(time.Minute)) {
+		t.Fatalf("approval lifetime = approved %s expires %s evidence v%d", baseApprovedAt, baseExpiresAt, baseEvidenceVersion)
+	}
+	if _, err := database.CreateApprovalGrant(ctx, approverA, baseBinding); !errors.Is(err, ErrApprovalGrantUnavailable) {
 		t.Fatalf("duplicate approval error = %v", err)
 	}
 
@@ -651,51 +707,109 @@ func assertApprovalGrantIntegration(
 		"admin":    testScope(t, "user:admin", "workspace-a", tenancy.RoleAdmin),
 	} {
 		if _, err := database.CreateApprovalGrant(ctx, scope, postgresApprovalBinding(t,
-			"intent-role-"+name, "workspace-a", proposerA.Subject(), name), now); !errors.Is(err, ErrApprovalGrantUnavailable) {
+			"intent-role-"+name, "workspace-a", proposerA.Subject(), name)); !errors.Is(err, ErrApprovalGrantUnavailable) {
 			t.Fatalf("%s approval error = %v", name, err)
 		}
 	}
 	selfScope := testScope(t, "user:self", "workspace-a", tenancy.RoleApprover)
 	if _, err := database.CreateApprovalGrant(ctx, selfScope, postgresApprovalBinding(
-		t, "intent-self", "workspace-a", selfScope.Subject(), "self"), now); !errors.Is(err, ErrApprovalGrantUnavailable) {
+		t, "intent-self", "workspace-a", selfScope.Subject(), "self")); !errors.Is(err, ErrApprovalGrantUnavailable) {
 		t.Fatalf("self approval error = %v", err)
 	}
 	staleScope := testScope(t, "user:stale-approver", "workspace-a", tenancy.RoleApprover)
 	if _, err := database.CreateApprovalGrant(ctx, staleScope, postgresApprovalBinding(
-		t, "intent-stale-role", "workspace-a", proposerA.Subject(), "stale"), now); !errors.Is(err, ErrApprovalGrantUnavailable) {
+		t, "intent-stale-role", "workspace-a", proposerA.Subject(), "stale")); !errors.Is(err, ErrApprovalGrantUnavailable) {
 		t.Fatalf("stale approver role error = %v", err)
 	}
 	if _, err := database.CreateApprovalGrant(ctx, approverA, postgresApprovalBinding(
-		t, "intent-missing-proposer", "workspace-a", "user:missing", "missing"), now); !errors.Is(err, ErrApprovalGrantUnavailable) {
+		t, "intent-missing-proposer", "workspace-a", "user:missing", "missing")); !errors.Is(err, ErrApprovalGrantUnavailable) {
 		t.Fatalf("missing proposer membership error = %v", err)
-	}
-	if _, err := database.CreateApprovalGrant(ctx, approverA, postgresApprovalBinding(
-		t, "intent-future-approval", "workspace-a", proposerA.Subject(), "future"),
-		now.Add(2*time.Minute)); !errors.Is(err, ErrApprovalGrantUnavailable) {
-		t.Fatalf("future approval time error = %v", err)
 	}
 
 	wrongDigestBinding := postgresApprovalBinding(t, baseBinding.IntentID(), "workspace-a", proposerA.Subject(), "replicas=4")
-	if err := database.ConsumeApprovalGrant(ctx, proposerA, wrongDigestBinding, baseID, now.Add(time.Second)); !errors.Is(err, ErrApprovalGrantUnavailable) {
+	if err := database.ConsumeApprovalGrant(ctx, proposerA, wrongDigestBinding, baseID); !errors.Is(err, ErrApprovalGrantUnavailable) {
 		t.Fatalf("wrong digest consume error = %v", err)
 	}
 	wrongIntentBinding := postgresApprovalBinding(t, "intent-250-other", "workspace-a", proposerA.Subject(), "replicas=3")
-	if err := database.ConsumeApprovalGrant(ctx, proposerA, wrongIntentBinding, baseID, now.Add(time.Second)); !errors.Is(err, ErrApprovalGrantUnavailable) {
+	if err := database.ConsumeApprovalGrant(ctx, proposerA, wrongIntentBinding, baseID); !errors.Is(err, ErrApprovalGrantUnavailable) {
 		t.Fatalf("wrong intent consume error = %v", err)
 	}
-	if err := database.ConsumeApprovalGrant(ctx, proposerB, baseBinding, baseID, now.Add(time.Second)); !errors.Is(err, ErrApprovalGrantUnavailable) {
+	if err := database.ConsumeApprovalGrant(ctx, proposerB, baseBinding, baseID); !errors.Is(err, ErrApprovalGrantUnavailable) {
 		t.Fatalf("foreign workspace consume error = %v", err)
 	}
-	if err := database.ConsumeApprovalGrant(ctx, proposerA, baseBinding, "XXXXXXXXXXXXXXXXXXXXXX", now.Add(time.Second)); !errors.Is(err, ErrApprovalGrantUnavailable) {
+	if err := database.ConsumeApprovalGrant(ctx, proposerA, baseBinding, "XXXXXXXXXXXXXXXXXXXXXX"); !errors.Is(err, ErrApprovalGrantUnavailable) {
 		t.Fatalf("unknown approval consume error = %v", err)
 	}
-	if err := database.ConsumeApprovalGrant(ctx, proposerA, baseBinding, baseID, now.Add(-time.Second)); !errors.Is(err, ErrApprovalGrantUnavailable) {
-		t.Fatalf("pre-approval consume error = %v", err)
+	seedGrant := func(identifier ApprovalGrantID, binding pep.ApprovalBinding, evidenceVersion int16, approvedAt time.Time) {
+		t.Helper()
+		if _, err := admin.Exec(ctx, `
+			INSERT INTO sith.approval_grants(
+				workspace_id, id, intent_id, proposer, approver, resolved_digest,
+				evidence_version, approved_at, expires_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`, binding.WorkspaceID(), identifier, binding.IntentID(), binding.Proposer(), approverA.Subject(),
+			binding.ResolvedDigest(), evidenceVersion, approvedAt, approvedAt.Add(10*time.Minute)); err != nil {
+			t.Fatalf("seed approval grant %s: %v", identifier, err)
+		}
 	}
-	if err := database.ConsumeApprovalGrant(ctx, proposerA, baseBinding, baseID, now.Add(time.Second)); err != nil {
+	preApprovalBinding := postgresApprovalBinding(
+		t, "intent-299-pre-approval", "workspace-a", proposerA.Subject(), "time=before",
+	)
+	expiredBinding := postgresApprovalBinding(
+		t, "intent-299-expired", "workspace-a", proposerA.Subject(), "time=expired",
+	)
+	legacyBinding := postgresApprovalBinding(
+		t, "intent-299-legacy", "workspace-a", proposerA.Subject(), "evidence=legacy",
+	)
+	preApprovalID := ApprovalGrantID("IIIIIIIIIIIIIIIIIIIIII")
+	expiredID := ApprovalGrantID("JJJJJJJJJJJJJJJJJJJJJJ")
+	legacyID := ApprovalGrantID("KKKKKKKKKKKKKKKKKKKKKK")
+	seedGrant(preApprovalID, preApprovalBinding, approvalGrantEvidenceVersion, time.Now().UTC().Add(time.Minute))
+	seedGrant(expiredID, expiredBinding, approvalGrantEvidenceVersion, time.Now().UTC().Add(-10*time.Minute))
+	seedGrant(legacyID, legacyBinding, 1, time.Now().UTC())
+
+	var refusalHeadBefore int64
+	if err := admin.QueryRow(ctx, `
+		SELECT last_sequence FROM sith.policy_audit_heads WHERE workspace_id = 'workspace-a'
+	`).Scan(&refusalHeadBefore); err != nil {
+		t.Fatalf("read approval audit head before temporal refusals: %v", err)
+	}
+	for name, attempt := range map[string]func() error{
+		"before approval": func() error {
+			return database.ConsumeApprovalGrant(ctx, proposerA, preApprovalBinding, preApprovalID)
+		},
+		"expired": func() error {
+			return database.ConsumeApprovalGrant(ctx, proposerA, expiredBinding, expiredID)
+		},
+		"legacy evidence": func() error {
+			return database.ConsumeApprovalGrant(ctx, proposerA, legacyBinding, legacyID)
+		},
+	} {
+		if err := attempt(); !errors.Is(err, ErrApprovalGrantUnavailable) {
+			t.Fatalf("%s approval consume error = %v", name, err)
+		}
+	}
+	var refusalHeadAfter int64
+	var refusedConsumptions int
+	if err := admin.QueryRow(ctx, `
+		SELECT last_sequence FROM sith.policy_audit_heads WHERE workspace_id = 'workspace-a'
+	`).Scan(&refusalHeadAfter); err != nil {
+		t.Fatalf("read approval audit head after temporal refusals: %v", err)
+	}
+	if err := admin.QueryRow(ctx, `
+		SELECT count(*) FROM sith.approval_grants
+		WHERE workspace_id = 'workspace-a' AND id IN ($1, $2, $3) AND consumed_at IS NOT NULL
+	`, preApprovalID, expiredID, legacyID).Scan(&refusedConsumptions); err != nil {
+		t.Fatalf("inspect refused temporal approval rows: %v", err)
+	}
+	if refusalHeadAfter != refusalHeadBefore || refusedConsumptions != 0 {
+		t.Fatalf("temporal refusals changed audit head %d -> %d or consumed %d rows",
+			refusalHeadBefore, refusalHeadAfter, refusedConsumptions)
+	}
+	if err := database.ConsumeApprovalGrant(ctx, proposerA, baseBinding, baseID); err != nil {
 		t.Fatalf("exact approval consume error = %v", err)
 	}
-	if err := database.ConsumeApprovalGrant(ctx, proposerA, baseBinding, baseID, now.Add(2*time.Second)); !errors.Is(err, ErrApprovalGrantUnavailable) {
+	if err := database.ConsumeApprovalGrant(ctx, proposerA, baseBinding, baseID); !errors.Is(err, ErrApprovalGrantUnavailable) {
 		t.Fatalf("replayed approval consume error = %v", err)
 	}
 
@@ -706,7 +820,7 @@ func assertApprovalGrantIntegration(
 		consumers.Add(1)
 		go func() {
 			defer consumers.Done()
-			results <- database.ConsumeApprovalGrant(ctx, proposerA, concurrentBinding, concurrentID, now.Add(time.Second))
+			results <- database.ConsumeApprovalGrant(ctx, proposerA, concurrentBinding, concurrentID)
 		}()
 	}
 	consumers.Wait()
@@ -757,7 +871,7 @@ func assertApprovalGrantIntegration(
 		t, "intent-252-create-rollback", "workspace-a", proposerA.Subject(), "rollback=create",
 	)
 	readAndCorruptHead()
-	_, rollbackCreateErr := database.CreateApprovalGrant(ctx, approverA, rollbackCreateBinding, now)
+	_, rollbackCreateErr := database.CreateApprovalGrant(ctx, approverA, rollbackCreateBinding)
 	restoreHead()
 	if rollbackCreateErr == nil || errors.Is(rollbackCreateErr, ErrApprovalGrantUnavailable) {
 		t.Fatalf("audit-failed create error = %v, want operational audit failure", rollbackCreateErr)
@@ -774,14 +888,9 @@ func assertApprovalGrantIntegration(
 	}
 
 	rollbackConsumeBinding, rollbackConsumeID := create("intent-252-consume-rollback", "rollback=consume")
-	if err := database.ConsumeApprovalGrant(
-		ctx, proposerA, rollbackConsumeBinding, rollbackConsumeID, now.Add(2*time.Minute),
-	); !errors.Is(err, ErrApprovalGrantUnavailable) {
-		t.Fatalf("future consume time error = %v", err)
-	}
 	readAndCorruptHead()
 	rollbackConsumeErr := database.ConsumeApprovalGrant(
-		ctx, proposerA, rollbackConsumeBinding, rollbackConsumeID, now.Add(time.Second),
+		ctx, proposerA, rollbackConsumeBinding, rollbackConsumeID,
 	)
 	restoreHead()
 	if rollbackConsumeErr == nil || errors.Is(rollbackConsumeErr, ErrApprovalGrantUnavailable) {
@@ -798,13 +907,29 @@ func assertApprovalGrantIntegration(
 		t.Fatalf("audit-failed approval consume retained timestamp %s", rollbackConsumedAt)
 	}
 	if err := database.ConsumeApprovalGrant(
-		ctx, proposerA, rollbackConsumeBinding, rollbackConsumeID, now.Add(time.Second),
+		ctx, proposerA, rollbackConsumeBinding, rollbackConsumeID,
 	); err != nil {
 		t.Fatalf("consume after audit rollback error = %v", err)
 	}
 
+	legacyTraceID, err := tracing.NewID()
+	if err != nil {
+		t.Fatalf("mint legacy approval audit trace: %v", err)
+	}
+	if err := database.InWorkspace(ctx, approverB, func(tx pgx.Tx) error {
+		return appendPolicyAuditEntryTx(ctx, tx, policyAuditEntry{
+			format: approvalAuditFormatVersion, recordedAt: time.Now().UTC().Truncate(time.Microsecond),
+			traceID: legacyTraceID, workspaceID: "workspace-b", actor: approverB.Subject(),
+			role: approverB.Role(), action: tenancy.ActionApproveIntent, verb: approvalAuditVerb,
+			verdict: pep.VerdictAllow, reasonCode: approvalCreatedEventKind,
+			eventKind: approvalCreatedEventKind, evidence: "sha256:" + strings.Repeat("c", 64),
+		})
+	}); err != nil {
+		t.Fatalf("append legacy format-2 approval fixture: %v", err)
+	}
+
 	bindingB := postgresApprovalBinding(t, "intent-250-b", "workspace-b", proposerB.Subject(), "region=west")
-	identifierB, err := database.CreateApprovalGrant(ctx, approverB, bindingB, now)
+	identifierB, err := database.CreateApprovalGrant(ctx, approverB, bindingB)
 	if err != nil {
 		t.Fatalf("CreateApprovalGrant(workspace B) error = %v", err)
 	}
@@ -829,20 +954,27 @@ func assertApprovalGrantIntegration(
 		t.Fatalf("approval RLS isolation: %v", err)
 	}
 
-	var canConsume, canMutateProposer, canDelete bool
+	var canConsume, canMutateProposer, canMutateExpiry, canMutateEvidenceVersion, canDelete bool
 	if err := admin.QueryRow(ctx, `
 		SELECT has_column_privilege($1, 'sith.approval_grants', 'consumed_at', 'UPDATE'),
 		       has_column_privilege($1, 'sith.approval_grants', 'proposer', 'UPDATE'),
+		       has_column_privilege($1, 'sith.approval_grants', 'expires_at', 'UPDATE'),
+		       has_column_privilege($1, 'sith.approval_grants', 'evidence_version', 'UPDATE'),
 		       has_table_privilege($1, 'sith.approval_grants', 'DELETE')
-	`, appRole).Scan(&canConsume, &canMutateProposer, &canDelete); err != nil {
+	`, appRole).Scan(
+		&canConsume, &canMutateProposer, &canMutateExpiry, &canMutateEvidenceVersion, &canDelete,
+	); err != nil {
 		t.Fatalf("inspect approval privileges: %v", err)
 	}
-	if !canConsume || canMutateProposer || canDelete {
-		t.Fatalf("approval privileges = consume:%t mutate-proposer:%t delete:%t", canConsume, canMutateProposer, canDelete)
+	if !canConsume || canMutateProposer || canMutateExpiry || canMutateEvidenceVersion || canDelete {
+		t.Fatalf("approval privileges = consume:%t proposer:%t expiry:%t evidence-version:%t delete:%t",
+			canConsume, canMutateProposer, canMutateExpiry, canMutateEvidenceVersion, canDelete)
 	}
 	for name, statement := range map[string]string{
-		"mutate proposer": `UPDATE sith.approval_grants SET proposer = 'user:mallory' WHERE id = 'GGGGGGGGGGGGGGGGGGGGGG'`,
-		"delete grant":    `DELETE FROM sith.approval_grants WHERE id = 'GGGGGGGGGGGGGGGGGGGGGG'`,
+		"mutate proposer":         `UPDATE sith.approval_grants SET proposer = 'user:mallory' WHERE id = 'GGGGGGGGGGGGGGGGGGGGGG'`,
+		"mutate expiry":           `UPDATE sith.approval_grants SET expires_at = expires_at + interval '1 minute' WHERE id = 'GGGGGGGGGGGGGGGGGGGGGG'`,
+		"mutate evidence version": `UPDATE sith.approval_grants SET evidence_version = 1 WHERE id = 'GGGGGGGGGGGGGGGGGGGGGG'`,
+		"delete grant":            `DELETE FROM sith.approval_grants WHERE id = 'GGGGGGGGGGGGGGGGGGGGGG'`,
 	} {
 		err := database.InWorkspace(ctx, proposerA, func(tx pgx.Tx) error {
 			_, execErr := tx.Exec(ctx, statement)
@@ -860,7 +992,7 @@ func assertApprovalGrantIntegration(
 	rows, err := admin.Query(ctx, `
 		SELECT event_kind, evidence_digest, actor, role, action, verb, verdict, reason_code
 		FROM sith.policy_audit_entries
-		WHERE workspace_id = 'workspace-a' AND format_version = 2
+		WHERE workspace_id = 'workspace-a' AND format_version = 3
 		ORDER BY sequence
 	`)
 	if err != nil {
@@ -919,8 +1051,9 @@ func assertApprovalGrantIntegration(
 	if err != nil {
 		t.Fatalf("mixed-version workspace B export error = %v", err)
 	}
-	if len(mixedExport.Entries) != 2 || mixedExport.Entries[0].FormatVersion != policyAuditFormatVersion ||
-		mixedExport.Entries[1].FormatVersion != approvalAuditFormatVersion {
+	if len(mixedExport.Entries) != 3 || mixedExport.Entries[0].FormatVersion != policyAuditFormatVersion ||
+		mixedExport.Entries[1].FormatVersion != approvalAuditFormatVersion ||
+		mixedExport.Entries[2].FormatVersion != approvalExpiryAuditFormatVersion {
 		t.Fatalf("mixed-version workspace B export shape = %#v", mixedExport)
 	}
 	if err := mixedExport.Verify(); err != nil {
@@ -980,6 +1113,48 @@ func newPolicyAuditEvent(t *testing.T, scope tenancy.Scope) pep.AuditEvent {
 		At: time.Now().UTC(), TraceID: traceID, WorkspaceID: scope.WorkspaceID(), Actor: scope.Subject(),
 		Role: scope.Role(), Action: tenancy.ActionRead, Verb: pep.VerbFleetRead,
 		Verdict: pep.VerdictAllow, ReasonCode: "phase-1-read",
+	}
+}
+
+func applyLegacyMigrations(
+	t *testing.T,
+	ctx context.Context,
+	owner *pgx.Conn,
+	stopBefore string,
+) {
+	t.Helper()
+	if _, err := owner.Exec(ctx, `
+		CREATE SCHEMA sith_meta;
+		REVOKE ALL ON SCHEMA sith_meta FROM PUBLIC;
+		CREATE TABLE sith_meta.schema_migrations (
+			version text PRIMARY KEY,
+			checksum bytea NOT NULL,
+			applied_at timestamptz NOT NULL DEFAULT transaction_timestamp()
+		)
+	`); err != nil {
+		t.Fatalf("initialize legacy migration ledger: %v", err)
+	}
+	entries, err := fs.ReadDir(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatalf("read legacy migration fixtures: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") || entry.Name() >= stopBefore {
+			continue
+		}
+		migration, err := fs.ReadFile(migrationFiles, "migrations/"+entry.Name())
+		if err != nil {
+			t.Fatalf("read legacy migration %s: %v", entry.Name(), err)
+		}
+		if _, err := owner.Exec(ctx, string(migration)); err != nil {
+			t.Fatalf("apply legacy migration %s: %v", entry.Name(), err)
+		}
+		checksum := sha256.Sum256(migration)
+		if _, err := owner.Exec(ctx, `
+			INSERT INTO sith_meta.schema_migrations(version, checksum) VALUES ($1, $2)
+		`, entry.Name(), checksum[:]); err != nil {
+			t.Fatalf("record legacy migration %s: %v", entry.Name(), err)
+		}
 	}
 }
 
@@ -1087,12 +1262,15 @@ func seedTenantRows(t *testing.T, ctx context.Context, admin *pgx.Conn) {
 			"('workspace-a', 'aws', '111111111111', 'AROAX:alice', 'user:alice'),\n" +
 			"('workspace-b', 'aws', '222222222222', 'AROAX:bob', 'user:bob')",
 		`INSERT INTO sith.approval_grants(
-			workspace_id, id, intent_id, proposer, approver, resolved_digest, approved_at
+			workspace_id, id, intent_id, proposer, approver, resolved_digest,
+			evidence_version, approved_at, expires_at
 		) VALUES
 			('workspace-a', 'GGGGGGGGGGGGGGGGGGGGGG', 'intent-seed-a', 'user:seed-operator',
-			 'user:seed-approver', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', now()),
+			 'user:seed-approver', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+			 1, statement_timestamp(), statement_timestamp() + interval '10 minutes'),
 			('workspace-b', 'HHHHHHHHHHHHHHHHHHHHHH', 'intent-seed-b', 'user:seed-operator',
-			 'user:seed-approver', 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', now())`,
+			 'user:seed-approver', 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+			 1, statement_timestamp(), statement_timestamp() + interval '10 minutes')`,
 	}
 	for _, statement := range statements {
 		if _, err := admin.Exec(ctx, statement); err != nil {

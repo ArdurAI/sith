@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ArdurAI/sith/internal/pep"
 	"github.com/ArdurAI/sith/internal/tenancy"
@@ -36,15 +35,48 @@ func TestApprovalGrantIdentifierIsOpaqueAndCanonical(t *testing.T) {
 func TestApprovalGrantBoundaryClassifiesMissingDatabaseAsOperationalError(t *testing.T) {
 	t.Parallel()
 
-	if _, err := (*AppDB)(nil).CreateApprovalGrant(context.Background(), tenancy.Scope{}, pep.ApprovalBinding{}, time.Now()); err == nil {
+	if _, err := (*AppDB)(nil).CreateApprovalGrant(context.Background(), tenancy.Scope{}, pep.ApprovalBinding{}); err == nil {
 		t.Fatal("nil database created an approval grant")
 	} else if errors.Is(err, ErrApprovalGrantUnavailable) {
 		t.Fatalf("nil database error was misclassified as safe approval refusal: %v", err)
 	}
-	if err := (*AppDB)(nil).ConsumeApprovalGrant(context.Background(), tenancy.Scope{}, pep.ApprovalBinding{}, "AAAAAAAAAAAAAAAAAAAAAA", time.Now()); err == nil {
+	if err := (*AppDB)(nil).ConsumeApprovalGrant(context.Background(), tenancy.Scope{}, pep.ApprovalBinding{}, "AAAAAAAAAAAAAAAAAAAAAA"); err == nil {
 		t.Fatal("nil database consumed an approval grant")
 	} else if errors.Is(err, ErrApprovalGrantUnavailable) {
 		t.Fatalf("nil database error was misclassified as safe approval refusal: %v", err)
+	}
+}
+
+func TestApprovalGrantExpiryMigrationIsFixedVersionedAndFailClosed(t *testing.T) {
+	t.Parallel()
+
+	migration, err := fs.ReadFile(migrationFiles, "migrations/0013_approval_grant_expiry.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(migration)
+	for _, required := range []string{
+		"ADD COLUMN expires_at timestamptz", "ADD COLUMN evidence_version smallint",
+		"expires_at = approved_at + interval '10 minutes'", "evidence_version IN (1, 2)",
+		"evidence_version = 1 OR consumed_at IS NULL OR consumed_at < expires_at",
+		"NO FORCE ROW LEVEL SECURITY", "FORCE ROW LEVEL SECURITY", "format_version IN (1, 2, 3)",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("approval expiry migration is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"DELETE FROM sith.approval_grants", "SET consumed_at", "DROP TABLE", "DISABLE ROW LEVEL SECURITY",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("approval expiry migration contains destructive legacy handling %q", forbidden)
+		}
+	}
+	noForce := strings.Index(text, "NO FORCE ROW LEVEL SECURITY")
+	backfill := strings.Index(text, "UPDATE sith.approval_grants")
+	restoreForce := strings.LastIndex(text, "FORCE ROW LEVEL SECURITY")
+	if noForce < 0 || backfill <= noForce || restoreForce <= backfill {
+		t.Fatal("approval expiry backfill does not restore FORCE RLS around its transactional owner window")
 	}
 }
 

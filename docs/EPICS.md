@@ -1699,9 +1699,15 @@ same-workspace, distinct-approver grant bound to the existing immutable resolved
 The non-owner application role can insert the forced-RLS row and atomically set only
 `consumed_at`; it cannot rewrite or delete the intent, identities, or digest. Missing, foreign,
 mismatched, and replayed grants share one fail-closed refusal, and a real PostgreSQL concurrency
-test proves exactly one consumer wins. MCP elicitation transport, Ardur PDP policy, approval expiry,
-multi-approver counting, credential minting, and dispatch remain later slices; this status does not
-claim F5.9 complete.
+test proves exactly one consumer wins.
+
+**Implementation status (F5.9b, 2026-07-21).** Every new grant has one immutable 10-minute
+absolute lifetime minted from PostgreSQL statement time. Consumption checks the half-open
+`approved_at <= consumed_at < expires_at` interval in the same conditional update that spends the
+grant. Expiry is bound into versioned lifecycle evidence; legacy grants are retained but fail
+closed, and format-1/2 audit records remain independently verifiable beside format 3. MCP
+elicitation transport, Ardur PDP policy, multi-approver counting, credential minting, and dispatch
+remain later slices; this status does not claim F5.9 complete.
 
 **Key risk / guardrail.** Approve-then-swap (approve a benign action, then change args) is the
 classic agent bypass. Guardrail: the approval is bound to an arg-hash re-checked at dispatch, so a
