@@ -150,7 +150,10 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		_ = processAuthObserver.Close()
 		database.Close()
 	}
-	collector, err := hubfleet.NewCollector(hubfleet.CollectorConfig{Store: database, Transport: transport, PEP: enforcer, Observer: metrics, TraceObserver: tracer})
+	collector, err := hubfleet.NewCollector(hubfleet.CollectorConfig{
+		LifecycleContext: ctx, Store: database, Transport: transport, PEP: enforcer,
+		Observer: metrics, TraceObserver: tracer,
+	})
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: collector configuration is invalid")

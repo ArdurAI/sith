@@ -35,7 +35,8 @@ func TestCollectorSeparatesCallerAuthorizationTraceFromRefreshFlight(t *testing.
 		spokes: []Spoke{{ID: "spoke-a", ManagedClusterRef: "ocm/spoke-a"}}, snapshots: make(map[string]Snapshot), failures: make(map[string]FailureKind),
 	}
 	collector, err := NewCollector(CollectorConfig{
-		Store: store,
+		LifecycleContext: t.Context(),
+		Store:            store,
 		Transport: transportFunc(func(ctx context.Context, _ tenancy.WorkspaceID, spoke Spoke) (Snapshot, error) {
 			callerValueLeaked = ctx.Value(callerValueKey{}) != nil
 			var ok bool
@@ -77,7 +78,8 @@ func TestCollectorSurvivesPanickingTraceObserver(t *testing.T) {
 		t.Fatal(err)
 	}
 	collector, err := NewCollector(CollectorConfig{
-		Store: &memoryStore{spokes: []Spoke{{ID: "spoke-a", ManagedClusterRef: "ocm/spoke-a"}}, snapshots: make(map[string]Snapshot), failures: make(map[string]FailureKind)},
+		LifecycleContext: t.Context(),
+		Store:            &memoryStore{spokes: []Spoke{{ID: "spoke-a", ManagedClusterRef: "ocm/spoke-a"}}, snapshots: make(map[string]Snapshot), failures: make(map[string]FailureKind)},
 		Transport: transportFunc(func(context.Context, tenancy.WorkspaceID, Spoke) (Snapshot, error) {
 			return validSnapshot("spoke-a", now), nil
 		}),

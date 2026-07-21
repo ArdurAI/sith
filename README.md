@@ -225,10 +225,11 @@ kubeconfig, endpoint, or token through the Sith collector contract. Only normali
 freshness-bounded, and stored behind forced RLS.
 Failed refreshes retain the last snapshot as explicitly stale evidence and record only a closed
 failure category. Concurrent refresh requests are authorized independently and then coalesced only
-within the same validated workspace. The shared refresh runs on a detached, locally traced context,
-so one canceled caller cannot cancel its peers and no request credential, context value, or trace
-identity crosses caller boundaries; completed and panicking refresh flights are removed. Within one
-refresh, transport and validation use a bounded worker pool: `CollectorConfig` defaults to four
+within the same validated workspace. The shared refresh runs on a locally traced context detached
+from individual callers but bounded by the hub lifecycle, so one canceled caller cannot cancel its
+peers, shutdown cancels outstanding work, and no request credential, context value, or trace identity
+crosses caller boundaries; completed and panicking refresh flights are removed. Within one refresh,
+transport and validation use a bounded worker pool: `CollectorConfig` defaults to four
 concurrent spokes and accepts only explicit limits from 1 through 64. Persistence and coverage
 mutation remain serialized, so one store failure cancels the remaining workers before returning;
 per-spoke deadlines and sorted stale/unreachable coverage remain unchanged. The pinned

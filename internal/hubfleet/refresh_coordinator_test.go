@@ -5,6 +5,7 @@ package hubfleet
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -39,8 +40,9 @@ func TestCollectorCoalescesAuthorizedRequestsForOneWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	collector, err := NewCollector(CollectorConfig{
-		Store: store,
-		PEP:   enforcer,
+		LifecycleContext: t.Context(),
+		Store:            store,
+		PEP:              enforcer,
 		Transport: transportFunc(func(context.Context, tenancy.WorkspaceID, Spoke) (Snapshot, error) {
 			select {
 			case <-started:
@@ -133,8 +135,9 @@ func TestCollectorRefusesCallerBeforeJoiningWorkspaceFlight(t *testing.T) {
 		t.Fatal(err)
 	}
 	collector, err := NewCollector(CollectorConfig{
-		Store: store,
-		PEP:   enforcer,
+		LifecycleContext: t.Context(),
+		Store:            store,
+		PEP:              enforcer,
 		Transport: transportFunc(func(context.Context, tenancy.WorkspaceID, Spoke) (Snapshot, error) {
 			close(started)
 			<-release
@@ -170,7 +173,7 @@ func TestCollectorRefusesCallerBeforeJoiningWorkspaceFlight(t *testing.T) {
 func TestRefreshCoordinatorKeepsWorkspacesIndependent(t *testing.T) {
 	t.Parallel()
 
-	coordinator := newRefreshCoordinator()
+	coordinator := newRefreshCoordinator(t.Context())
 	releaseA := make(chan struct{})
 	startedA := make(chan struct{})
 	startedB := make(chan struct{})
@@ -215,7 +218,7 @@ func TestRefreshCoordinatorKeepsWorkspacesIndependent(t *testing.T) {
 func TestRefreshCoordinatorDetachesLeaderAndWaiterCancellation(t *testing.T) {
 	t.Parallel()
 
-	coordinator := newRefreshCoordinator()
+	coordinator := newRefreshCoordinator(t.Context())
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var calls atomic.Int32
@@ -280,7 +283,7 @@ func TestRefreshCoordinatorDetachesLeaderAndWaiterCancellation(t *testing.T) {
 func TestRefreshCoordinatorSharesFailuresAndRecoversAfterPanic(t *testing.T) {
 	t.Parallel()
 
-	coordinator := newRefreshCoordinator()
+	coordinator := newRefreshCoordinator(t.Context())
 	sharedFailure := errors.New("closed store failure")
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -338,6 +341,38 @@ func TestRefreshCoordinatorSharesFailuresAndRecoversAfterPanic(t *testing.T) {
 	})
 	if err != nil || coverage.Reachable != 1 {
 		t.Fatalf("post-panic refresh = %#v, error = %v", coverage, err)
+	}
+}
+
+func TestRefreshCoordinatorStopsFlightsAtLifecycleBoundaryWithoutValues(t *testing.T) {
+	t.Parallel()
+
+	type lifecycleValueKey struct{}
+	lifecycle, cancelLifecycle := context.WithCancel(
+		context.WithValue(context.Background(), lifecycleValueKey{}, "must-not-cross-refresh-boundary"),
+	)
+	defer cancelLifecycle()
+	coordinator := newRefreshCoordinator(lifecycle)
+	started := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		_, err := coordinator.collect(context.Background(), readerScope(t, "workspace-a"), func(ctx context.Context, _ tenancy.Scope) (fleet.Coverage, error) {
+			close(started)
+			if value := ctx.Value(lifecycleValueKey{}); value != nil {
+				return fleet.Coverage{}, fmt.Errorf("lifecycle value leaked into refresh: %v", value)
+			}
+			<-ctx.Done()
+			return fleet.Coverage{}, ctx.Err()
+		})
+		result <- err
+	}()
+	<-started
+	cancelLifecycle()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("lifecycle cancellation error = %v, want context canceled", err)
+	}
+	if coordinator.activeFlights() != 0 {
+		t.Fatalf("lifecycle cancellation retained %d refresh flights", coordinator.activeFlights())
 	}
 }
 

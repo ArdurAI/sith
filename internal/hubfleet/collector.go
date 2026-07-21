@@ -121,6 +121,7 @@ type Store interface {
 
 // CollectorConfig defines bounded collection behavior.
 type CollectorConfig struct {
+	LifecycleContext    context.Context
 	Store               Store
 	Transport           Transport
 	PEP                 *pep.Enforcer
@@ -149,8 +150,8 @@ type Collector struct {
 
 // NewCollector constructs a fail-closed collector with bounded per-spoke work.
 func NewCollector(config CollectorConfig) (*Collector, error) {
-	if config.Store == nil || config.Transport == nil || config.PEP == nil {
-		return nil, fmt.Errorf("new spoke collector: store, transport, and policy enforcer are required")
+	if config.LifecycleContext == nil || config.Store == nil || config.Transport == nil || config.PEP == nil {
+		return nil, fmt.Errorf("new spoke collector: lifecycle context, store, transport, and policy enforcer are required")
 	}
 	if config.SpokeTimeout == 0 {
 		config.SpokeTimeout = defaultSpokeTimeout
@@ -183,7 +184,7 @@ func NewCollector(config CollectorConfig) (*Collector, error) {
 		store:               config.Store,
 		transport:           config.Transport,
 		pep:                 config.PEP,
-		refreshes:           newRefreshCoordinator(),
+		refreshes:           newRefreshCoordinator(config.LifecycleContext),
 		observer:            config.Observer,
 		tracer:              config.TraceObserver,
 		spokeTimeout:        config.SpokeTimeout,

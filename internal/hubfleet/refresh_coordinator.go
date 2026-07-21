@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/tenancy"
@@ -22,13 +23,27 @@ type refreshFlight struct {
 }
 
 type refreshCoordinator struct {
-	mu      sync.Mutex
-	flights map[tenancy.WorkspaceID]*refreshFlight
+	lifecycle context.Context
+	mu        sync.Mutex
+	flights   map[tenancy.WorkspaceID]*refreshFlight
 }
 
-func newRefreshCoordinator() *refreshCoordinator {
-	return &refreshCoordinator{flights: make(map[tenancy.WorkspaceID]*refreshFlight)}
+func newRefreshCoordinator(lifecycle context.Context) *refreshCoordinator {
+	return &refreshCoordinator{
+		lifecycle: valueFreeContext{Context: lifecycle},
+		flights:   make(map[tenancy.WorkspaceID]*refreshFlight),
+	}
 }
+
+// valueFreeContext preserves only lifecycle cancellation and deadlines. Refresh work must not
+// inherit request-scoped credentials, authorization state, or trace identity from its owner.
+type valueFreeContext struct {
+	context.Context
+}
+
+func (ctx valueFreeContext) Value(any) any { return nil }
+
+func (ctx valueFreeContext) Deadline() (time.Time, bool) { return ctx.Context.Deadline() }
 
 func (coordinator *refreshCoordinator) collect(
 	ctx context.Context,
@@ -48,7 +63,7 @@ func (coordinator *refreshCoordinator) collect(
 	if !exists {
 		flight = &refreshFlight{done: make(chan struct{})}
 		coordinator.flights[workspaceID] = flight
-		//nolint:gosec // A flight must outlive one caller; run supplies a fresh value-free context.
+		//nolint:gosec // A flight outlives one caller but remains bounded by the collector lifecycle.
 		go coordinator.run(workspaceID, flight, scope, collect)
 	}
 	coordinator.mu.Unlock()
@@ -72,7 +87,7 @@ func (coordinator *refreshCoordinator) run(
 		coordinator.finish(workspaceID, flight, coverage, err)
 	}()
 
-	flightContext, _, traceErr := tracing.Ensure(context.Background())
+	flightContext, _, traceErr := tracing.Ensure(coordinator.lifecycle)
 	if traceErr != nil {
 		err = fmt.Errorf("collect spoke snapshots: establish refresh flight trace: %w", traceErr)
 		return

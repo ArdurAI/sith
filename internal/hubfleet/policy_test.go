@@ -20,7 +20,7 @@ func TestHubReadEntrypointsStopBeforeDependenciesWhenPolicyRefuses(t *testing.T)
 
 	store := &memoryStore{snapshots: make(map[string]Snapshot), failures: make(map[string]FailureKind)}
 	collector, err := NewCollector(CollectorConfig{
-		Store: store, PEP: refusal.enforcer(t),
+		LifecycleContext: t.Context(), Store: store, PEP: refusal.enforcer(t),
 		Transport: transportFunc(func(context.Context, tenancy.WorkspaceID, Spoke) (Snapshot, error) {
 			return Snapshot{}, errors.New("transport must not run")
 		}),
@@ -118,7 +118,7 @@ func (refusal *policyRefusal) enforcer(t *testing.T) *pep.Enforcer {
 
 func TestHubReadConstructorsRequirePolicyEnforcer(t *testing.T) {
 	store := &memoryStore{snapshots: make(map[string]Snapshot), failures: make(map[string]FailureKind)}
-	if _, err := NewCollector(CollectorConfig{Store: store, Transport: transportFunc(func(context.Context, tenancy.WorkspaceID, Spoke) (Snapshot, error) {
+	if _, err := NewCollector(CollectorConfig{LifecycleContext: t.Context(), Store: store, Transport: transportFunc(func(context.Context, tenancy.WorkspaceID, Spoke) (Snapshot, error) {
 		return Snapshot{}, nil
 	})}); err == nil {
 		t.Fatal("NewCollector() accepted no policy enforcer")
