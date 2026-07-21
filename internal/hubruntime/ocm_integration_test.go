@@ -66,7 +66,9 @@ func TestHubRuntimeDirectClusterProxyM0(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	collector, err := hubfleet.NewCollector(hubfleet.CollectorConfig{Store: store, Transport: transport, PEP: enforcer})
+	collector, err := hubfleet.NewCollector(hubfleet.CollectorConfig{
+		LifecycleContext: ctx, Store: store, Transport: transport, PEP: enforcer,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

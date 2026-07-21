@@ -25,8 +25,9 @@ func TestCollectorBoundsParallelSpokesAndSortsCoverage(t *testing.T) {
 	var active atomic.Int64
 	var maximum atomic.Int64
 	collector, err := NewCollector(CollectorConfig{
-		Store: store,
-		PEP:   testReadPEP(t),
+		LifecycleContext: t.Context(),
+		Store:            store,
+		PEP:              testReadPEP(t),
 		Transport: transportFunc(func(_ context.Context, _ tenancy.WorkspaceID, spoke Spoke) (Snapshot, error) {
 			current := active.Add(1)
 			defer active.Add(-1)
@@ -84,8 +85,9 @@ func TestCollectorCollapsesSerialTimeoutsIntoParallelWave(t *testing.T) {
 
 	store := newMemoryStore(testSpokes("spoke-a", "spoke-b", "spoke-c", "spoke-d"))
 	collector, err := NewCollector(CollectorConfig{
-		Store: store,
-		PEP:   testReadPEP(t),
+		LifecycleContext: t.Context(),
+		Store:            store,
+		PEP:              testReadPEP(t),
 		Transport: transportFunc(func(ctx context.Context, _ tenancy.WorkspaceID, _ Spoke) (Snapshot, error) {
 			<-ctx.Done()
 			return Snapshot{}, ctx.Err()
@@ -120,8 +122,9 @@ func TestCollectorPersistsHealthyPeerWhileAnotherWorkerIsBlocked(t *testing.T) {
 	releaseBlocked := make(chan struct{})
 	blockedStarted := make(chan struct{})
 	collector, err := NewCollector(CollectorConfig{
-		Store: store,
-		PEP:   testReadPEP(t),
+		LifecycleContext: t.Context(),
+		Store:            store,
+		PEP:              testReadPEP(t),
 		Transport: transportFunc(func(_ context.Context, _ tenancy.WorkspaceID, spoke Spoke) (Snapshot, error) {
 			if spoke.ID == "spoke-blocked" {
 				close(blockedStarted)
@@ -164,9 +167,10 @@ func TestCollectWorkspaceCancellationStopsAdmissionAndWorkers(t *testing.T) {
 	var active atomic.Int64
 	observer := &recordingSnapshotObserver{}
 	collector, err := NewCollector(CollectorConfig{
-		Store:    store,
-		PEP:      testReadPEP(t),
-		Observer: observer,
+		LifecycleContext: t.Context(),
+		Store:            store,
+		PEP:              testReadPEP(t),
+		Observer:         observer,
 		Transport: transportFunc(func(ctx context.Context, _ tenancy.WorkspaceID, spoke Spoke) (Snapshot, error) {
 			active.Add(1)
 			defer active.Add(-1)
@@ -235,8 +239,9 @@ func TestCollectorStoreFailureCancelsWorkersAndLaterAdmission(t *testing.T) {
 	secondWorkerStarted := make(chan struct{})
 	blockedCanceled := make(chan struct{})
 	collector, err := NewCollector(CollectorConfig{
-		Store: store,
-		PEP:   testReadPEP(t),
+		LifecycleContext: t.Context(),
+		Store:            store,
+		PEP:              testReadPEP(t),
 		Transport: transportFunc(func(ctx context.Context, _ tenancy.WorkspaceID, spoke Spoke) (Snapshot, error) {
 			started <- spoke.ID
 			if spoke.ID == "spoke-a" {
@@ -290,8 +295,9 @@ func TestCollectorRecoversPanickingTransportWorkerAndLaterRefresh(t *testing.T) 
 	var panicFlight atomic.Bool
 	panicFlight.Store(true)
 	collector, err := NewCollector(CollectorConfig{
-		Store: store,
-		PEP:   testReadPEP(t),
+		LifecycleContext: t.Context(),
+		Store:            store,
+		PEP:              testReadPEP(t),
 		Transport: transportFunc(func(ctx context.Context, _ tenancy.WorkspaceID, spoke Spoke) (Snapshot, error) {
 			if panicFlight.Load() {
 				switch spoke.ID {
@@ -338,8 +344,9 @@ func TestCollectorJoinsWorkersWhenStorePanicsAndLaterRefresh(t *testing.T) {
 	secondWorkerStarted := make(chan struct{})
 	blockedCanceled := make(chan struct{})
 	collector, err := NewCollector(CollectorConfig{
-		Store: store,
-		PEP:   testReadPEP(t),
+		LifecycleContext: t.Context(),
+		Store:            store,
+		PEP:              testReadPEP(t),
 		Transport: transportFunc(func(ctx context.Context, _ tenancy.WorkspaceID, spoke Spoke) (Snapshot, error) {
 			if store.panicNext.Load() {
 				switch spoke.ID {

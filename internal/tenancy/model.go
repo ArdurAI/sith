@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 const maxIdentityLength = 256
@@ -110,7 +111,7 @@ func (role Role) Allows(action Action) bool {
 }
 
 func validateIdentity(name, value string) error {
-	if value == "" || strings.TrimSpace(value) != value {
+	if value == "" || !utf8.ValidString(value) || strings.TrimSpace(value) != value {
 		return fmt.Errorf("%s must be a non-empty, trimmed value", name)
 	}
 	if len(value) > maxIdentityLength {
@@ -125,7 +126,7 @@ func validateIdentity(name, value string) error {
 }
 
 func validateDisplayName(name, value string) error {
-	if value == "" || strings.TrimSpace(value) != value {
+	if value == "" || !utf8.ValidString(value) || strings.TrimSpace(value) != value {
 		return fmt.Errorf("%s must be a non-empty, trimmed value", name)
 	}
 	if len(value) > maxIdentityLength {

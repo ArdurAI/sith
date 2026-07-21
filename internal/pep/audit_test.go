@@ -190,6 +190,16 @@ func TestAuditEventRejectsUnsafeInvalidRequestSentinel(t *testing.T) {
 	}
 }
 
+func TestAuditEventRejectsMalformedUTF8Actor(t *testing.T) {
+	t.Parallel()
+
+	event := policyAuditEvent(time.Now().UTC(), VerdictAllow, "phase-1-read")
+	event.Actor = string([]byte{'u', 's', 'e', 'r', ':', 0x80})
+	if err := event.Validate(); err == nil {
+		t.Fatal("AuditEvent.Validate() accepted a malformed UTF-8 actor")
+	}
+}
+
 func TestAuditEventRejectsImpossibleProposalRoleOutcome(t *testing.T) {
 	base := policyAuditEvent(time.Now().UTC(), VerdictDeny, "role-denied")
 	base.Action = tenancy.ActionProposeIntent

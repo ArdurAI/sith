@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/intent"
@@ -459,7 +460,7 @@ func (enforcer *Enforcer) record(ctx context.Context, request Request, decision 
 }
 
 func validateSafeText(name, value string, maximum int) error {
-	if value == "" || strings.TrimSpace(value) != value || len(value) > maximum {
+	if value == "" || !utf8.ValidString(value) || strings.TrimSpace(value) != value || len(value) > maximum {
 		return fmt.Errorf("%s is invalid", name)
 	}
 	for _, character := range value {

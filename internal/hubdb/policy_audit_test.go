@@ -231,14 +231,21 @@ func FuzzPolicyAuditEntryHashUsesLengthFraming(f *testing.F) {
 	f.Add("user:alice", "phase-1-read")
 	f.Add("a", "bc")
 	f.Fuzz(func(t *testing.T, left, right string) {
-		if right == "" || len(left)+len(right) > 512 {
+		if len(right) < 2 || len(left)+len(right) > 256 {
 			t.Skip()
 		}
 		first := policyAuditTestEntry()
 		first.actor, first.reasonCode = left, right
 		second := policyAuditTestEntry()
-		second.actor, second.reasonCode = left+right, ""
-		if bytes.Equal(policyAuditEntryHash(first), policyAuditEntryHash(second)) {
+		second.actor, second.reasonCode = left+right[:1], right[1:]
+		if validatePolicyAuditEntry(first) != nil || validatePolicyAuditEntry(second) != nil {
+			t.Skip()
+		}
+		firstHash, secondHash := policyAuditEntryHash(first), policyAuditEntryHash(second)
+		if len(firstHash) != 32 || len(secondHash) != 32 {
+			t.Fatal("valid audit entries did not produce SHA-256 digests")
+		}
+		if bytes.Equal(firstHash, secondHash) {
 			t.Fatal("length-delimited audit fields produced an ambiguous digest")
 		}
 	})
