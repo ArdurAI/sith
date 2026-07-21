@@ -768,7 +768,7 @@ Run the full local quality gate with golangci-lint v2.12.2 and govulncheck v1.6.
 make ci
 ```
 
-Release changes additionally require GoReleaser v2.17.0 and Syft v1.46.0. This gate builds all
+Release changes additionally require GoReleaser v2.17.0 and Syft v1.49.0. This gate builds all
 four archives twice and refuses the change if their SHA-256 digests differ:
 
 ```bash

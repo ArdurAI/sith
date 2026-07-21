@@ -60,6 +60,7 @@ test: ## Run unit tests with the race detector and report coverage
 
 test-scripts: ## Run focused safety tests for operator-facing shell harnesses
 	bash tests/scripts/wails_tooling_policy_test.sh
+	bash tests/scripts/release_tooling_policy_test.sh
 	bash tests/scripts/helm_tooling_policy_test.sh
 	bash tests/scripts/m0_ocm_falsification_safety_test.sh
 	bash tests/scripts/release_tag_identity_guide_test.sh
