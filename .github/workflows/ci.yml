@@ -77,6 +77,9 @@ jobs:
       - name: Unit tests with race detector
         run: go test -race -count=1 -coverprofile=coverage.out ./...
 
+      - name: Operator safety policy tests
+        run: make test-scripts
+
       - name: Multi-layer tenant-isolation suite
         run: make e2e-isolation
 
@@ -98,9 +101,7 @@ jobs:
           install -m 0755 "$RUNNER_TEMP/prometheus-${version}.linux-amd64/promtool" "$RUNNER_TEMP/promtool"
 
       - name: Portable Prometheus alert contract
-        run: |
-          bash tests/scripts/prometheus_tooling_policy_test.sh
-          make test-alert-rules PROMTOOL="$RUNNER_TEMP/promtool"
+        run: make test-alert-rules PROMTOOL="$RUNNER_TEMP/promtool"
 
       - name: Immutable OCI image contract
         run: make e2e-oci

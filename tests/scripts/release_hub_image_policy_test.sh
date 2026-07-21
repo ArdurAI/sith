@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# shellcheck disable=SC2016
+
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -63,11 +65,17 @@ release_job_step() {
 
 assert_contains "$workflow_contents" 'HUB_IMAGE: ghcr.io/ardurai/sith-hub' 'uses one fixed GHCR hub image name'
 assert_text_contains "$release_job" 'packages: write' 'grants package publication permission to the release job'
+for action in setup-qemu setup-buildx login build-push; do
+  action_lines="$(grep -E "^[[:space:]]+uses: docker/${action}-action@" <<<"$release_job" || true)"
+  if [[ "$(wc -l <<<"$action_lines" | tr -d ' ')" != 1 ||
+    ! "$action_lines" =~ docker/${action}-action@[0-9a-f]{40}[[:space:]]+#[[:space:]]+v[0-9] ]]; then
+    printf '[release-hub-image] FAIL: %s action must use one full commit pin with a version comment\n' "$action" >&2
+    exit 1
+  fi
+  printf '[release-hub-image] PASS: %s action uses one full commit pin\n' "$action"
+done
+
 for assertion in \
-  'docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130|pins QEMU setup action' \
-  'docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f|pins Buildx setup action' \
-  'docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9|pins registry login action' \
-  'docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8|pins image build action' \
   'tar -xzf "dist/sith_${VERSION}_linux_amd64.tar.gz"|stages the released linux amd64 binary' \
   'tar -xzf "dist/sith_${VERSION}_linux_arm64.tar.gz"|stages the released linux arm64 binary' \
   'dist/sith_${VERSION}_hub.image|attaches the digest address to the release' \
@@ -77,6 +85,17 @@ for assertion in \
   description="${assertion#*|}"
   assert_contains "$release_job" "$needle" "$description"
 done
+
+missing_dist="${repo_root}/tests/scripts/.missing-release-dist"
+set +e
+missing_dist_output="$(DOCKER_BIN=true "$verifier" --dist "$missing_dist" 2>&1)"
+missing_dist_status="$?"
+set -e
+if [[ "$missing_dist_status" == 0 || "$missing_dist_output" == *'expected exactly one Linux archive'* ]]; then
+  printf '[release-hub-image] FAIL: invalid dist path did not stop at canonicalization\n' >&2
+  exit 1
+fi
+printf '[release-hub-image] PASS: invalid dist path fails before archive or Docker work\n'
 
 publish_step="$(release_job_step 'Publish immutable multi-platform hub image')"
 platforms="$(awk '/^[[:space:]]+platforms:/{ print $2 }' <<<"$publish_step")"
