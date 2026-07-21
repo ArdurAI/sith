@@ -12,7 +12,7 @@ KIND     ?= kind
 HELM     ?= helm
 GORELEASER ?= goreleaser
 WAILS      ?= wails
-WAILS_VERSION ?= v2.12.0
+WAILS_VERSION ?= v2.13.0
 CODESIGN   ?= codesign
 PLISTBUDDY ?= /usr/libexec/PlistBuddy
 LIPO       ?= lipo
@@ -44,8 +44,7 @@ build: ## Build the sith binary into bin/
 	go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/$(BINARY) $(CMD)
 
 desktop-build: ## Build the ad-hoc-signed macOS arm64 Sith.app development bundle
-	@command -v "$(WAILS)" >/dev/null || { echo "Wails $(WAILS_VERSION) is required" >&2; exit 1; }
-	@"$(WAILS)" version | grep -q '$(WAILS_VERSION)' || { echo "Wails $(WAILS_VERSION) is required" >&2; exit 1; }
+	@hack/verify-wails-version.sh "$(WAILS)" "$(WAILS_VERSION)"
 	cd cmd/sith-desktop && "$(WAILS)" build -clean -m -nosyncgomod -s -trimpath -platform darwin/arm64
 	@set -euo pipefail; \
 		app='cmd/sith-desktop/build/bin/Sith.app'; \
@@ -60,6 +59,7 @@ test: ## Run unit tests with the race detector and report coverage
 	go test -race -count=1 -coverprofile=coverage.out ./...
 
 test-scripts: ## Run focused safety tests for operator-facing shell harnesses
+	bash tests/scripts/wails_tooling_policy_test.sh
 	bash tests/scripts/helm_tooling_policy_test.sh
 	bash tests/scripts/m0_ocm_falsification_safety_test.sh
 	bash tests/scripts/release_tag_identity_guide_test.sh
