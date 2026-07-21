@@ -23,13 +23,15 @@ import (
 )
 
 const (
-	policyAuditFormatVersion   int16    = 1
-	approvalAuditFormatVersion int16    = 2
-	approvalEvidenceHashDomain          = "sith-approval-grant-evidence/v1"
-	policyDecisionEventKind             = "policy-decision"
-	approvalCreatedEventKind            = "approval-created"
-	approvalConsumedEventKind           = "approval-consumed"
-	approvalAuditVerb          pep.Verb = "approval.grant"
+	policyAuditFormatVersion         int16    = 1
+	approvalAuditFormatVersion       int16    = 2
+	approvalExpiryAuditFormatVersion int16    = 3
+	approvalEvidenceHashDomain                = "sith-approval-grant-evidence/v1"
+	approvalExpiryEvidenceHashDomain          = "sith-approval-grant-evidence/v2"
+	policyDecisionEventKind                   = "policy-decision"
+	approvalCreatedEventKind                  = "approval-created"
+	approvalConsumedEventKind                 = "approval-consumed"
+	approvalAuditVerb                pep.Verb = "approval.grant"
 )
 
 var approvalEvidencePattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -530,7 +532,7 @@ func validatePolicyAuditEntry(entry policyAuditEntry) error {
 			Verdict: entry.verdict, ReasonCode: entry.reasonCode,
 		}
 		return event.Validate()
-	case approvalAuditFormatVersion:
+	case approvalAuditFormatVersion, approvalExpiryAuditFormatVersion:
 		if entry.recordedAt.IsZero() || entry.recordedAt.After(time.Now().Add(time.Minute)) ||
 			!entry.traceID.Valid() || !approvalEvidencePattern.MatchString(entry.evidence) ||
 			entry.verb != approvalAuditVerb || entry.verdict != pep.VerdictAllow || entry.reasonCode != entry.eventKind {
@@ -573,6 +575,25 @@ func approvalGrantEvidenceDigest(
 	for _, value := range []string{
 		approvalEvidenceHashDomain, string(workspaceID), identifier.String(), intentID,
 		proposer, approver, resolvedDigest, approvedAt.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano),
+	} {
+		canonical = appendCanonicalString(canonical, value)
+	}
+	digest := sha256.Sum256(canonical)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func expiringApprovalGrantEvidenceDigest(
+	workspaceID tenancy.WorkspaceID,
+	identifier ApprovalGrantID,
+	intentID, proposer, approver, resolvedDigest string,
+	approvedAt, expiresAt time.Time,
+) string {
+	canonical := make([]byte, 0, 512)
+	for _, value := range []string{
+		approvalExpiryEvidenceHashDomain, string(workspaceID), identifier.String(), intentID,
+		proposer, approver, resolvedDigest,
+		approvedAt.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano),
+		expiresAt.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano),
 	} {
 		canonical = appendCanonicalString(canonical, value)
 	}

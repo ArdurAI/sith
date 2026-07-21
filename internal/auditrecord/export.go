@@ -29,8 +29,9 @@ const (
 	// MaxDocumentBytes bounds one portable JSON document before offline parsing.
 	MaxDocumentBytes = 1 << 20
 
-	policyAuditHashDomain   = "sith-policy-audit-chain/v1"
-	approvalAuditHashDomain = "sith-approval-audit-chain/v2"
+	policyAuditHashDomain         = "sith-policy-audit-chain/v1"
+	approvalAuditHashDomain       = "sith-approval-audit-chain/v2"
+	approvalExpiryAuditHashDomain = "sith-approval-audit-chain/v3"
 )
 
 // Export is one complete, verified workspace snapshot. It is constructed only after the backing
@@ -52,20 +53,22 @@ type Chain struct {
 // Entry is the privacy-minimized, independently rehashable projection of one retained event. The
 // workspace is carried once by Export and is nevertheless bound into each entry hash.
 type Entry struct {
-	Sequence       int64     `json:"sequence"`
-	FormatVersion  int16     `json:"format_version"`
-	RecordedAt     time.Time `json:"recorded_at"`
-	TraceID        string    `json:"trace_id"`
-	Actor          string    `json:"actor"`
-	Role           string    `json:"role"`
-	Action         string    `json:"action"`
-	Verb           string    `json:"verb"`
-	Verdict        string    `json:"verdict"`
-	ReasonCode     string    `json:"reason_code"`
-	EventKind      string    `json:"event_kind"`
-	EvidenceDigest string    `json:"evidence_digest"`
-	PreviousHash   string    `json:"previous_hash"`
-	EntryHash      string    `json:"entry_hash"`
+	Sequence      int64     `json:"sequence"`
+	FormatVersion int16     `json:"format_version"`
+	RecordedAt    time.Time `json:"recorded_at"`
+	TraceID       string    `json:"trace_id"`
+	Actor         string    `json:"actor"`
+	Role          string    `json:"role"`
+	Action        string    `json:"action"`
+	Verb          string    `json:"verb"`
+	Verdict       string    `json:"verdict"`
+	ReasonCode    string    `json:"reason_code"`
+	EventKind     string    `json:"event_kind"`
+	// EvidenceDigest is opaque at this privacy-minimized boundary. Offline verification binds it
+	// into the versioned chain; the database writer proves its grant-field semantics before append.
+	EvidenceDigest string `json:"evidence_digest"`
+	PreviousHash   string `json:"previous_hash"`
+	EntryHash      string `json:"entry_hash"`
 }
 
 // ValidateForWorkspace rechecks the portable disclosure boundary independently of the backing
@@ -157,8 +160,11 @@ func RecomputeEntryHash(workspaceID tenancy.WorkspaceID, entry Entry) (string, e
 	}
 
 	domain := policyAuditHashDomain
-	if entry.FormatVersion == 2 {
+	switch entry.FormatVersion {
+	case 2:
 		domain = approvalAuditHashDomain
+	case 3:
+		domain = approvalExpiryAuditHashDomain
 	}
 	canonical := make([]byte, 0, 512)
 	canonical = appendCanonicalString(canonical, domain)
@@ -172,7 +178,7 @@ func RecomputeEntryHash(workspaceID tenancy.WorkspaceID, entry Entry) (string, e
 	} {
 		canonical = appendCanonicalString(canonical, value)
 	}
-	if entry.FormatVersion == 2 {
+	if entry.FormatVersion == 2 || entry.FormatVersion == 3 {
 		canonical = appendCanonicalString(canonical, entry.EventKind)
 		canonical = appendCanonicalString(canonical, entry.EvidenceDigest)
 	}
@@ -222,7 +228,7 @@ func validEntryShape(entry Entry) bool {
 			return false
 		}
 		return true
-	case 2:
+	case 2, 3:
 		if !validHash(entry.EvidenceDigest) || entry.Verb != "approval.grant" || verdict != pep.VerdictAllow ||
 			entry.ReasonCode != entry.EventKind {
 			return false

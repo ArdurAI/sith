@@ -1756,6 +1756,15 @@ sequenceDiagram
 - Approvals are per-action, single-use, and bound to the resolved-args hash.
 - Changing the args after approval invalidates it (approve-then-swap is blocked).
 
+**Implementation status (F5.9a/F5.9b, 2026-07-21).** The durable server-side core persists a
+same-workspace, distinct-approver grant bound to the immutable resolved proposal digest and spends
+it with one conditional PostgreSQL update. Every new grant has one immutable 10-minute absolute
+lifetime minted from PostgreSQL statement time; consumption enforces the half-open
+`approved_at <= consumed_at < expires_at` interval in that same update. Expiry is bound into
+versioned lifecycle evidence, legacy grants are retained but fail closed, and historical audit
+formats remain independently verifiable. MCP transport, Ardur PDP policy, multi-approver counting,
+credential minting, and dispatch remain later slices; this does not claim F5.9 complete.
+
 **Key risk / guardrail.** Approve-then-swap (approve a benign action, then change args) is the
 classic agent bypass. Guardrail: the approval is bound to an arg-hash re-checked at dispatch, so a
 valid signature and a valid approval are both necessary but neither is sufficient if the args
