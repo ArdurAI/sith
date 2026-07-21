@@ -13,8 +13,10 @@ if [[ "$#" != 2 || "$1" != "--dist" ]]; then
   usage
 fi
 
-readonly REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-readonly DIST_DIRECTORY="$(cd "$2" && pwd -P)"
+REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+readonly REPOSITORY_ROOT
+DIST_DIRECTORY="$(cd "$2" && pwd -P)"
+readonly DIST_DIRECTORY
 readonly DOCKER_BIN="${DOCKER_BIN:-docker}"
 
 command -v "$DOCKER_BIN" >/dev/null
