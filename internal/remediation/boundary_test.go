@@ -15,10 +15,12 @@ import (
 
 var allowedProductionImports = map[string]bool{
 	"context":                                true,
+	"crypto/sha1":                            true,
 	"crypto/sha256":                          true,
 	"encoding/hex":                           true,
 	"encoding/json":                          true,
 	"fmt":                                    true,
+	"path":                                   true,
 	"reflect":                                true,
 	"slices":                                 true,
 	"sort":                                   true,
@@ -94,6 +96,41 @@ func TestGitOpsBoundaryOmitsAuthorityAndKeepsBundleOpaque(t *testing.T) {
 			for _, forbidden := range []string{"actor", "role", "intent", "approval", "policy", "credential", "token", "secret", "signature", "endpoint"} {
 				if strings.Contains(name, forbidden) {
 					t.Fatalf("%s exposes forbidden authority field %s", value.Name(), value.Field(index).Name)
+				}
+			}
+		}
+	}
+}
+
+func TestGitSourceSnapshotBoundaryIsObservedOnlyAndOpaque(t *testing.T) {
+	t.Parallel()
+	assertExactFields(t, reflect.TypeFor[GitSourceSnapshotInput](), []string{
+		"Workspace", "Subject", "Sources", "ObservedAt", "ValidUntil", "Repository", "BaseRef",
+		"BaseCommit", "FilePath", "ObservedBlobSHA", "CurrentContent", "EvidenceRefs",
+	})
+
+	snapshot := reflect.TypeFor[GitSourceSnapshot]()
+	if snapshot.NumField() != 13 {
+		t.Fatalf("GitSourceSnapshot fields = %d, want exact reviewed shape", snapshot.NumField())
+	}
+	for index := range snapshot.NumField() {
+		if field := snapshot.Field(index); field.IsExported() {
+			t.Fatalf("GitSourceSnapshot exposes mutable field %s", field.Name)
+		}
+	}
+	if snapshot.NumMethod() != 2 || snapshot.Method(0).Name != "Freshness" || snapshot.Method(1).Name != "Version" {
+		t.Fatalf("GitSourceSnapshot methods = %#v, want only Freshness and Version", snapshot)
+	}
+
+	for _, value := range []reflect.Type{reflect.TypeFor[GitSourceSnapshotInput](), snapshot} {
+		for index := range value.NumField() {
+			name := strings.ToLower(value.Field(index).Name)
+			for _, forbidden := range []string{
+				"desired", "title", "body", "commitmessage", "handler", "actor", "role", "intent",
+				"approval", "policy", "credential", "token", "secret", "signature", "endpoint", "dispatch",
+			} {
+				if strings.Contains(name, forbidden) {
+					t.Fatalf("%s exposes forbidden change or authority field %s", value.Name(), value.Field(index).Name)
 				}
 			}
 		}

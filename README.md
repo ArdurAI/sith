@@ -716,6 +716,21 @@ remote ref, commit, tree, or blob state; a future authorized read adapter must a
 facts and construct the bundle. That adapter's API calls, rate-limit/egress impact, credential
 custody, and freshness policy are outside this offline slice.
 
+The approved next decomposition now defines the observed half independently as an immutable
+`git-source-snapshot/v1`. It contains one workspace and affected resource, one pinned GitHub source
+identity and repository, a configured non-symbolic base ref plus exact resolved commit, one safe
+repository-relative path, and exact current file bytes plus the matching Git blob identity. The
+constructor recomputes the blob object ID, copies and canonically orders attached subject/blob
+evidence, and bounds content, evidence count, and validity. A pure trusted-time check classifies the
+snapshot as fresh, future, or stale; it performs no I/O.
+
+`DesiredChange` remains a later separately reviewed contract. The snapshot contains no desired
+bytes, PR metadata, handler binding, actor, intent, policy decision, approval, credential, endpoint,
+persistence, dispatch, mutation, or execution state, and it is not wired into the Brain, resolver,
+connector runtime, PEP, or Hub. R2 and R4 remain advisory-only. This offline contract adds no API
+request, egress, storage, cloud resource, telemetry cardinality, or recurring cost; a future live
+adapter must separately own least-privilege contents-read credentials, rate limits, and freshness.
+
 Phase-L kubeconfig hydration supplies LIVE pod/workload/node evidence and discrete Kubernetes
 Events for TIMELINE when present. DESIRED and TELEMETRY remain unavailable unless a future
 connector supplies entity-attached facts. Consequently, an OOM or repeated failure is detected
