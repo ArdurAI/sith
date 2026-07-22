@@ -647,10 +647,25 @@ fresh. A zero clock or internally invalid snapshot fails closed.
 
 `GitSourceSnapshot` deliberately has no desired bytes, PR title/body, commit message, handler
 contract, actor, role, intent ID, policy or approval decision, credential, endpoint, signature,
-persistence, dispatch, mutation, or execution state. `DesiredChange` is a later separately reviewed
-transformer/renderer contract that must bind its input snapshot version, evidence, and output. The
-snapshot is not wired into the existing resolver, Brain, connector runtime, PEP, or Hub. R2 and R4
-therefore remain operator-facing advisory rules; this split adds no production read or write path.
+persistence, dispatch, mutation, or execution state.
+
+The separately reviewed output contract is `desired-change/v1`. One opaque `DesiredChange` binds a
+defensive copy of one valid snapshot to one lowercase canonical `<transformer>/<version>` identity,
+exact proposed UTF-8 bytes, and 2–32 unique stable evidence references. Construction preserves the
+output byte sequence exactly, applies the same 64 KiB and non-NUL bounds as the snapshot, rejects an
+exact no-op against current content, canonically sorts copied evidence, and requires both the
+affected resource and exact observed blob to remain attached. The embedded snapshot preserves the
+repository, base ref, commit, path, blob, current bytes, evidence, and validity window as one exact
+later composition precondition.
+
+Desired-change construction is package-private. No concrete R2 memory-limit transformer, R4
+live-to-Git reconciler, YAML/Helm/Kustomize renderer, or file mapper is approved in this contract,
+so callers cannot relabel supplied replacement bytes as trusted output. The change exposes only its
+closed contract version and has no PR metadata, handler binding, actor, role, intent ID, policy or
+approval decision, credential, endpoint, signature, persistence, dispatch, mutation, or execution
+state. Neither half is wired into the existing resolver, Brain, connector runtime, PEP, or Hub.
+R2 and R4 therefore remain operator-facing advisory rules; this split adds no production read or
+write path.
 
 ### 3.7 Where the Brain lives (open decision)
 

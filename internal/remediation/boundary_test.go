@@ -3,6 +3,7 @@
 package remediation
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -135,6 +136,74 @@ func TestGitSourceSnapshotBoundaryIsObservedOnlyAndOpaque(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestDesiredChangeBoundaryIsTransformerOwnedAndOpaque(t *testing.T) {
+	t.Parallel()
+	change := reflect.TypeFor[DesiredChange]()
+	if change.NumField() != 5 {
+		t.Fatalf("DesiredChange fields = %d, want exact reviewed shape", change.NumField())
+	}
+	for index := range change.NumField() {
+		field := change.Field(index)
+		if field.IsExported() {
+			t.Fatalf("DesiredChange exposes mutable field %s", field.Name)
+		}
+		name := strings.ToLower(field.Name)
+		for _, forbidden := range []string{
+			"title", "body", "commitmessage", "handler", "actor", "role", "intent", "approval",
+			"policy", "credential", "token", "secret", "signature", "endpoint", "dispatch", "execute",
+		} {
+			if strings.Contains(name, forbidden) {
+				t.Fatalf("DesiredChange exposes forbidden authority field %s", field.Name)
+			}
+		}
+	}
+	if change.NumMethod() != 1 || change.Method(0).Name != "Version" {
+		t.Fatalf("DesiredChange methods = %#v, want only Version", change)
+	}
+
+	err := filepath.WalkDir(".", func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, parseErr := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if parseErr != nil {
+			return parseErr
+		}
+		for _, rawDeclaration := range file.Decls {
+			declaration, ok := rawDeclaration.(*ast.FuncDecl)
+			if ok && declaration.Recv == nil && token.IsExported(declaration.Name.Name) &&
+				returnsDesiredChange(declaration) {
+				t.Errorf("DesiredChange construction escaped the reviewed package boundary as %s in %s", declaration.Name.Name, path)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("inspect DesiredChange package boundary: %v", err)
+	}
+}
+
+func returnsDesiredChange(declaration *ast.FuncDecl) bool {
+	if declaration.Type.Results == nil {
+		return false
+	}
+	found := false
+	for _, result := range declaration.Type.Results.List {
+		ast.Inspect(result.Type, func(node ast.Node) bool {
+			identifier, ok := node.(*ast.Ident)
+			if ok && identifier.Name == "DesiredChange" {
+				found = true
+				return false
+			}
+			return !found
+		})
+	}
+	return found
 }
 
 func assertExactFields(t *testing.T, value reflect.Type, expected []string) {
