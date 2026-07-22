@@ -589,6 +589,45 @@ import, proposal, approval, persistence, network, dispatch, mutation, or executi
 Brain. This preserves the same deterministic rules across local and hub modes without allowing
 human prose to become an implicit action contract.
 
+The first post-Brain resolver contract is GitOps-only and remains pre-PEP. For a confirmed,
+entity-local R2 or R4 candidate, it requires exactly one immutable `gitops-provenance/v1` bundle
+owned by the pinned GitHub source adapter contract. That bundle binds one workspace and cited
+resource to one repository, a non-symbolic configured base branch, exact base commit, one update
+path, observed blob identity, exact desired content, bounded PR metadata, immutable evidence
+references, and a validity interval of at most five minutes. It also pins the exact
+`gitops.open-pr` handler adapter version and raw argument-schema digest.
+
+Exact desired content is the source adapter's validated UTF-8 byte sequence. Neither the bundle nor
+resolver performs Unicode, line-ending, whitespace, or YAML normalization; the handler embeds those
+bytes as one JSON string in its canonical argument document. The returned `ArgumentsDigest` is
+SHA-256 over that complete canonical JSON byte sequence, so it binds repository preconditions, PR
+metadata, path, blob, and content together. There is intentionally no second standalone content
+digest in this contract.
+
+The bundle carries `ObservedAt` and `ValidUntil`, normalized to UTC at construction. It requires
+`ObservedAt < ValidUntil` and permits an interval of at most five minutes, inclusive. Resolution
+uses an injected trusted server clock normalized to UTC: `now < ObservedAt` is future provenance,
+`now >= ValidUntil` is stale, and only `ObservedAt <= now < ValidUntil` is fresh. This contract has
+no implicit clock-skew allowance; a future adapter needing one must make it an explicit reviewed
+source policy rather than silently widening the resolver window.
+
+The pure resolver fails closed on zero or multiple bundles, stale or future observations,
+cross-workspace or unattached resources, noncanonical candidates or descriptors, handler/schema
+drift, unsafe handler arguments, target mismatch, or any canonical output that changes the source's
+repository, base, commit, path, blob, content, or PR metadata. GitHub argument semantics stay owned
+by the planning handler: the resolver calls its I/O-free canonicalization seam and checks the
+contract, request cancellation, and source validity window again immediately before returning. A
+ready result contains only the normalized repository target, canonical arguments, their SHA-256
+digest, and evidence references. It contains no actor, role, intent ID, credential, signature,
+policy decision, approval, persistence, dispatch, mutation, or execution state.
+
+This contract does not fetch GitHub state. A later authorized canonical read adapter must use exact
+reference, commit, and tree/blob observations to construct the bundle; the offline resolver treats
+that immutable adapter output as the source claim and never substitutes caller data. The later Hub
+composition must separately derive workspace, actor, role, and intent ID from authenticated server
+state, invoke the planner, and call the PEP. Therefore this stage is provenance-complete only;
+F14.6 and the local-versus-hub exit criterion remain open.
+
 ### 3.7 Where the Brain lives (open decision)
 
 Two placements, both viable:

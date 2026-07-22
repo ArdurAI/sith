@@ -698,6 +698,24 @@ require; the candidate contains no target, arguments, approval, or execution cap
 performs no I/O. It imports only the side-effect-free closed intent vocabulary—not connector
 planning or execution, PEP, MCP, persistence, network, or local-operation paths.
 
+The contract-only GitOps provenance resolver is the next deliberately separate stage. It accepts
+only a confirmed, entity-local R2/R4 `gitops.open-pr` candidate and exactly one immutable
+`gitops-provenance/v1` bundle from the pinned canonical GitHub source contract. The bundle binds one
+workspace and affected resource to a repository, non-symbolic base branch, exact base commit,
+single update path, observed blob, exact desired content, evidence references, a maximum five-minute
+validity interval, and the live planning handler's adapter version plus argument-schema digest.
+Resolution reuses the GitHub handler's pure validation/canonicalization seam, rechecks the handler
+contract, request cancellation, and bundle freshness after canonicalization, and returns only the
+normalized repository target, exact canonical arguments and SHA-256 digest, copied evidence
+references, or a closed abstention reason. It rejects missing, duplicate, stale, future, foreign,
+unattached, drifted, handler-mutated, and handler-invalid inputs without I/O.
+
+Provenance readiness is not a PEP proposal, policy verdict, approval, credential, dispatch, Git
+write, or execution capability. The resolver does not query GitHub and cannot independently prove
+remote ref, commit, tree, or blob state; a future authorized read adapter must acquire those exact
+facts and construct the bundle. That adapter's API calls, rate-limit/egress impact, credential
+custody, and freshness policy are outside this offline slice.
+
 Phase-L kubeconfig hydration supplies LIVE pod/workload/node evidence and discrete Kubernetes
 Events for TIMELINE when present. DESIRED and TELEMETRY remain unavailable unless a future
 connector supplies entity-attached facts. Consequently, an OOM or repeated failure is detected
