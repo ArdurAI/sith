@@ -628,6 +628,30 @@ composition must separately derive workspace, actor, role, and intent ID from au
 state, invoke the planner, and call the PEP. Therefore this stage is provenance-complete only;
 F14.6 and the local-versus-hub exit criterion remain open.
 
+The owner-approved follow-on decomposition starts with the observed side only:
+`git-source-snapshot/v1`. A `GitSourceSnapshot` binds one validated workspace and affected resource
+to exactly one `github-git-source-snapshot/2026-03-10` source identity, one repository, one configured
+non-symbolic base ref, its exact resolved commit object ID, one repository-relative path, the exact
+current UTF-8 bytes, and their exact blob object ID. Construction recomputes the Git blob identity
+over `blob <byte-count>\0<content>` and rejects a mismatched claim. Forty-hex SHA-1 identifiers match
+GitHub's current Git database API; 64-hex SHA-256 identifiers are accepted under Git's hash-transition
+format. SHA-1 here is an interoperability identity, not a security digest.
+
+Snapshot input is bounded to 64 KiB of non-NUL UTF-8 content, a five-minute validity interval, and
+2–32 unique stable evidence references. The canonical evidence set must attach both the affected
+resource and the exact repository blob. Mutable resource references and evidence slices are copied,
+evidence is deterministically ordered, timestamps are normalized to UTC, and all validated snapshot
+fields remain private. Its only state-dependent operation is a pure trusted-time classification:
+`now < ObservedAt` is future, `now >= ValidUntil` is stale, and the half-open interval between them is
+fresh. A zero clock or internally invalid snapshot fails closed.
+
+`GitSourceSnapshot` deliberately has no desired bytes, PR title/body, commit message, handler
+contract, actor, role, intent ID, policy or approval decision, credential, endpoint, signature,
+persistence, dispatch, mutation, or execution state. `DesiredChange` is a later separately reviewed
+transformer/renderer contract that must bind its input snapshot version, evidence, and output. The
+snapshot is not wired into the existing resolver, Brain, connector runtime, PEP, or Hub. R2 and R4
+therefore remain operator-facing advisory rules; this split adds no production read or write path.
+
 ### 3.7 Where the Brain lives (open decision)
 
 Two placements, both viable:
