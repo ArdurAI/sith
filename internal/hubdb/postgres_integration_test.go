@@ -740,15 +740,26 @@ func assertApprovalGrantIntegration(
 	if err := database.ConsumeApprovalGrant(ctx, proposerA, baseBinding, "XXXXXXXXXXXXXXXXXXXXXX"); !errors.Is(err, ErrApprovalGrantUnavailable) {
 		t.Fatalf("unknown approval consume error = %v", err)
 	}
-	seedGrant := func(identifier ApprovalGrantID, binding pep.ApprovalBinding, evidenceVersion int16, approvedAt time.Time) {
+	seedGrant := func(
+		identifier ApprovalGrantID,
+		binding pep.ApprovalBinding,
+		evidenceVersion int16,
+		approvedOffsetMinutes int32,
+	) {
 		t.Helper()
 		if _, err := admin.Exec(ctx, `
+			WITH fixture_time AS (
+				SELECT statement_timestamp() + make_interval(mins => $8::integer) AS approved_at
+			)
 			INSERT INTO sith.approval_grants(
 				workspace_id, id, intent_id, proposer, approver, resolved_digest,
 				evidence_version, approved_at, expires_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			)
+			SELECT $1, $2, $3, $4, $5, $6, $7,
+			       approved_at, approved_at + interval '10 minutes'
+			FROM fixture_time
 		`, binding.WorkspaceID(), identifier, binding.IntentID(), binding.Proposer(), approverA.Subject(),
-			binding.ResolvedDigest(), evidenceVersion, approvedAt, approvedAt.Add(10*time.Minute)); err != nil {
+			binding.ResolvedDigest(), evidenceVersion, approvedOffsetMinutes); err != nil {
 			t.Fatalf("seed approval grant %s: %v", identifier, err)
 		}
 	}
@@ -764,9 +775,27 @@ func assertApprovalGrantIntegration(
 	preApprovalID := ApprovalGrantID("IIIIIIIIIIIIIIIIIIIIII")
 	expiredID := ApprovalGrantID("JJJJJJJJJJJJJJJJJJJJJJ")
 	legacyID := ApprovalGrantID("KKKKKKKKKKKKKKKKKKKKKK")
-	seedGrant(preApprovalID, preApprovalBinding, approvalGrantEvidenceVersion, time.Now().UTC().Add(time.Minute))
-	seedGrant(expiredID, expiredBinding, approvalGrantEvidenceVersion, time.Now().UTC().Add(-10*time.Minute))
-	seedGrant(legacyID, legacyBinding, 1, time.Now().UTC())
+	seedGrant(preApprovalID, preApprovalBinding, approvalGrantEvidenceVersion, 5)
+	seedGrant(expiredID, expiredBinding, approvalGrantEvidenceVersion, -15)
+	seedGrant(legacyID, legacyBinding, 1, 0)
+
+	var preApprovalIsFuture, expiredIsPast, exactTemporalLifetimes bool
+	if err := admin.QueryRow(ctx, `
+		SELECT pre_approval.approved_at > statement_timestamp(),
+		       expired_grant.expires_at < statement_timestamp(),
+		       pre_approval.expires_at = pre_approval.approved_at + interval '10 minutes'
+		           AND expired_grant.expires_at = expired_grant.approved_at + interval '10 minutes'
+		FROM sith.approval_grants AS pre_approval
+		CROSS JOIN sith.approval_grants AS expired_grant
+		WHERE pre_approval.workspace_id = 'workspace-a' AND pre_approval.id = $1
+		  AND expired_grant.workspace_id = 'workspace-a' AND expired_grant.id = $2
+	`, preApprovalID, expiredID).Scan(&preApprovalIsFuture, &expiredIsPast, &exactTemporalLifetimes); err != nil {
+		t.Fatalf("inspect temporal approval fixtures: %v", err)
+	}
+	if !preApprovalIsFuture || !expiredIsPast || !exactTemporalLifetimes {
+		t.Fatalf("temporal approval fixtures = future:%t expired:%t exact-lifetimes:%t",
+			preApprovalIsFuture, expiredIsPast, exactTemporalLifetimes)
+	}
 
 	var refusalHeadBefore int64
 	if err := admin.QueryRow(ctx, `
