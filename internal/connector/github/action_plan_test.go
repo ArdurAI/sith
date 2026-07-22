@@ -67,6 +67,10 @@ func TestNewOpenPRPlannerRejectsUnsafeRepositoryPolicies(t *testing.T) {
 		{"base reflog", func(config *OpenPRPlannerConfig) { config.BaseRef = "main@{1}" }},
 		{"base lock", func(config *OpenPRPlannerConfig) { config.BaseRef = "main.lock" }},
 		{"base hidden", func(config *OpenPRPlannerConfig) { config.BaseRef = ".hidden" }},
+		{"base option", func(config *OpenPRPlannerConfig) { config.BaseRef = "-delete" }},
+		{"base symbolic HEAD", func(config *OpenPRPlannerConfig) { config.BaseRef = "HEAD" }},
+		{"base full ref", func(config *OpenPRPlannerConfig) { config.BaseRef = "refs/heads/dev" }},
+		{"base commit shaped", func(config *OpenPRPlannerConfig) { config.BaseRef = strings.Repeat("a", 40) }},
 		{"base control", func(config *OpenPRPlannerConfig) { config.BaseRef = "main\nother" }},
 	}
 	for _, test := range tests {
@@ -79,6 +83,42 @@ func TestNewOpenPRPlannerRejectsUnsafeRepositoryPolicies(t *testing.T) {
 				t.Fatalf("NewOpenPRPlanner() = %#v, %v, want rejection", planner, err)
 			}
 		})
+	}
+}
+
+func TestOpenPRPlannerCanonicalizesArgumentsWithoutPlanning(t *testing.T) {
+	t.Parallel()
+	planner := newTestOpenPRPlanner(t)
+	request := validOpenPRIntent(t)
+
+	target, canonical, err := planner.CanonicalizeOpenPRArgs(request.Args)
+	if err != nil {
+		t.Fatalf("CanonicalizeOpenPRArgs() error = %v", err)
+	}
+	wantTarget := fleet.ResourceRef{SourceKind: Kind, Scope: "github.com", Kind: openPRTargetKind, Namespace: "ArdurAI", Name: "sith"}
+	if !target.Equal(wantTarget) || len(target.Attributes) != 0 {
+		t.Fatalf("target = %#v, want %#v", target, wantTarget)
+	}
+	var got openPRArgs
+	if err := json.Unmarshal(canonical, &got); err != nil {
+		t.Fatalf("decode canonical args: %v", err)
+	}
+	if len(got.Changes) != 3 || got.Changes[0].Path != "config/new.yaml" ||
+		got.Changes[1].Path != "deploy/api.yaml" || got.Changes[2].Path != "deploy/old.yaml" {
+		t.Fatalf("canonical changes = %#v, want stable path ordering", got.Changes)
+	}
+
+	canonical[0] = '!'
+	_, second, err := planner.CanonicalizeOpenPRArgs(request.Args)
+	if err != nil || len(second) == 0 || second[0] != '{' {
+		t.Fatalf("second canonicalization = %q, %v, want isolated result", second, err)
+	}
+	if _, _, err := planner.CanonicalizeOpenPRArgs([]byte(`{"base_ref":"dev","changes":[]}`)); err == nil {
+		t.Fatal("CanonicalizeOpenPRArgs() accepted incomplete arguments")
+	}
+	var nilPlanner *OpenPRPlanner
+	if _, _, err := nilPlanner.CanonicalizeOpenPRArgs(request.Args); err == nil {
+		t.Fatal("nil CanonicalizeOpenPRArgs() accepted arguments")
 	}
 }
 

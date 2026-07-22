@@ -37,6 +37,7 @@ var allowedProductionImports = map[string]bool{
 
 var allowedProductionDeclarations = map[string]bool{
 	"APIVersion":                         true,
+	"CanonicalizeOpenPRArgs":             true,
 	"Capabilities":                       true,
 	"Descriptor":                         true,
 	"Kind":                               true,
@@ -52,6 +53,7 @@ var allowedProductionDeclarations = map[string]bool{
 	"WorkflowRunProjection":              true,
 	"WorkflowRunProtocolVersion":         true,
 	"changeObservation":                  true,
+	"canonicalizeOpenPRArgs":             true,
 	"commitLookupParams":                 true,
 	"consumeUniqueJSON":                  true,
 	"matchingDelimiter":                  true,

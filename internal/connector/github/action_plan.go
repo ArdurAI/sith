@@ -185,23 +185,9 @@ func (planner *OpenPRPlanner) Plan(_ context.Context, request connector.Intent) 
 	if err := validateOpenPRIntent(planner.config, request); err != nil {
 		return connector.ActionPlan{}, err
 	}
-	if err := planner.schema.Validate(request.Args); err != nil {
-		return connector.ActionPlan{}, fmt.Errorf("plan GitHub pull request: args are invalid")
-	}
-
-	var args openPRArgs
-	if err := json.Unmarshal(request.Args, &args); err != nil {
-		return connector.ActionPlan{}, fmt.Errorf("plan GitHub pull request: decode validated args")
-	}
-	if err := validateOpenPRArgs(planner.config, args); err != nil {
-		return connector.ActionPlan{}, err
-	}
-	args.Changes = append([]fileChange(nil), args.Changes...)
-	sort.Slice(args.Changes, func(left, right int) bool { return args.Changes[left].Path < args.Changes[right].Path })
-
-	canonical, err := json.Marshal(args)
+	args, canonical, err := planner.canonicalizeOpenPRArgs(request.Args)
 	if err != nil {
-		return connector.ActionPlan{}, fmt.Errorf("plan GitHub pull request: canonicalize args")
+		return connector.ActionPlan{}, err
 	}
 	identityInput := strings.Join([]string{request.Workspace, planner.config.Host, planner.config.Owner, planner.config.Repository}, "\x00") + "\x00"
 	identity := sha256.Sum256(append([]byte(identityInput), canonical...))
@@ -235,6 +221,43 @@ func (planner *OpenPRPlanner) Plan(_ context.Context, request connector.Intent) 
 		Diff:  fleet.Diff{Ref: target, Drifted: true, Hunks: hunks},
 		Steps: steps, Reversible: true,
 	}, nil
+}
+
+// CanonicalizeOpenPRArgs applies the exact handler-owned schema and semantic policy without
+// planning or performing I/O. A provenance resolver may use this seam to prove that its output is
+// acceptable to the live handler, but the returned target and arguments are not authorization,
+// approval, or execution capability.
+func (planner *OpenPRPlanner) CanonicalizeOpenPRArgs(arguments json.RawMessage) (fleet.ResourceRef, json.RawMessage, error) {
+	_, canonical, err := planner.canonicalizeOpenPRArgs(arguments)
+	if err != nil {
+		return fleet.ResourceRef{}, nil, err
+	}
+	return normalizedOpenPRTarget(planner.config), append(json.RawMessage(nil), canonical...), nil
+}
+
+func (planner *OpenPRPlanner) canonicalizeOpenPRArgs(arguments json.RawMessage) (openPRArgs, json.RawMessage, error) {
+	if planner == nil || planner.schema == nil {
+		return openPRArgs{}, nil, fmt.Errorf("plan GitHub pull request: planner is required")
+	}
+	if err := planner.schema.Validate(arguments); err != nil {
+		return openPRArgs{}, nil, fmt.Errorf("plan GitHub pull request: args are invalid")
+	}
+
+	var args openPRArgs
+	if err := json.Unmarshal(arguments, &args); err != nil {
+		return openPRArgs{}, nil, fmt.Errorf("plan GitHub pull request: decode validated args")
+	}
+	if err := validateOpenPRArgs(planner.config, args); err != nil {
+		return openPRArgs{}, nil, err
+	}
+	args.Changes = append([]fileChange(nil), args.Changes...)
+	sort.Slice(args.Changes, func(left, right int) bool { return args.Changes[left].Path < args.Changes[right].Path })
+
+	canonical, err := json.Marshal(args)
+	if err != nil {
+		return openPRArgs{}, nil, fmt.Errorf("plan GitHub pull request: canonicalize args")
+	}
+	return args, json.RawMessage(canonical), nil
 }
 
 func validateOpenPRConfig(config OpenPRPlannerConfig) error {
@@ -316,6 +339,8 @@ func validateOpenPRArgs(config OpenPRPlannerConfig, args openPRArgs) error {
 
 func validBaseRef(value string) bool {
 	if validateBoundedText(value, maxBaseRefBytes, false, false) != nil || strings.HasPrefix(value, ".") ||
+		strings.HasPrefix(value, "-") || strings.HasPrefix(strings.ToLower(value), "refs/") ||
+		strings.EqualFold(value, "HEAD") || validCommitSHA(value) ||
 		strings.HasPrefix(value, "/") || strings.HasSuffix(value, ".") || strings.HasSuffix(value, "/") ||
 		strings.Contains(value, "..") || strings.Contains(value, "//") || strings.Contains(value, "@{") ||
 		strings.HasSuffix(strings.ToLower(value), ".lock") {
