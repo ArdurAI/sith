@@ -724,12 +724,22 @@ constructor recomputes the blob object ID, copies and canonically orders attache
 evidence, and bounds content, evidence count, and validity. A pure trusted-time check classifies the
 snapshot as fresh, future, or stale; it performs no I/O.
 
-`DesiredChange` remains a later separately reviewed contract. The snapshot contains no desired
-bytes, PR metadata, handler binding, actor, intent, policy decision, approval, credential, endpoint,
-persistence, dispatch, mutation, or execution state, and it is not wired into the Brain, resolver,
-connector runtime, PEP, or Hub. R2 and R4 remain advisory-only. This offline contract adds no API
-request, egress, storage, cloud resource, telemetry cardinality, or recurring cost; a future live
-adapter must separately own least-privilege contents-read credentials, rate limits, and freshness.
+The separately gated output half now exists as immutable `desired-change/v1`. A `DesiredChange`
+defensively embeds one exact validated snapshot, one lowercase canonical `<transformer>/<version>`
+identity, exact bounded non-NUL UTF-8 output bytes, and 2–32 unique stable evidence references that
+must attach the snapshot's affected resource and observed blob. It preserves bytes without Unicode,
+line-ending, whitespace, or YAML normalization, rejects exact no-op output, and canonically orders
+copied evidence.
+
+There is deliberately no exported desired-change constructor. Until a concrete deterministic
+transformer or declarative renderer is separately reviewed, request and runtime code cannot label
+arbitrary bytes as trusted output. The snapshot still contains no desired bytes, and neither
+contract contains PR metadata, handler binding, actor, intent, policy decision, approval,
+credential, endpoint, persistence, dispatch, mutation, or execution state. Neither is wired into
+the Brain, resolver, connector runtime, PEP, or Hub, so R2 and R4 remain advisory-only. These
+offline contracts add no API request, egress, storage, cloud resource, telemetry cardinality, or
+recurring cost; a future live adapter and transformer separately own credentials, rate limits,
+freshness, format semantics, and evidence-to-output policy.
 
 Phase-L kubeconfig hydration supplies LIVE pod/workload/node evidence and discrete Kubernetes
 Events for TIMELINE when present. DESIRED and TELEMETRY remain unavailable unless a future
