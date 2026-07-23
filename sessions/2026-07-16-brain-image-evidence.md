@@ -23,8 +23,8 @@ Require fresh, cited, deterministic image repo-digest evidence before Sith emits
 - Stale digest rejection, cited correlation, duplicate selection, full input-order reversal, and canonical source-reference tie-break coverage.
 - `make ci`
 - `make e2e-isolation`
-- `make e2e-kind KIND=/Volumes/EXTENDED/MacData/tools/bin/kind`
-- `GOPATH=/Volumes/EXTENDED/MacData/go make release-check GORELEASER=/Volumes/EXTENDED/MacData/tools/bin/goreleaser`
+- `make e2e-kind`
+- `make release-check`
 
 ## Review
 

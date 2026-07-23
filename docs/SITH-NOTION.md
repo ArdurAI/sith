@@ -2553,7 +2553,10 @@ where trustworthy denominators exist, abstention rates, and PDP latency.
 
 **How it works.**
 1. The hub exposes metrics for scraping (control-plane health, DB, queue depths).
-2. Federation metrics track per-spoke read freshness and dispatch success.
+2. Federation metrics record unlabeled request-time fleet-read result outcomes
+   (`complete|degraded|empty|error`), freshness outcomes
+   (`fresh|stale|unknown|empty|error`), and bounded spoke-snapshot attempt outcomes. They expose
+   no workspace, spoke, endpoint, actor, or trace labels.
 3. Governance metrics track intents proposed/allowed/denied, abstention rate, and approval
    latency.
 4. These describe Sith itself; Sith does not retain other systems' metric series.
@@ -2561,7 +2564,7 @@ where trustworthy denominators exist, abstention rates, and PDP latency.
 ```mermaid
 flowchart TD
     A["Sith hub"] --> B["Control-plane metrics: liveness, DB, queues"]
-    A --> C["Federation metrics: per-spoke freshness, dispatch success"]
+    A --> C["Federation metrics: aggregate request-time result/freshness + spoke-attempt outcomes"]
     A --> D["Governance metrics: intents allowed/denied, abstention rate, approval latency"]
     B --> E["Exposed for scraping (about Sith itself)"]
     C --> E
