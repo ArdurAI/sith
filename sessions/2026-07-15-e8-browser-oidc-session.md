@@ -1,7 +1,7 @@
 # Session — 2026-07-15 — e8-browser-oidc-session
 
 **Builder:** gnanirahulnutakki · **Branch:** gnanirahulnutakki/feat/e8-browser-oidc-session
-**Slice(s):** E8 F8.1a · #175 · **Status:** in-progress
+**Slice(s):** E8 F8.1a · #175 · **Status:** done
 
 ---
 

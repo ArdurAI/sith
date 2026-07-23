@@ -78,7 +78,7 @@ select:focus-visible {
 .workspace-stamp dd,
 .rail-legend,
 .cluster-sequence {
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: SFMono-Regular, Consolas, monospace;
   font-size: 0.72rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -232,7 +232,7 @@ h2 {
 
 .inventory-form label span {
   color: #c9d5dc;
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: SFMono-Regular, Consolas, monospace;
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -343,7 +343,7 @@ h2 {
 .inventory-metrics dd,
 .inventory-freshness {
   margin: 0;
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: SFMono-Regular, Consolas, monospace;
   font-size: 0.72rem;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -375,7 +375,7 @@ h2 {
 .correlation-form label span,
 .cve-form label span,
 .match-freshness {
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: SFMono-Regular, Consolas, monospace;
   font-size: 0.72rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -486,7 +486,7 @@ h2 {
 .digest-address {
   margin: 0.2rem 0 0;
   color: #46535f;
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: SFMono-Regular, Consolas, monospace;
   font-size: 0.72rem;
   overflow-wrap: anywhere;
 }
@@ -494,9 +494,9 @@ h2 {
 .severity-badge {
   min-width: 6.5rem;
   padding: 0.45rem 0.65rem;
-  border: 1px solid currentColor;
+  border: 1px solid currentcolor;
   color: #46535f;
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: SFMono-Regular, Consolas, monospace;
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -589,6 +589,8 @@ h2 {
   border: 0 !important;
   margin: -1px !important;
   overflow: hidden !important;
+  clip-path: inset(50%) !important;
+  /* stylelint-disable-next-line property-no-deprecated -- compatible fallback for screen-reader-only content */
   clip: rect(0 0 0 0) !important;
   white-space: nowrap !important;
 }
@@ -635,9 +637,9 @@ h2 {
 .health-badge {
   min-width: 7.5rem;
   padding: 0.45rem 0.65rem;
-  border: 1px solid currentColor;
+  border: 1px solid currentcolor;
   color: #8f321f;
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: SFMono-Regular, Consolas, monospace;
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -717,7 +719,7 @@ h2 {
   padding: 1rem 1rem 1rem 2.25rem;
   border-left: 0.35rem solid var(--amber);
   background: rgba(247, 250, 251, 0.78);
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: SFMono-Regular, Consolas, monospace;
   font-size: 0.78rem;
   line-height: 1.45;
 }
@@ -812,10 +814,10 @@ h2 {
 .state-badge {
   min-width: 7.5rem;
   padding: 0.45rem 0.65rem;
-  border: 1px solid currentColor;
+  border: 1px solid currentcolor;
   color: var(--oxide);
   background: transparent;
-  font-family: "SFMono-Regular", Consolas, monospace;
+  font-family: SFMono-Regular, Consolas, monospace;
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.06em;

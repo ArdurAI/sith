@@ -20,10 +20,10 @@ Keep discovery metadata for identically named cluster scopes isolated by workspa
 ## Tests
 
 - `go test -race -count=1 ./internal/fleetcache`
-- `PATH=/Users/nutakki/.local/bin:/Volumes/EXTENDED/MacData/tools/bin:/opt/homebrew/bin:/usr/bin:/bin GOPATH=/Volumes/EXTENDED/MacData/go make ci`
-- `PATH=/Users/nutakki/.local/bin:/Volumes/EXTENDED/MacData/tools/bin:/opt/homebrew/bin:/usr/bin:/bin GOPATH=/Volumes/EXTENDED/MacData/go make e2e-isolation`
-- `PATH=/Users/nutakki/.local/bin:/Volumes/EXTENDED/MacData/tools/bin:/opt/homebrew/bin:/usr/bin:/bin GOPATH=/Volumes/EXTENDED/MacData/go make e2e-kind KIND=/Volumes/EXTENDED/MacData/tools/bin/kind`
-- `PATH=/Users/nutakki/.local/bin:/Volumes/EXTENDED/MacData/tools/bin:/opt/homebrew/bin:/usr/bin:/bin GOPATH=/Volumes/EXTENDED/MacData/go make release-check GORELEASER=/Volumes/EXTENDED/MacData/tools/bin/goreleaser`
+- `make ci`
+- `make e2e-isolation`
+- `make e2e-kind`
+- `make release-check`
 
 ## Review
 

@@ -15,7 +15,8 @@ boundaries.
   audit-hash fuzz-oracle correctness, and lifecycle ownership for coalesced spoke refreshes.
 - Release-policy drift, dependency/toolchain updates, desktop-build version drift, approval expiry,
   and remaining open-issue slices stay separate so each can be reviewed and reverted independently.
-- No credential, authorization, schema, cloud resource, external package, or API surface changes.
+- No credential, authorization, schema, cloud resource, external package, or externally visible API
+  surface changes. The collector lifecycle context change below is limited to `internal/hubfleet`.
 
 ## [A] Action
 

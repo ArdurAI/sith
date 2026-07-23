@@ -337,6 +337,7 @@ func projectChanges(status map[string]any) ([]projectedChange, error) {
 		history = history[len(history)-maxApplicationHistory:]
 		truncated = true
 	}
+	historyTruncationPending := truncated
 	for index, raw := range history {
 		entry, ok := raw.(map[string]any)
 		if !ok {
@@ -360,10 +361,11 @@ func projectChanges(status map[string]any) ([]projectedChange, error) {
 		changes = append(changes, projectedChange{
 			observation: changeObservation{
 				ChangeKind: "argocd-sync", Revision: revision, EventAt: at, HistoryID: id,
-				HistoryTruncated: truncated && index == 0,
+				HistoryTruncated: historyTruncationPending,
 			},
 			nativeID: "history/" + stableChangeID(id, revision, at),
 		})
+		historyTruncationPending = false
 	}
 
 	operation, operationPresent, err := optionalMap(status, "operationState")
