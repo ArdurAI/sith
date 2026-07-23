@@ -127,9 +127,11 @@ upstream ID token, and minted Sith JWT remain server-side. A bounded, single-use
 transaction binds the exact workspace, state, nonce, redirect URI, issuer, client ID, and verifier.
 The callback consumes that transaction before redeeming the code, resolves the current membership
 through forced RLS, and returns only a short-lived `__Host-sith-session` cookie (`Secure`,
-`HttpOnly`, `Path=/`, no `Domain`, `SameSite=Strict`). Its short-lived `__Host-sith-oidc-tx`
-transaction cookie is `SameSite=Lax` only so a top-level IdP callback can return; it contains an
-opaque random binding, not a credential. Restart, expiry, replay, malformed/duplicate provider
+`HttpOnly`, `Path=/`, no `Domain`, `SameSite=Lax`). Lax allows that new session to reach the safe
+top-level console `GET` whose navigation began at the external IdP, while excluding unsafe
+cross-site methods. Its short-lived `__Host-sith-oidc-tx` transaction cookie is also `SameSite=Lax`
+so the top-level IdP callback can return; it contains an opaque random binding, not a credential.
+Restart, expiry, replay, malformed/duplicate provider
 JSON, failed PKCE, wrong state/nonce/issuer/audience, or an unavailable provider fails closed. No
 login artifact, token, or proof is persisted or logged. On success, the callback redirects only to
 the transaction-bound `GET /v1/workspaces/{workspace}/console` path; it accepts no return URL.

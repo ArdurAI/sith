@@ -175,7 +175,8 @@ func (handler *BrowserOIDCHandler) Login(response http.ResponseWriter, request *
 	response.WriteHeader(http.StatusFound)
 }
 
-// Callback consumes one transaction and sets the final strict host-only session cookie on success.
+// Callback consumes one transaction and sets the final host-only session cookie on success.
+// Lax is required for the safe top-level redirect whose navigation began at the external IdP.
 func (handler *BrowserOIDCHandler) Callback(response http.ResponseWriter, request *http.Request) {
 	if !handler.acceptRequest(response, request, false) {
 		return
@@ -223,7 +224,7 @@ func (handler *BrowserOIDCHandler) Callback(response http.ResponseWriter, reques
 	remaining := int(session.ExpiresAt.Sub(handler.now()).Seconds())
 	http.SetCookie(response, &http.Cookie{
 		Name: browserOIDCSessionCookie, Value: session.AccessToken, Path: "/", Secure: true, HttpOnly: true,
-		SameSite: http.SameSiteStrictMode, Expires: session.ExpiresAt.UTC(), MaxAge: max(1, remaining),
+		SameSite: http.SameSiteLaxMode, Expires: session.ExpiresAt.UTC(), MaxAge: max(1, remaining),
 	})
 	response.Header().Set("Location", browserConsolePath(transaction.workspaceID))
 	response.WriteHeader(http.StatusSeeOther)

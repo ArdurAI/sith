@@ -103,7 +103,7 @@ func TestBrowserOIDCHandlerKeepsTokensOutOfBrowserPayloads(t *testing.T) {
 		t.Fatalf("callback status/location/body = %d/%q/%q", callbackResponse.Code, callbackResponse.Header().Get("Location"), callbackResponse.Body.String())
 	}
 	sessionCookie := requiredBrowserCookie(t, callbackResponse.Result().Cookies(), browserOIDCSessionCookie)
-	if !sessionCookie.Secure || !sessionCookie.HttpOnly || sessionCookie.Path != "/" || sessionCookie.Domain != "" || sessionCookie.SameSite != http.SameSiteStrictMode || sessionCookie.Value != stub.session.AccessToken {
+	if !sessionCookie.Secure || !sessionCookie.HttpOnly || sessionCookie.Path != "/" || sessionCookie.Domain != "" || sessionCookie.SameSite != http.SameSiteLaxMode || sessionCookie.Value != stub.session.AccessToken {
 		t.Fatalf("session cookie = %#v", sessionCookie)
 	}
 	if stub.exchangeCalls != 1 || stub.exchange.Code != "provider-code" || stub.exchange.CodeVerifier != verifier ||
@@ -122,6 +122,32 @@ func TestBrowserOIDCHandlerKeepsTokensOutOfBrowserPayloads(t *testing.T) {
 	handler.Callback(replayResponse, replay)
 	if replayResponse.Code != http.StatusUnauthorized || stub.exchangeCalls != 1 || stub.sessionCalls != 1 {
 		t.Fatalf("replayed callback status/calls = %d/%d/%d", replayResponse.Code, stub.exchangeCalls, stub.sessionCalls)
+	}
+}
+
+func TestBrowserOIDCHandlerRejectsUnsafeMethods(t *testing.T) {
+	now := time.Date(2026, 7, 22, 18, 0, 0, 0, time.UTC)
+	stub := &browserOIDCServiceStub{}
+	handler := newBrowserOIDCTestHandler(t, stub, &now)
+
+	for _, target := range []string{
+		"https://hub.sith.test/v1/workspaces/workspace-a/console/login",
+		"https://hub.sith.test/v1/console/oidc/callback?code=provider-code&state=provider-state",
+	} {
+		request := httptest.NewRequest(http.MethodPost, target, nil)
+		request.RemoteAddr = "192.0.2.21:8443"
+		response := httptest.NewRecorder()
+		if request.URL.Path == handler.callbackURL.Path {
+			handler.Callback(response, request)
+		} else {
+			handler.Login(response, request)
+		}
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("POST %s status = %d, want %d", request.URL.Path, response.Code, http.StatusNotFound)
+		}
+	}
+	if stub.authorizeCalls != 0 || stub.exchangeCalls != 0 || stub.sessionCalls != 0 || len(handler.transactions) != 0 {
+		t.Fatalf("unsafe method calls/transactions = %d/%d/%d/%d", stub.authorizeCalls, stub.exchangeCalls, stub.sessionCalls, len(handler.transactions))
 	}
 }
 
