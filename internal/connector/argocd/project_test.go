@@ -153,6 +153,43 @@ func TestProjectApplicationBoundsHistoryAndMarksTruncation(t *testing.T) {
 	}
 }
 
+func TestProjectApplicationMarksTruncationOnFirstEmittedHistory(t *testing.T) {
+	t.Parallel()
+	application := minimalApplication()
+	history := make([]any, maxApplicationHistory+1)
+	for index := range history {
+		entry := map[string]any{
+			"id": int64(index), "revision": fmt.Sprintf("revision-%02d", index),
+			"deployedAt": time.Date(2026, 7, 1, 0, index, 0, 0, time.UTC).Format(time.RFC3339),
+		}
+		if index == 1 {
+			delete(entry, "deployedAt")
+		}
+		history[index] = entry
+	}
+	application.Object["status"] = map[string]any{"history": history}
+
+	facts, err := ProjectApplication(Projection{
+		Workspace: "workspace-a", Scope: "cluster-a", ObservedAt: time.Now(), Application: application,
+	})
+	if err != nil {
+		t.Fatalf("ProjectApplication() error = %v", err)
+	}
+	if len(facts) < 3 {
+		t.Fatalf("fact count = %d, want desired plus at least two emitted history facts", len(facts))
+	}
+	var first, second changeObservation
+	if err := json.Unmarshal(facts[1].Fact.Observed, &first); err != nil {
+		t.Fatalf("decode first emitted history: %v", err)
+	}
+	if err := json.Unmarshal(facts[2].Fact.Observed, &second); err != nil {
+		t.Fatalf("decode second emitted history: %v", err)
+	}
+	if first.HistoryID != "2" || !first.HistoryTruncated || second.HistoryTruncated {
+		t.Fatalf("first/second emitted history = %#v / %#v", first, second)
+	}
+}
+
 func TestProjectApplicationRejectsMalformedOrAmbiguousEvidence(t *testing.T) {
 	t.Parallel()
 	valid := Projection{Workspace: "workspace-a", Scope: "cluster-a", ObservedAt: time.Now(), Application: completeApplication()}
