@@ -37,24 +37,40 @@ func newUICommand(reader connector.Reader, local localops.Client) *cobra.Command
 		Short: "Start the loopback-only local fleet IDE",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			if reader == nil || local == nil {
-				return fmt.Errorf("local fleet UI requires a Kubernetes reader and local operations client")
+			selectedReader, selectedLocal, err := selectUIBackend(reader, local, options.kubeconfigDir)
+			if err != nil {
+				return err
 			}
-			if options.kubeconfigDir != "" {
-				adapter, err := kubeconfig.New(kubeconfig.WithDirectory(options.kubeconfigDir))
-				if err != nil {
-					return fmt.Errorf("import kubeconfig directory: %w", err)
-				}
-				reader, local = adapter, adapter
-			}
-			return runWebUI(command.Context(), command, reader, local, options)
+			return runWebUI(command.Context(), command, selectedReader, selectedLocal, options)
 		},
 	}
+	bindUIFlags(command, options)
+	return command
+}
+
+func bindUIFlags(command *cobra.Command, options *uiOptions) {
 	command.Flags().StringVar(&options.address, "address", options.address, "loopback listen address")
 	command.Flags().IntVar(&options.port, "port", 0, "loopback listen port; 0 selects an available port")
 	command.Flags().BoolVar(&options.noOpen, "no-open", false, "do not open the system browser")
 	command.Flags().StringVar(&options.kubeconfigDir, "kubeconfig-dir", "", "import kubeconfig files from this directory for this local UI session")
-	return command
+}
+
+func selectUIBackend(
+	reader connector.Reader,
+	local localops.Client,
+	kubeconfigDirectory string,
+) (connector.Reader, localops.Client, error) {
+	if kubeconfigDirectory != "" {
+		adapter, err := kubeconfig.New(kubeconfig.WithDirectory(kubeconfigDirectory))
+		if err != nil {
+			return nil, nil, fmt.Errorf("import kubeconfig directory: %w", err)
+		}
+		return adapter, adapter, nil
+	}
+	if reader == nil || local == nil {
+		return nil, nil, fmt.Errorf("local fleet UI requires a Kubernetes reader and local operations client")
+	}
+	return reader, local, nil
 }
 
 func runWebUI(

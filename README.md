@@ -23,11 +23,18 @@ brew tap ArdurAI/tap
 brew trust --formula ArdurAI/tap/sith
 brew install sith
 sith version
+sith launch
 ```
 
 Homebrew 6 requires explicit trust for third-party taps. The formula-scoped command keeps the trust
 boundary narrower than trusting every current and future formula in `ArdurAI/tap`. Older Homebrew
 versions that do not implement tap trust can omit that line.
+
+`sith launch` is the one-command graphical entry point: it opens the native desktop on macOS and
+the loopback-only browser UI on other supported platforms. Use `--mode desktop` or `--mode ui` to
+override that selection. A demo machine without a default kubeconfig can import an existing bounded
+directory for the session with `sith launch --kubeconfig-dir /path/to/kubeconfigs`; Sith neither
+persists the selected path nor deploys anything to those clusters.
 
 Release archives are also available for `darwin/amd64`, `darwin/arm64`, `linux/amd64`, and
 `linux/arm64`. Every archive has a checksum, an SPDX SBOM, a keyless Sigstore bundle, SLSA build
@@ -40,6 +47,8 @@ Sith requires a supported Go 1.26 toolchain.
 
 ```bash
 make build
+./bin/sith launch                # native desktop on macOS; loopback UI elsewhere
+./bin/sith launch --mode ui --kubeconfig-dir /path/to/kubeconfigs
 ./bin/sith                       # interactive terminal: cache-first fleet view
 ./bin/sith tui                   # explicit equivalent
 ./bin/sith version
