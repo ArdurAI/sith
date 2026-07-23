@@ -153,6 +153,7 @@ func newRootCommand(runtime backend, stdout, stderr io.Writer) *cobra.Command {
 		newClustersCommand(options, runtime.source),
 		newUICommand(runtime.reader, runtime.local),
 		newDesktopCommand(runtime.reader, runtime.local),
+		newLaunchCommand(runtime.reader, runtime.local),
 		newHubCommand(),
 	}
 	if runtime.reader != nil {
