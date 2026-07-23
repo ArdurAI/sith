@@ -15,8 +15,10 @@ Keep directory import bound to the originally selected directory and prevent val
 - Open one descriptor-backed `os.Root` after validating the selected directory identity.
 - Traverse and open entries only through that root.
 - Verify the opened root and regular files match the identities observed before parsing.
-- Reject deferred local credential files and path-based exec commands after the root closes.
-- Reject deferred CA, client certificate/key, token-file, and path-based exec reads; embedded data and PATH-based exec commands remain supported.
+- Reject deferred local credential files and exec commands that name an absolute or relative
+  executable path after the root closes.
+- Reject deferred CA, client certificate/key, token-file, and executable-path reads; embedded data
+  and bare exec commands resolved through `PATH` remain supported.
 - Preserve entry-count, depth, and byte bounds plus relative, content-free diagnostics.
 - Keep generic table pagination, watch bootstrap bounds, and hub concurrency findings out of this slice.
 

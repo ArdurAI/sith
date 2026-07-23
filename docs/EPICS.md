@@ -2741,9 +2741,11 @@ budget, a page, or a dispatch-success signal.
 **Implementation note (F10.4g).** A ninth portable warning consumes only the bounded
 `sith_auth_attempts_total{outcome="accepted|refused"}` counter. It fires when at least twenty
 aggregate attempts are `refused` and none are `accepted` over fifteen minutes, and the condition
-persists for ten minutes. Any accepted attempt suppresses it, and at least one accepted-outcome
-sample must have reached the evaluator during the most recent ten minutes. Missing or stale
-accepted-series data stays quiet rather than turning incomplete telemetry into a security claim.
+persists for ten minutes. Any accepted attempt suppresses it. The freshness guard also requires at
+least one recent scraped sample from the preinitialized accepted-outcome series during the most
+recent ten minutes; that proves series visibility, not an accepted authentication event. Missing or
+stale accepted-series data stays quiet rather than turning incomplete telemetry into a security
+claim.
 The expression aggregates away every source label and emits one fixed warning. It is refusal-only
 traffic, not a generic refusal ratio, brute-force or credential-stuffing detector, actor
 attribution, SLO, error budget, page, or complete authentication-monitoring claim, and it adds no

@@ -20,8 +20,9 @@ inventing a workload-independent ratio, attributing an actor, or claiming attack
   severity labels plus static annotations.
 - Stay quiet when the accepted series is missing. Partial telemetry cannot prove refusal-only
   traffic; the separate missing-telemetry rule remains the metamonitoring signal.
-- Require at least one accepted-outcome sample during the most recent 10 minutes. This prevents old
-  samples in the 15-minute range from satisfying the denominator after accepted telemetry stops.
+- Require at least one recent scraped sample from the preinitialized accepted-outcome series during
+  the most recent 10 minutes. This proves series visibility, not an accepted event, and prevents old
+  samples in the 15-minute range from satisfying the freshness guard after accepted telemetry stops.
 - Treat any accepted verifier decision as suppression, even if later workspace authorization
   denies the request.
 

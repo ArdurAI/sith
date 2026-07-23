@@ -29,7 +29,7 @@ Bound and parallelize one workspace refresh so unavailable spokes do not delay h
 
 - Focused `go test -race ./internal/hubfleet` passed.
 - Synchronization-heavy cancellation and admission tests passed 100 repeated race-detector runs.
-- The four-spoke timeout regression completes in one one-second parallel wave. Its one-worker negative control failed as intended at 4.004 seconds.
+- The four-spoke timeout regression completes in a single one-second parallel wave. Its one-worker negative control failed as intended at 4.004 seconds.
 - Red-team review found and repaired a worker-goroutine panic escape and panic-path worker leak; transport and store panic regressions now prove closed errors, peer cancellation/join, and clean later refreshes.
 - Independent CodeRabbit review completed twice; the exact final tree returned zero findings across all six changed files.
 - `make ci` passed formatting, vet, lint with zero findings, vulnerability scanning with no findings, the full race suite, safety scripts, and build.

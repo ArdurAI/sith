@@ -397,9 +397,11 @@ computations, with no cloud, storage, egress, or recurring-service cost.
 `sith audit verify-pages <page.json> [page.json...]` performs the same strict bounded-file and
 canonical-hash checks one page at a time, then requires one ordered same-workspace,
 same-snapshot genesis-to-head sequence with no missing, replayed, or swapped page. Success is still
-internal consistency, not external authenticity. Paging adds one small audit row, at most 512
-entry reads plus fixed anchors, and one response of egress per page; work is linear in retained
-entries and page count, with no object store, queue, worker, or recurring cloud resource.
+internal consistency, not external authenticity. The online page route adds one small audit row,
+at most 512 entry reads plus fixed anchors, and one bounded response of egress per page. Offline
+`verify-pages` instead performs one bounded local read and bounded local SHA-256 verification over
+at most 512 entries per page, with no hub request or network egress. Both paths are linear in
+retained entries and page count and add no object store, queue, worker, or recurring cloud resource.
 
 Responses use `X-Content-Type-Options: nosniff` and the fixed `sith-policy-audit.json` or
 `sith-policy-audit-page.json` attachment filename. Authentication is bearer-only; neither route
@@ -469,10 +471,11 @@ after a ten-minute hold. `deny` and `require-approval` remain valid decisions in
 not failures. This is a fail-closed PEP symptom, not an external Ardur PDP-latency SLI or SLO.
 At least twenty aggregate `refused` authentication attempts with zero `accepted` attempts over
 fifteen minutes, sustained for ten minutes, produce one aggregate warning. Any accepted attempt in
-the same window suppresses it. At least one accepted-outcome sample must also have reached the rule
-evaluator during the last ten minutes; a missing or stale accepted series stays quiet rather than
-turning partial telemetry into a refusal-only claim. This is not proof of brute force, credential
-stuffing, account compromise, a specific actor, or a negotiated authentication SLO.
+the same window suppresses it. At least one recent scraped sample from the preinitialized
+accepted-outcome series must also have reached the rule evaluator during the last ten minutes; this
+proves series visibility, not an accepted event. A missing or stale accepted series stays quiet
+rather than turning partial telemetry into a refusal-only claim. This is not proof of brute force,
+credential stuffing, account compromise, a specific actor, or a negotiated authentication SLO.
 Chain verification detects retained-row edits,
 deletion, reordering, broken links, and head mismatch. It does not make a WORM or non-repudiation
 claim: detecting wholesale replacement by a privileged database owner requires a later externally

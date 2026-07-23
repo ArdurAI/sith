@@ -226,7 +226,7 @@ tests:
               severity: warning
             exp_annotations:
               summary: Sith hub authentication traffic is persistently refusal-only
-              description: At least twenty aggregate authentication attempts were refused and none were accepted over fifteen minutes; accepted-outcome telemetry was present during the last ten minutes.
+              description: At least twenty aggregate authentication attempts were refused and none were accepted over fifteen minutes; a recent scraped sample from the preinitialized accepted-outcome series was present during the last ten minutes.
               runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubauthenticationrefusalonly
       - eval_time: 26m
         alertname: SithHubAuthenticationRefusalOnly

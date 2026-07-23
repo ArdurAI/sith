@@ -756,9 +756,10 @@ lenses are covered by an installed connector. Otherwise it **abstains** (§2.6, 
 | R6 node pressure | K8s (Node) | — | K8s Events + cloud autoscaler | **Prometheus** (quantify) | **Kubernetes** (detect) **+ Prometheus** (quantify) + cloud (autoscaler) |
 
 **Reading the map:** with only the **Wave-1 core (Kubernetes + Argo + GitHub + Prometheus + a log
-store)**, all six rules reach at least a *detect* verdict, and R1/R2/R4/R5/R6 reach *confident*. R3's
-confidence needs a log connector. This is why W1 is the daily core — it is precisely the coverage the
-six rules need.
+store)**, all six rules reach at least a *detect* verdict, and R1/R2/R3/R4/R5 reach *confident*.
+R6 reaches detection plus Prometheus-backed quantification; it requires cloud-autoscaler facts for
+a *confident* verdict. This is why W1 is the daily core — it provides the common coverage while
+keeping cloud-specific R6 confidence conditional on the cloud adapter.
 
 ### 4.4 Scope-discipline call-outs (anti-drift, from SCOPE §10)
 
@@ -832,8 +833,9 @@ the plan-renderer forks.
 
 - [ ] Every connector in §4.2 declares its **kind** (RA/BR/TA), its **verb subset**, and the
       **lenses** it feeds; the framework rejects an out-of-taxonomy connector (E12/F12.2).
-- [ ] With **only the Wave-1 core** installed, R1/R2/R4/R5/R6 reach a *confident* verdict and R3
-      reaches at least *detect* — matching the coverage map (§4.3).
+- [ ] With **only the Wave-1 core** installed, R1/R2/R3/R4/R5 reach a *confident* verdict and R6
+      reaches detection plus Prometheus-backed quantification; cloud-autoscaler facts are required
+      for R6 confidence — matching the coverage map (§4.3).
 - [ ] **Scope discipline holds:** Fluentd/FluentBit expose LIVE health only (no log ingestion through
       them); Grafana is deep-link only; Helm/Kustomize expose no action verbs in v1.
 - [ ] Each connector's **mode** (local / hub / both) is honored — a local-only run uses no

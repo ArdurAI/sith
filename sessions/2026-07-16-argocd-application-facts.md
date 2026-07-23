@@ -4,7 +4,7 @@
 - Effort: standard
 - Branch: `gnanirahulnutakki/feat/argocd-application-facts`
 - Issue: `#206`
-- Status: locally verified; awaiting signed PR and exact post-merge proof
+- Status: landed on `dev` through #208; exact post-merge proof recorded below
 
 ## Goal
 
@@ -69,6 +69,16 @@ rejecting query/fragment credentials, local paths, and unsupported schemes.
 - The final full-gate rerun after the red-team OCI compatibility correction passes.
 - Notion decision: `3a02637e-db07-8194-8160-e78cb189cc86`.
 - Notion session: `3a02637e-db07-8143-9bf5-f5629753a902`.
+
+## Landed closure
+
+- Issue #206 closed after PR #208 merged into `dev` on 2026-07-17.
+- Exact signed/DCO feature commit: `73ea5cc970f49b2f1a67730e3a5c42489edb594d`.
+- Exact merge commit: `311eb1c6c25f0c7dc76487fe0bedfa3a3dde6054`.
+- Hosted PR CI, release, CodeQL, and CodeRabbit checks all passed.
+- Exact post-merge `dev` CI: <https://github.com/ArdurAI/sith/actions/runs/29551987689>.
+- Exact post-merge CodeQL: <https://github.com/ArdurAI/sith/actions/runs/29551987371>.
+- Post-merge Dependabot, code-scanning, and secret-scanning queues were `0 / 0 / 0`.
 
 Primary compatibility references:
 
