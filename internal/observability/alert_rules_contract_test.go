@@ -76,7 +76,7 @@ func TestPortableAlertRulesStayBoundedAndStatic(t *testing.T) {
 			severity: "warning", hold: "10m",
 			expr:        `sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0 and sum(count_over_time(sith_auth_attempts_total{outcome="accepted"}[10m])) > 0`,
 			summary:     "Sith hub authentication traffic is persistently refusal-only",
-			description: "At least twenty aggregate authentication attempts were refused and none were accepted over fifteen minutes; accepted-outcome telemetry was present during the last ten minutes.",
+			description: "At least twenty aggregate authentication attempts were refused and none were accepted over fifteen minutes; a recent scraped sample from the preinitialized accepted-outcome series was present during the last ten minutes.",
 		},
 		"SithHubFederationSnapshotFailureRatioHigh": {
 			severity: "warning", hold: "10m",

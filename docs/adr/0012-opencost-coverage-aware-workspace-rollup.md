@@ -45,8 +45,10 @@ workload or arbitrary label would create unstable cross-tenant accounting semant
    reported. With no report, `observed_at` is absent. No collection time or stale objective is
    invented.
 8. The computation is bounded to 256 scopes, 1,024 facts per scope, 4,096 facts total, 8 MiB of
-   normalized payload, a 256 KiB result, and an aggregate magnitude derived from the per-fact cost
-   bound.
+   normalized payload, and a 256 KiB result. Each of the fifteen cost fields is accumulated and
+   checked independently: one fact's absolute field value cannot exceed `1,000,000,000,000`, and
+   one rollup's absolute field total cannot exceed `4,096,000,000,000,000` (the per-fact limit
+   multiplied by the 4,096-fact limit).
 
 ## Consequences
 

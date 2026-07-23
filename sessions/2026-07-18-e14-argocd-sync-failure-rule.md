@@ -2,7 +2,7 @@
 
 **Builder:** Gnani Rahul · **Branch:** `gnanirahulnutakki/feat/e14-argocd-sync-rule`
 
-**Slice:** E14 R8 / [#270](https://github.com/ArdurAI/sith/issues/270) · **Status:** local gates and review complete
+**Slice:** E14 R8 / [#270](https://github.com/ArdurAI/sith/issues/270) · **Status:** landed on `dev` via [#271](https://github.com/ArdurAI/sith/pull/271)
 
 **Base:** `origin/dev` at `22c6caa834442120d61add38009bacc154eda4fd`
 
@@ -103,8 +103,8 @@ kubeconfig authorization; Sith marks the command sensitive and never executes it
 - A later documentation-inclusive review found two minor README precision gaps: it abbreviated the
   advisory and did not enumerate every fail-closed graph gate. README now names the exact
   target-bound command and the workspace, provenance, protocol, identity, closed-payload,
-  phase/change-kind, event-time, and explicit-coverage requirements. Final clean review remains
-  required before staging.
+  phase/change-kind, event-time, and explicit-coverage requirements. At this checkpoint, a final
+  clean review remained required before staging; the landed closure below records its completion.
 
 ## [C] Checkpoint #1
 
@@ -147,6 +147,25 @@ the child issue, and synchronize the landed Notion and Obsidian checkpoints.
 ## [C] Checkpoint #2
 
 `2026-07-18/e14-argocd-sync-failure-rule#2` records the hosted-review fixes and repeated local
-proof above. Next: final exact-tree secret scan and review, create a second SSH-signed DCO/GSTACK
-commit, push it, require fresh exact-head CI/CodeQL plus a clean incremental hosted review, resolve
-both original review threads, and only then merge into `dev` for exact post-merge proof.
+proof above. At this checkpoint, the next steps were the final exact-tree secret scan and review, a
+second SSH-signed DCO/GSTACK commit, fresh exact-head CI/CodeQL, clean incremental hosted review,
+thread resolution, and exact post-merge proof. The landed closure below records the hosted and
+review outcomes; the later audit note records a fresh scan of the exact landed tree.
+
+## [L] Landed closure — 2026-07-18
+
+- [PR #271](https://github.com/ArdurAI/sith/pull/271) merged exact signed DCO/GSTACK feature commit
+  `7f243bb57b4f98aba878c3fc1eee917ef234a539` as
+  `89cffa5cb6f4e51c8c5f4ef9410f323ee044f493`.
+- Exact-head [CI](https://github.com/ArdurAI/sith/actions/runs/29652392300) and
+  [CodeQL](https://github.com/ArdurAI/sith/actions/runs/29652391036) passed before merge.
+- Exact post-merge `dev` [CI](https://github.com/ArdurAI/sith/actions/runs/29652751808) and
+  [CodeQL](https://github.com/ArdurAI/sith/actions/runs/29652752052) passed on the merge commit.
+- Final-head hosted CodeRabbit reviewed the delta from
+  `03fdc34dcb4b90f3ec2f8c61b5ef71c5b6b55794` to the landed feature commit and generated no
+  actionable comments; the final unresolved review-thread count was zero.
+- Issue [#270](https://github.com/ArdurAI/sith/issues/270) closed after verification, with zero
+  open Dependabot, code-scanning, or secret-scanning alerts.
+- The retained pre-merge record documents zero secret candidates in both changed-tree scans. A
+  2026-07-22 retrospective Trivy scan of exact landed feature tree
+  `7f243bb57b4f98aba878c3fc1eee917ef234a539` also returned zero secret findings.

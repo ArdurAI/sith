@@ -332,6 +332,7 @@ erDiagram
         string approver
         string resolved_digest "args + resolved target"
         timestamp approved_at
+        timestamp expires_at "DB-derived approved_at + 10 minutes"
         timestamp consumed_at "nullable, set once"
     }
     MEMBERSHIP {
@@ -357,9 +358,14 @@ Design points:
   broaden access through PostgreSQL's OR-composition rule.
 - **`DECISION` (why-allowed, Ardur) and `AUDITLOG` (what-happened, Sith) are separate**
   and together form a complete agent-action ledger.
-- **`APPROVAL` is mutable in exactly one direction** — its identity and resolved digest are
-  immutable, while one atomic `consumed_at IS NULL` update spends it. FORCE RLS isolates the row;
-  the application role cannot delete it or update any other column.
+- **`APPROVAL` is mutable in exactly one direction** — its identity, resolved digest,
+  `approved_at`, and `expires_at` are immutable. PostgreSQL derives
+  `expires_at = approved_at + interval '10 minutes'`; callers cannot supply it, and a database
+  constraint plus column privileges reject later drift. One atomic update spends the row only when
+  `consumed_at IS NULL` and `approved_at <= statement_timestamp() < expires_at`. Missing,
+  mismatched, future, expired, or already-consumed grants affect no row and return the same stable
+  unavailable refusal. FORCE RLS isolates the row; the application role cannot delete it or update
+  any other column.
 - **`CLUSTER.last_seen` / `FLEET_FACT.observed_at`** are what abstention reads.
 
 ## 6. Enforcement pipeline (the PEP)

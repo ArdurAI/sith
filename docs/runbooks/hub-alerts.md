@@ -96,10 +96,12 @@ degraded.
 
 **Meaning.** At least 20 aggregate completed authentication attempts were `refused` and none were
 `accepted` over 15 minutes, and that condition persisted for 10 minutes. Any accepted attempt in
-the same window suppresses the warning. At least one accepted-outcome sample must have reached the
-evaluator during the last 10 minutes. The rule stays quiet when that series is absent or stale,
-because partial telemetry cannot prove refusal-only traffic. This is an operational symptom, not
-proof of brute force, credential stuffing, account compromise, or a specific actor.
+the same window suppresses the warning. At least one recent scraped sample from the preinitialized
+accepted-outcome series must have reached the evaluator during the last 10 minutes. That sample
+proves series visibility, not an accepted authentication event. The rule stays quiet when that
+series is absent or stale, because partial telemetry cannot prove refusal-only traffic. This is an
+operational symptom, not proof of brute force, credential stuffing, account compromise, or a
+specific actor.
 
 **Triage.**
 
@@ -234,8 +236,9 @@ threshold and 10-minute hold, and cannot divide by zero.
 The policy-decision ratio requires 20 aggregate `allow|deny|require-approval|error` decisions and
 counts only `error` as failure. It aggregates away the closed verb and every source label.
 The refusal-only authentication warning requires at least 20 aggregate refusals, zero accepted
-attempts over the same 15-minute window, at least one accepted-outcome sample during the most recent
-10 minutes, and a 10-minute hold. It is deliberately not a refusal ratio: without an
+attempts over the same 15-minute window, at least one recent scraped sample from the preinitialized
+accepted-outcome series during the most recent 10 minutes, and a 10-minute hold. That sample proves
+series visibility, not an accepted event. It is deliberately not a refusal ratio: without an
 environment-specific baseline, a generic percentage would create an arbitrary security threshold.
 Missing or stale accepted-series data cannot satisfy the expression.
 The missing-telemetry warning evaluates the existing traffic-independent `sith_build_info` gauge,
