@@ -64,10 +64,17 @@ var _ FleetImageSearcher = fleetImageSearcherFunc(nil)
 var _ FleetCVESearcher = fleetImageSearcherFunc(nil)
 var _ FleetCVEIdentifierSearcher = fleetCVEIdentifierSearcherFunc(nil)
 
+type fleetReadObserverFunc func(hubfleet.FleetReadObservation)
+
+func (function fleetReadObserverFunc) ObserveFleetRead(observation hubfleet.FleetReadObservation) {
+	function(observation)
+}
+
 func TestFleetHandlerRefreshUsesOnlySignedWorkspaceScope(t *testing.T) {
 	now := time.Date(2026, 7, 14, 7, 0, 0, 0, time.UTC)
 	verifier, privateKey := fleetTestVerifier(t, now)
 	called := false
+	var observed []hubfleet.FleetReadObservation
 	handler, err := NewFleetHandler(FleetHandlerConfig{
 		Verifier: verifier,
 		Collector: fleetRefresherFunc(func(_ context.Context, scope tenancy.Scope) (fleet.Coverage, error) {
@@ -89,6 +96,9 @@ func TestFleetHandlerRefreshUsesOnlySignedWorkspaceScope(t *testing.T) {
 			return fleet.QueryResult{}, nil
 		}),
 		PEP: fleetTestPEP(t, pep.AllowReadHook{}),
+		ReadObserver: fleetReadObserverFunc(func(observation hubfleet.FleetReadObservation) {
+			observed = append(observed, observation)
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +112,9 @@ func TestFleetHandlerRefreshUsesOnlySignedWorkspaceScope(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("refresh collector was not called")
+	}
+	if len(observed) != 0 {
+		t.Fatalf("refresh emitted fleet-read observations = %q", observed)
 	}
 	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Pragma") != "no-cache" {
 		t.Fatalf("refresh response caching headers = Cache-Control %q, Pragma %q", response.Header().Get("Cache-Control"), response.Header().Get("Pragma"))
@@ -182,6 +195,7 @@ func TestFleetHandlerReadConstructsRequestScopedSource(t *testing.T) {
 	now := time.Date(2026, 7, 14, 7, 0, 0, 0, time.UTC)
 	verifier, privateKey := fleetTestVerifier(t, now)
 	called := false
+	var observed []hubfleet.FleetReadObservation
 	handler, err := NewFleetHandler(FleetHandlerConfig{
 		Verifier: verifier,
 		Collector: fleetRefresherFunc(func(context.Context, tenancy.Scope) (fleet.Coverage, error) {
@@ -199,13 +213,18 @@ func TestFleetHandlerReadConstructsRequestScopedSource(t *testing.T) {
 			if gotNow.IsZero() {
 				t.Fatal("fleet source supplied a zero observation time")
 			}
-			return fleet.FleetResult{Clusters: []fleet.Cluster{{Name: "spoke-a", SourceKind: hubfleet.SourceKind, Reachable: true}}, Coverage: fleet.Coverage{Requested: 1, Reachable: 1}}, nil
+			return fleet.FleetResult{Clusters: []fleet.Cluster{{
+				Name: "spoke-a", SourceKind: hubfleet.SourceKind, Reachable: true, ObservedAt: gotNow.Add(-time.Minute),
+			}}, Coverage: fleet.Coverage{Requested: 1, Reachable: 1}}, nil
 		}),
 		ImageSearcher: fleetImageSearcherFunc(func(context.Context, tenancy.Scope, hubfleet.ImageSearchRequest) (fleet.QueryResult, error) {
 			t.Fatal("fleet read reached image searcher")
 			return fleet.QueryResult{}, nil
 		}),
 		PEP: fleetTestPEP(t, pep.AllowReadHook{}),
+		ReadObserver: fleetReadObserverFunc(func(observation hubfleet.FleetReadObservation) {
+			observed = append(observed, observation)
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -217,6 +236,11 @@ func TestFleetHandlerReadConstructsRequestScopedSource(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("fleet reader was not called")
+	}
+	if len(observed) != 1 || observed[0] != (hubfleet.FleetReadObservation{
+		Outcome: hubfleet.FleetReadOutcomeComplete, Freshness: hubfleet.FleetFreshnessOutcomeFresh,
+	}) {
+		t.Fatalf("fleet read observations = %#v, want complete/fresh", observed)
 	}
 	var result fleet.FleetResult
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {

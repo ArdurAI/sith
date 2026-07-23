@@ -53,11 +53,13 @@ func (store *memoryOIDCStore) LookupOIDCMembership(_ context.Context, workspaceI
 }
 
 type oidcTestProvider struct {
-	server   *httptest.Server
-	mu       sync.Mutex
-	keys     []oidcJWK
-	outage   bool
-	metadata func(string) string
+	server        *httptest.Server
+	mu            sync.Mutex
+	keys          []oidcJWK
+	outage        bool
+	metadata      func(string) string
+	authorization http.HandlerFunc
+	token         http.HandlerFunc
 }
 
 func newOIDCTestProvider(t *testing.T, keys []oidcJWK) *oidcTestProvider {
@@ -80,6 +82,18 @@ func newOIDCTestProvider(t *testing.T, keys []oidcJWK) *oidcTestProvider {
 			_ = json.NewEncoder(response).Encode(oidcDiscovery{Issuer: provider.server.URL, JWKSURL: provider.server.URL + "/jwks"})
 		case "/jwks":
 			_ = json.NewEncoder(response).Encode(oidcJWKSet{Keys: provider.keys})
+		case "/authorize":
+			if provider.authorization == nil {
+				http.NotFound(response, request)
+				return
+			}
+			provider.authorization(response, request)
+		case "/token":
+			if provider.token == nil {
+				http.NotFound(response, request)
+				return
+			}
+			provider.token(response, request)
 		default:
 			http.NotFound(response, request)
 		}
@@ -166,6 +180,7 @@ func TestOIDCExchangeRejectsHostileTokens(t *testing.T) {
 		"forged key":         signOIDCTestToken(t, provider.server.URL, "sith-hub", "upstream:alice", "key-1", attackerKey, now, nil),
 		"wrong algorithm":    signOIDCHSTestToken(t, provider.server.URL, now),
 		"wrong type":         signOIDCTestTokenWithHeader(t, provider.server.URL, "sith-hub", "upstream:alice", "key-1", privateKey, now, map[string]any{"typ": "at+jwt"}),
+		"wrong azp":          mutateClaims(func(claims jwt.MapClaims) { claims["azp"] = "other-client" }),
 	}
 	// Replace the helper marker with an actual forbidden JOSE header.
 	tests["hostile jku"] = signOIDCTestTokenWithHeader(t, provider.server.URL, "sith-hub", "upstream:alice", "key-1", privateKey, now, map[string]any{"jku": "https://evil.example/jwks"})

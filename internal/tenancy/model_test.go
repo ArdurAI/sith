@@ -7,7 +7,7 @@ import "testing"
 func TestRoleAllowsExactActionClasses(t *testing.T) {
 	t.Parallel()
 
-	actions := []Action{ActionRead, ActionProposeIntent, ActionApproveIntent, ActionManageWorkspace, "unknown"}
+	actions := []Action{ActionRead, ActionExportAudit, ActionProposeIntent, ActionApproveIntent, ActionManageWorkspace, "unknown"}
 	tests := []struct {
 		role    Role
 		allowed map[Action]bool
@@ -15,7 +15,7 @@ func TestRoleAllowsExactActionClasses(t *testing.T) {
 		{role: RoleReader, allowed: map[Action]bool{ActionRead: true}},
 		{role: RoleOperator, allowed: map[Action]bool{ActionRead: true, ActionProposeIntent: true}},
 		{role: RoleApprover, allowed: map[Action]bool{ActionRead: true, ActionApproveIntent: true}},
-		{role: RoleAdmin, allowed: map[Action]bool{ActionRead: true, ActionManageWorkspace: true}},
+		{role: RoleAdmin, allowed: map[Action]bool{ActionRead: true, ActionExportAudit: true, ActionManageWorkspace: true}},
 		{role: "owner", allowed: map[Action]bool{}},
 	}
 	for _, test := range tests {
@@ -86,6 +86,15 @@ func TestTenancyModelsRejectAmbiguousIdentity(t *testing.T) {
 		{name: "padded tenant key", run: func() error { return (Workspace{ID: "a", Name: "A", TenantKey: " tenant-a"}).Validate() }},
 		{name: "unknown role", run: func() error { return (Membership{WorkspaceID: "a", Subject: "alice", Role: "owner"}).Validate() }},
 		{name: "control character", run: func() error { return (Membership{WorkspaceID: "a\n", Subject: "alice", Role: RoleReader}).Validate() }},
+		{name: "malformed UTF-8 workspace ID", run: func() error {
+			return ValidateWorkspaceID(WorkspaceID(string([]byte{'a', 0x80})))
+		}},
+		{name: "malformed UTF-8 display name", run: func() error {
+			return (Workspace{ID: "a", Name: string([]byte{'A', 0x80}), TenantKey: "tenant-a"}).Validate()
+		}},
+		{name: "malformed UTF-8 subject", run: func() error {
+			return (Membership{WorkspaceID: "a", Subject: string([]byte{'a', 0x80}), Role: RoleReader}).Validate()
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

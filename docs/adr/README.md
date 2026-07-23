@@ -20,6 +20,10 @@ decision rests on an external fact, that fact is web-verified and cited (see als
 | [0008](0008-deterministic-advisory-brain.md) | Deterministic local advisory brain and evidence contract | Accepted |
 | [0009](0009-release-supply-chain.md) | Reproducible and identity-bound release supply chain | Accepted |
 | [0010](0010-native-local-desktop-shell.md) | Native local desktop shell | Accepted |
+| [0011](0011-opencost-namespace-cost-facts.md) | Exact-decimal USD boundary for OpenCost namespace cost facts | Accepted |
+| [0012](0012-opencost-coverage-aware-workspace-rollup.md) | Coverage-aware workspace rollup for OpenCost cost facts | Accepted |
+| [0013](0013-dcgm-gpu-utilization-facts.md) | Privacy-minimized DCGM GPU utilization facts | Accepted |
+| [0014](0014-connector-wire-adapter-version-split.md) | Split connector wire compatibility from adapter provenance | Accepted |
 
 Planning ADRs remain **Proposed** until their implementation lane accepts or rejects them.
 Implementation-specific ADRs may be **Accepted** when the corresponding shipped slice provides

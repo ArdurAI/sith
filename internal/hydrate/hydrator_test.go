@@ -138,7 +138,7 @@ func TestSyncOnceRejectsPauseAndDuplicateRun(t *testing.T) {
 		t.Fatalf("first SyncOnce() error = %v", err)
 	}
 
-	store.SetPaused(true)
+	store.SetPaused(fleet.LocalWorkspace, true)
 	if err := hydrator.SyncOnce(context.Background()); !errors.Is(err, ErrPaused) {
 		t.Fatalf("paused SyncOnce() error = %v, want ErrPaused", err)
 	}
@@ -165,7 +165,7 @@ func TestRunAppliesWatchDeltasAndAddsGenericKinds(t *testing.T) {
 
 	now := time.Now().UTC()
 	reader.events <- connector.WatchEvent{
-		Type: connector.WatchUpsert, Kind: "Pod", Scope: "alpha",
+		Type: connector.WatchUpsert, Workspace: fleet.LocalWorkspace, Kind: "Pod", Scope: "alpha",
 		Fact: fakeFact("Pod", "alpha", now), ObservedAt: now,
 	}
 	waitForCondition(t, func() bool {
@@ -179,7 +179,8 @@ func TestRunAppliesWatchDeltasAndAddsGenericKinds(t *testing.T) {
 		t.Fatalf("updated watch kinds = %v, want Widgets", kinds)
 	}
 	reader.events <- connector.WatchEvent{
-		Type: connector.WatchError, Kind: "Pod", Scope: "beta", Err: errors.New("connection reset"),
+		Type: connector.WatchError, Workspace: fleet.LocalWorkspace,
+		Kind: "Pod", Scope: "beta", Err: errors.New("connection reset"),
 	}
 	waitForCondition(t, func() bool {
 		return slices.Contains(store.Query(fleet.LocalWorkspace, fleetcache.Query{Kind: "Pod"}).Coverage.Unreachable, "beta")
@@ -236,11 +237,12 @@ func (*fakeReader) Capabilities() []connector.Capability {
 
 func (reader *fakeReader) Descriptor() connector.Descriptor {
 	return connector.Descriptor{
-		Kind:         reader.Kind(),
-		ConnKind:     connector.KindReadAdapter,
-		ProtocolV:    "1.0.0",
-		Owner:        "test",
-		Capabilities: reader.Capabilities(),
+		Kind:           reader.Kind(),
+		ConnKind:       connector.KindReadAdapter,
+		WireVersions:   []connector.WireVersion{connector.CurrentWireVersion()},
+		AdapterVersion: "1.0.0",
+		Owner:          "test",
+		Capabilities:   reader.Capabilities(),
 	}
 }
 

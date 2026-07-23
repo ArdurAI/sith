@@ -15,12 +15,27 @@ import (
 )
 
 var approvedNetworkImports = map[string]map[string]bool{
-	"internal/cli/mcp.go":                            {"net": true, "net/http": true},
-	"internal/cli/ui.go":                             {"net": true, "net/http": true},
+	"internal/cli/mcp.go": {"net": true, "net/http": true},
+	"internal/cli/ui.go":  {"net": true, "net/http": true},
+	// This pure projector uses net/url only to remove credentials, queries, and fragments from
+	// already-fetched Argo CD facts. It has no socket, HTTP, or Kubernetes client capability.
+	"internal/connector/argocd/project.go":           {"net/url": true},
 	"internal/connector/kubeconfig/local_streams.go": {"net/http": true, "net/url": true},
 	"internal/hubserver/auth.go":                     {"net/http": true},
-	"internal/hubserver/exchange.go":                 {"net": true, "net/http": true},
-	"internal/hubserver/fleet.go":                    {"net/http": true, "net/url": true},
+	// The bearer-only audit export adapter has one exact inbound route and no listener, outbound
+	// client, database implementation, connector, filesystem, process, or local-operation capability.
+	"internal/hubserver/audit_export.go": {"net/http": true, "net/url": true},
+	// Browser OIDC is a Hub-only code+PKCE broker. It accepts no local-mode traffic, uses no
+	// caller-controlled endpoint, and keeps all proofs and session JWTs server-side.
+	"internal/hubserver/browser_oidc.go": {"net": true, "net/http": true, "net/url": true},
+	// The Hub console is a fixed same-origin read adapter over the existing tenant-scoped source.
+	// It has no listener, outbound request, connector, local-operation, refresh, or write seam.
+	"internal/hubserver/console.go":  {"net/http": true, "net/url": true},
+	"internal/hubserver/exchange.go": {"net": true, "net/http": true},
+	"internal/hubserver/fleet.go":    {"net/http": true, "net/url": true},
+	// Fixed inbound-only Hub probes return body-free status codes. They have no listener, dial,
+	// endpoint selection, tenant data, persistence, or outbound HTTP capability.
+	"internal/hubserver/probes.go": {"net/http": true},
 	// AWS STS egress is endpoint-pinned, SigV4-profiled, redirect-disabled, and never used by local mode.
 	"internal/hubauth/aws_sts.go": {"net/http": true, "net/url": true},
 	"internal/hubauth/oidc.go":    {"net": true, "net/http": true, "net/netip": true, "net/url": true},
@@ -34,12 +49,16 @@ var approvedNetworkImports = map[string]map[string]bool{
 		"k8s.io/client-go/dynamic": true, "k8s.io/client-go/kubernetes": true, "k8s.io/client-go/rest": true,
 		"google.golang.org/grpc": true, "google.golang.org/grpc/credentials": true,
 	},
-	// The in-cluster hub composition root is the reviewed boundary for its fixed TLS listener and
-	// scoped Kubernetes client. It delegates every spoke credential read to the direct OCM adapter.
+	// The in-cluster hub composition root is the reviewed boundary for its fixed TLS listener,
+	// browser OIDC routes, and scoped Kubernetes client. It delegates every spoke credential read to
+	// the direct OCM adapter.
 	"internal/hubruntime/config.go": {
-		"net": true, "k8s.io/client-go/kubernetes": true, "k8s.io/client-go/rest": true,
+		"net": true, "net/http": true, "k8s.io/client-go/kubernetes": true, "k8s.io/client-go/rest": true,
 	},
-	"internal/hubruntime/runtime.go":    {"net": true, "net/http": true},
+	"internal/hubruntime/runtime.go": {"net": true, "net/http": true},
+	// The Hub-only operator metrics listener is opt-in, exact-loopback-only, and has one fixed
+	// read-only route. It is separately bound from tenant APIs and has no local-mode path.
+	"internal/hubruntime/metrics.go":    {"net": true, "net/http": true},
 	"internal/mcpserver/server.go":      {"net": true, "net/http": true, "net/url": true},
 	"internal/observability/metrics.go": {"net/http": true},
 	"internal/webui/api.go":             {"net/http": true},
@@ -54,9 +73,12 @@ var approvedFilesystemWrites = map[string]map[string]bool{
 }
 
 var approvedProcessImports = map[string]map[string]bool{
-	"internal/cli/local.go":         {"os/exec": true},
-	"internal/cli/ui.go":            {"os/exec": true},
-	"internal/tui/local_actions.go": {"os/exec": true},
+	// The Hub-only process audit sink starts the current trusted Sith executable with an inherited
+	// bounded Unix datagram FD. It passes no environment, config, request values, or credentials.
+	"internal/auditdelivery/process.go": {"os/exec": true},
+	"internal/cli/local.go":             {"os/exec": true},
+	"internal/cli/ui.go":                {"os/exec": true},
+	"internal/tui/local_actions.go":     {"os/exec": true},
 }
 
 var forbiddenTelemetryPrefixes = []string{

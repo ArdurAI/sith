@@ -7,11 +7,12 @@ CMD      := ./cmd/sith
 BIN_DIR  := bin
 GOLANGCI ?= golangci-lint
 GOVULNCHECK ?= govulncheck
+PROMTOOL ?= promtool
 KIND     ?= kind
 HELM     ?= helm
 GORELEASER ?= goreleaser
 WAILS      ?= wails
-WAILS_VERSION ?= v2.12.0
+WAILS_VERSION ?= v2.13.0
 CODESIGN   ?= codesign
 PLISTBUDDY ?= /usr/libexec/PlistBuddy
 LIPO       ?= lipo
@@ -34,7 +35,7 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/buildinfo.Commit=$(COMMIT) \
 	-X $(PKG)/internal/buildinfo.Date=$(DATE)
 
-.PHONY: all build desktop-build test test-scripts perf e2e e2e-helm e2e-oci e2e-kind e2e-ocm e2e-postgres e2e-isolation lint vuln fmt fmt-check vet tidy clean run ci release-check help
+.PHONY: all build desktop-build test test-scripts test-alert-rules perf e2e e2e-helm e2e-oci e2e-kind e2e-ocm e2e-postgres e2e-isolation lint vuln fmt fmt-check vet tidy clean run ci release-check help
 
 all: build
 
@@ -43,8 +44,7 @@ build: ## Build the sith binary into bin/
 	go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/$(BINARY) $(CMD)
 
 desktop-build: ## Build the ad-hoc-signed macOS arm64 Sith.app development bundle
-	@command -v "$(WAILS)" >/dev/null || { echo "Wails $(WAILS_VERSION) is required" >&2; exit 1; }
-	@"$(WAILS)" version | grep -q '$(WAILS_VERSION)' || { echo "Wails $(WAILS_VERSION) is required" >&2; exit 1; }
+	@hack/verify-wails-version.sh "$(WAILS)" "$(WAILS_VERSION)"
 	cd cmd/sith-desktop && "$(WAILS)" build -clean -m -nosyncgomod -s -trimpath -platform darwin/arm64
 	@set -euo pipefail; \
 		app='cmd/sith-desktop/build/bin/Sith.app'; \
@@ -59,11 +59,21 @@ test: ## Run unit tests with the race detector and report coverage
 	go test -race -count=1 -coverprofile=coverage.out ./...
 
 test-scripts: ## Run focused safety tests for operator-facing shell harnesses
+	bash tests/scripts/wails_tooling_policy_test.sh
+	bash tests/scripts/release_tooling_policy_test.sh
+	bash tests/scripts/helm_tooling_policy_test.sh
 	bash tests/scripts/m0_ocm_falsification_safety_test.sh
 	bash tests/scripts/release_tag_identity_guide_test.sh
 	bash tests/scripts/release_tag_policy_test.sh
 	bash tests/scripts/release_pr_gate_policy_test.sh
 	bash tests/scripts/release_hub_image_policy_test.sh
+	bash tests/scripts/prometheus_tooling_policy_test.sh
+
+test-alert-rules: ## Validate and unit-test the portable Prometheus alert contract
+	@promtool_path="$$(command -v "$(PROMTOOL)")" || { echo "promtool is required" >&2; exit 1; }; \
+	case "$$promtool_path" in /*) ;; *) promtool_path="$$(pwd)/$$promtool_path" ;; esac; \
+	cd monitoring && "$$promtool_path" check rules sith-hub.rules.yml && \
+	"$$promtool_path" test rules sith-hub.rules.test.yml
 
 perf: ## Enforce the warm-cache TUI p95 latency budget without race overhead
 	go test -count=1 -run '^TestWarmViewP95UnderOneHundredMilliseconds$$' ./internal/tui
@@ -79,7 +89,7 @@ e2e-oci: ## Build and inspect the local immutable OCI image contract for linux/a
 
 e2e-kind: ## Exercise adapter and binary against two real kind clusters
 	KIND_BIN="$(KIND)" KIND_NODE_IMAGE="$(KIND_NODE_IMAGE)" \
-		go test -race -count=1 -timeout=15m -tags='e2e kind' -run '^Test(KindFleetFanout|KindOCIImageContract)$$' ./tests/e2e
+		go test -race -count=1 -timeout=15m -tags='e2e kind' -run '^Test(KindFleetFanout|KindOCIImageContract|KindArgoApplicationProjection)$$' ./tests/e2e
 
 e2e-ocm: ## Prove direct ClusterProxy transport in the pinned two-spoke M0 lab
 	@set -euo pipefail; \
@@ -114,6 +124,9 @@ e2e-isolation: ## Run signed-identity, scoped-query, and real PostgreSQL isolati
 	go test -run '^$$' -fuzz '^FuzzQueryScopedNeverLeaksForeignWorkspace$$' \
 		-fuzztime="$(ISOLATION_FUZZ_BUDGET)" -parallel="$(ISOLATION_FUZZ_WORKERS)" \
 		-timeout=2m ./internal/fleetcache
+	go test -run '^$$' -fuzz '^FuzzStoreForeignWorkspaceMutationCannotChangeEitherWorkspace$$' \
+		-fuzztime="$(ISOLATION_FUZZ_BUDGET)" -parallel="$(ISOLATION_FUZZ_WORKERS)" \
+		-timeout=2m ./internal/fleetcache
 
 lint: ## Run golangci-lint (v2)
 	$(GOLANGCI) run ./...
@@ -141,7 +154,7 @@ clean: ## Remove build and coverage artifacts
 run: build ## Build then run sith version
 	$(BIN_DIR)/$(BINARY) version
 
-ci: fmt-check vet lint vuln test test-scripts perf e2e build ## Run the full CI gate locally
+ci: fmt-check vet lint vuln test test-scripts test-alert-rules perf e2e build ## Run the full CI gate locally
 
 release-check: ## Build, verify, and package the reproducible multi-platform release snapshot twice
 	@command -v "$(GORELEASER)" >/dev/null || { echo "goreleaser is required" >&2; exit 1; }

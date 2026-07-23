@@ -20,7 +20,7 @@ func TestStorePreservesLastKnownRowsAndSurfacesCoverage(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.July, 10, 20, 0, 0, 0, time.UTC)
 	store := newStore(func() time.Time { return now }, 15*time.Second)
-	if !store.BeginSync() {
+	if !store.BeginSync(fleet.LocalWorkspace) {
 		t.Fatal("BeginSync() = false, want initial sync")
 	}
 	store.SetDiscovery(fleet.LocalWorkspace, connector.Discovery{Scopes: []connector.Scope{
@@ -34,10 +34,10 @@ func TestStorePreservesLastKnownRowsAndSurfacesCoverage(t *testing.T) {
 		},
 		Coverage: fleet.Coverage{Requested: 2, Reachable: 2},
 	}
-	if err := store.Replace("pods", initial); err != nil {
+	if err := store.Replace(fleet.LocalWorkspace, "pods", initial); err != nil {
 		t.Fatalf("Replace(initial) error = %v", err)
 	}
-	store.EndSync(nil)
+	store.EndSync(fleet.LocalWorkspace, nil)
 
 	snapshot := store.Query(fleet.LocalWorkspace, Query{Kind: "Pod"})
 	if snapshot.State != StateWarm || len(snapshot.Records) != 2 || !snapshot.Coverage.Complete() {
@@ -45,7 +45,7 @@ func TestStorePreservesLastKnownRowsAndSurfacesCoverage(t *testing.T) {
 	}
 
 	now = now.Add(20 * time.Second)
-	if !store.BeginSync() {
+	if !store.BeginSync(fleet.LocalWorkspace) {
 		t.Fatal("BeginSync(second) = false")
 	}
 	store.SetDiscovery(fleet.LocalWorkspace, connector.Discovery{
@@ -59,10 +59,10 @@ func TestStorePreservesLastKnownRowsAndSurfacesCoverage(t *testing.T) {
 		Facts:    []fleet.Fact{podFact(t, "alpha", "api-1", "Running", "registry/api:v2", now)},
 		Coverage: fleet.Coverage{Requested: 2, Reachable: 1, Unreachable: []string{"beta"}},
 	}
-	if err := store.Replace("Pod", partial); err != nil {
+	if err := store.Replace(fleet.LocalWorkspace, "Pod", partial); err != nil {
 		t.Fatalf("Replace(partial) error = %v", err)
 	}
-	store.EndSync(nil)
+	store.EndSync(fleet.LocalWorkspace, nil)
 
 	snapshot = store.Query(fleet.LocalWorkspace, Query{Kind: "pods"})
 	if snapshot.State != StateDegraded || len(snapshot.Records) != 2 {
@@ -73,6 +73,50 @@ func TestStorePreservesLastKnownRowsAndSurfacesCoverage(t *testing.T) {
 	}
 	if snapshot.Records[0].Name != "api-1" || snapshot.Records[1].Cluster != "beta" || !snapshot.Records[1].Stale {
 		t.Fatalf("records = %#v, want fresh alpha replacement and stale beta last-known", snapshot.Records)
+	}
+}
+
+func TestStorePreservesRowsOutsideTruncatedPrefix(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	store := newStore(func() time.Time { return now }, time.Minute)
+	store.SetDiscovery(fleet.LocalWorkspace, connector.Discovery{Scopes: []connector.Scope{{Name: "alpha", Reachable: true, ObservedAt: now}}})
+	if err := store.Replace(fleet.LocalWorkspace, "Pod", fleet.QueryResult{
+		Facts: []fleet.Fact{
+			podFact(t, "alpha", "api-0", "Running", "registry/api:v1", now),
+			podFact(t, "alpha", "worker-0", "Running", "registry/worker:v1", now),
+		},
+		Coverage: fleet.Coverage{Requested: 1, Reachable: 1},
+	}); err != nil {
+		t.Fatalf("Replace(initial) error = %v", err)
+	}
+	now = now.Add(time.Second)
+	if err := store.Replace(fleet.LocalWorkspace, "Pod", fleet.QueryResult{
+		Facts:    []fleet.Fact{podFact(t, "alpha", "api-0", "Running", "registry/api:v2", now)},
+		Coverage: fleet.Coverage{Requested: 1, Reachable: 1, Truncated: []string{"alpha"}},
+	}); err != nil {
+		t.Fatalf("Replace(truncated) error = %v", err)
+	}
+
+	snapshot := store.Query(fleet.LocalWorkspace, Query{Kind: "Pod"})
+	if snapshot.State != StateDegraded || len(snapshot.Records) != 2 || snapshot.Records[0].Name != "api-0" || snapshot.Records[1].Name != "worker-0" ||
+		!slices.Equal(snapshot.Coverage.Truncated, []string{"alpha"}) || snapshot.Coverage.Complete() {
+		t.Fatalf("truncated snapshot = %#v, want prefix update plus preserved last-known row", snapshot)
+	}
+
+	now = now.Add(time.Second)
+	if err := store.ApplyWatchEvent(connector.WatchEvent{
+		Type: connector.WatchSnapshot, Workspace: fleet.LocalWorkspace, Scope: "alpha", Kind: "Pod", ObservedAt: now,
+		Facts: []fleet.Fact{
+			podFact(t, "alpha", "api-0", "Running", "registry/api:v3", now),
+			podFact(t, "alpha", "worker-0", "Running", "registry/worker:v2", now),
+		},
+	}); err != nil {
+		t.Fatalf("ApplyWatchEvent(snapshot) error = %v", err)
+	}
+	snapshot = store.Query(fleet.LocalWorkspace, Query{Kind: "Pod"})
+	if snapshot.State != StateWarm || len(snapshot.Records) != 2 || len(snapshot.Coverage.Truncated) != 0 || !snapshot.Coverage.Complete() {
+		t.Fatalf("complete watch snapshot = %#v, want truncation cleared and warm coverage", snapshot)
 	}
 }
 
@@ -91,7 +135,7 @@ func TestStoreSearchGrammarRunsOnlyOnNormalizedCache(t *testing.T) {
 		},
 		Coverage: fleet.Coverage{Requested: 2, Reachable: 2},
 	}
-	if err := store.Replace("Pod", result); err != nil {
+	if err := store.Replace(fleet.LocalWorkspace, "Pod", result); err != nil {
 		t.Fatalf("Replace() error = %v", err)
 	}
 
@@ -115,10 +159,12 @@ func TestStoreQueryRequiresAndEnforcesWorkspace(t *testing.T) {
 	local := podFact(t, "alpha", "local-api", "Running", "registry/api:v1", now)
 	other := podFact(t, "beta", "other-api", "Running", "registry/api:v1", now)
 	other.Workspace = "other"
-	if err := store.Replace("Pod", fleet.QueryResult{
-		Facts: []fleet.Fact{local, other}, Coverage: fleet.Coverage{Requested: 2, Reachable: 2},
-	}); err != nil {
-		t.Fatal(err)
+	for workspace, fact := range map[string]fleet.Fact{fleet.LocalWorkspace: local, "other": other} {
+		if err := store.Replace(workspace, "Pod", fleet.QueryResult{
+			Facts: []fleet.Fact{fact}, Coverage: fleet.Coverage{Requested: 1, Reachable: 1},
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if records := store.Query("", Query{Kind: "Pod"}).Records; len(records) != 0 {
 		t.Fatalf("unscoped records = %#v", records)
@@ -148,7 +194,7 @@ func TestStoreSearchesCanonicalCVEFactsByImageAndIdentifier(t *testing.T) {
 		Ref:  fleet.ResourceRef{SourceKind: "scanner", Scope: "alpha", Kind: "Image", Name: "payments-v4"},
 		Kind: fleet.FactCVE, Observed: payload, ObservedAt: now, Source: "scanner",
 	}, Workspace: fleet.LocalWorkspace}
-	if err := store.Replace("CVE", fleet.QueryResult{
+	if err := store.Replace(fleet.LocalWorkspace, "CVE", fleet.QueryResult{
 		Facts: []fleet.Fact{fact}, Coverage: fleet.Coverage{Requested: 1, Reachable: 1},
 	}); err != nil {
 		t.Fatal(err)
@@ -173,7 +219,7 @@ func TestStoreMapsGenericResourceAliasToAdvertisedKind(t *testing.T) {
 		"kind":       "ConfigMap",
 		"metadata":   map[string]any{"name": "settings", "namespace": "apps"},
 	}, now)
-	if err := store.Replace("configmaps", fleet.QueryResult{
+	if err := store.Replace(fleet.LocalWorkspace, "configmaps", fleet.QueryResult{
 		Facts: []fleet.Fact{fact}, Coverage: fleet.Coverage{Requested: 1, Reachable: 1},
 	}); err != nil {
 		t.Fatalf("Replace() error = %v", err)
@@ -196,7 +242,7 @@ func TestStoreAppliesWatchDeltasAndPreservesFailedScopeRows(t *testing.T) {
 	}})
 	alpha := podFact(t, "alpha", "api-0", "Running", "image:v1", now)
 	beta := podFact(t, "beta", "api-0", "Running", "image:v1", now)
-	if err := store.Replace("Pod", fleet.QueryResult{
+	if err := store.Replace(fleet.LocalWorkspace, "Pod", fleet.QueryResult{
 		Facts: []fleet.Fact{alpha, beta}, Coverage: fleet.Coverage{Requested: 2, Reachable: 2},
 	}); err != nil {
 		t.Fatalf("Replace() error = %v", err)
@@ -205,12 +251,14 @@ func TestStoreAppliesWatchDeltasAndPreservesFailedScopeRows(t *testing.T) {
 	now = now.Add(time.Second)
 	updated := podFact(t, "alpha", "api-1", "Running", "image:v2", now)
 	if err := store.ApplyWatchEvent(connector.WatchEvent{
-		Type: connector.WatchSnapshot, Kind: "pods", Scope: "alpha", Facts: []fleet.Fact{updated}, ObservedAt: now,
+		Type: connector.WatchSnapshot, Workspace: fleet.LocalWorkspace,
+		Kind: "pods", Scope: "alpha", Facts: []fleet.Fact{updated}, ObservedAt: now,
 	}); err != nil {
 		t.Fatalf("ApplyWatchEvent(snapshot) error = %v", err)
 	}
 	if err := store.ApplyWatchEvent(connector.WatchEvent{
-		Type: connector.WatchError, Kind: "Pod", Scope: "beta", Err: errors.New("watch disconnected"),
+		Type: connector.WatchError, Workspace: fleet.LocalWorkspace,
+		Kind: "Pod", Scope: "beta", Err: errors.New("watch disconnected"),
 	}); err != nil {
 		t.Fatalf("ApplyWatchEvent(error) error = %v", err)
 	}
@@ -223,7 +271,7 @@ func TestStoreAppliesWatchDeltasAndPreservesFailedScopeRows(t *testing.T) {
 	}
 
 	if err := store.ApplyWatchEvent(connector.WatchEvent{
-		Type: connector.WatchDelete, Kind: "pods", Scope: "alpha",
+		Type: connector.WatchDelete, Workspace: fleet.LocalWorkspace, Kind: "pods", Scope: "alpha",
 		Ref: fleet.ResourceRef{Scope: "alpha", Kind: "Pod", Namespace: "apps", Name: "api-1"}, ObservedAt: now,
 	}); err != nil {
 		t.Fatalf("ApplyWatchEvent(delete) error = %v", err)
@@ -236,9 +284,10 @@ func TestStoreAppliesWatchDeltasAndPreservesFailedScopeRows(t *testing.T) {
 func TestStoreRejectsCrossScopeWatchFacts(t *testing.T) {
 	t.Parallel()
 	store := New()
+	store.SetDiscovery(fleet.LocalWorkspace, connector.Discovery{Scopes: []connector.Scope{{Name: "alpha", Reachable: true}}})
 	wrongScope := podFact(t, "beta", "api-0", "Running", "image:v1", time.Now().UTC())
 	err := store.ApplyWatchEvent(connector.WatchEvent{
-		Type: connector.WatchUpsert, Kind: "Pod", Scope: "alpha", Fact: wrongScope,
+		Type: connector.WatchUpsert, Workspace: fleet.LocalWorkspace, Kind: "Pod", Scope: "alpha", Fact: wrongScope,
 	})
 	if err == nil || !strings.Contains(err.Error(), "does not match stream scope") {
 		t.Fatalf("ApplyWatchEvent() error = %v, want scope rejection", err)
@@ -252,12 +301,12 @@ func TestStorePauseAndChangeNotification(t *testing.T) {
 	t.Parallel()
 	store := New()
 	initial := store.Query(fleet.LocalWorkspace, Query{}).Version
-	store.SetPaused(true)
-	version, err := store.WaitForChange(context.Background(), initial)
+	store.SetPaused(fleet.LocalWorkspace, true)
+	version, err := store.WaitForChange(context.Background(), fleet.LocalWorkspace, initial)
 	if err != nil || version <= initial {
 		t.Fatalf("WaitForChange() = %d, %v", version, err)
 	}
-	if store.BeginSync() {
+	if store.BeginSync(fleet.LocalWorkspace) {
 		t.Fatal("BeginSync() while paused = true")
 	}
 	if state := store.Query(fleet.LocalWorkspace, Query{}).State; state != StatePaused {
@@ -266,7 +315,7 @@ func TestStorePauseAndChangeNotification(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := store.WaitForChange(ctx, version); err == nil {
+	if _, err := store.WaitForChange(ctx, fleet.LocalWorkspace, version); err == nil {
 		t.Fatal("WaitForChange(canceled) error = nil")
 	}
 }
@@ -281,7 +330,7 @@ func TestStoreConcurrentSnapshotsAreImmutable(t *testing.T) {
 		waitGroup.Add(2)
 		go func(index int) {
 			defer waitGroup.Done()
-			_ = store.Replace("Pod", fleet.QueryResult{
+			_ = store.Replace(fleet.LocalWorkspace, "Pod", fleet.QueryResult{
 				Facts:    []fleet.Fact{podFact(t, "alpha", "pod-"+string(rune('a'+index)), "Running", "image:v1", now)},
 				Coverage: fleet.Coverage{Requested: 1, Reachable: 1},
 			})
@@ -309,7 +358,7 @@ func TestReplaceRejectsInvalidEvidenceAtomically(t *testing.T) {
 		Ref:      fleet.ResourceRef{Scope: "alpha", Kind: "Pod", Name: "bad"},
 		Observed: json.RawMessage(`{"broken"`),
 	}}}}
-	if err := store.Replace("Pod", result); err == nil {
+	if err := store.Replace(fleet.LocalWorkspace, "Pod", result); err == nil {
 		t.Fatal("Replace(invalid) error = nil")
 	}
 	if snapshot := store.Query(fleet.LocalWorkspace, Query{}); len(snapshot.Records) != 0 {
@@ -398,14 +447,14 @@ func TestStoreReportsOfflineLastKnownAndPendingLens(t *testing.T) {
 	if pending := store.Query(fleet.LocalWorkspace, Query{Kind: "Node"}); pending.Coverage.Reachable != 0 || pending.State != StateCold {
 		t.Fatalf("pending snapshot = %#v, want zero covered cold lens", pending)
 	}
-	if err := store.Replace("Pod", fleet.QueryResult{
+	if err := store.Replace(fleet.LocalWorkspace, "Pod", fleet.QueryResult{
 		Facts:    []fleet.Fact{podFact(t, "alpha", "api-0", "Running", "image:v1", now)},
 		Coverage: fleet.Coverage{Requested: 1, Reachable: 1},
 	}); err != nil {
 		t.Fatalf("Replace() error = %v", err)
 	}
 	store.SetDiscovery(fleet.LocalWorkspace, connector.Discovery{Scopes: []connector.Scope{{Name: "alpha", ObservedAt: now}}, Unreachable: []string{"alpha"}})
-	store.EndSync(context.DeadlineExceeded)
+	store.EndSync(fleet.LocalWorkspace, context.DeadlineExceeded)
 	offline := store.Query(fleet.LocalWorkspace, Query{Kind: "Pod", Text: []string{"no-match"}})
 	if offline.State != StateOffline || len(offline.Records) != 0 {
 		t.Fatalf("offline snapshot = %#v, want zero matches over retained offline data", offline)

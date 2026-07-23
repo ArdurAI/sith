@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -74,6 +75,31 @@ func TestSlogAuditorRejectsUnsafeEventsWithoutEmission(t *testing.T) {
 	}
 }
 
+func TestSlogAuditorReportsHandlerFailure(t *testing.T) {
+	t.Parallel()
+
+	want := errors.New("structured audit sink unavailable")
+	auditor, err := NewSlogAuditor(slog.New(failingAuditHandler{err: want}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := auditor.Record(context.Background(), policyAuditEvent(time.Now().UTC(), VerdictAllow, "phase-1-read")); !errors.Is(err, want) {
+		t.Fatalf("Record() error = %v, want handler failure", err)
+	}
+}
+
+func TestSlogAuditorFailsClosedWhenEventLevelIsDisabled(t *testing.T) {
+	t.Parallel()
+
+	auditor, err := NewSlogAuditor(slog.New(slog.NewTextHandler(&bytes.Buffer{}, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := auditor.Record(context.Background(), policyAuditEvent(time.Now().UTC(), VerdictAllow, "phase-1-read")); err == nil || !strings.Contains(err.Error(), "level is disabled") {
+		t.Fatalf("Record() error = %v, want disabled-level refusal", err)
+	}
+}
+
 func TestSlogAuditorRejectsUnsafeTraceIdentifierWithoutEmission(t *testing.T) {
 	var output bytes.Buffer
 	auditor, err := NewSlogAuditor(slog.New(slog.NewTextHandler(&output, nil)))
@@ -110,9 +136,115 @@ func TestSlogAuditorTextHandlerPreservesSafeFieldsAndSeverity(t *testing.T) {
 	}
 }
 
+func TestSlogAuditorAcceptsProposalAndConstrainedInvalidRequestEvents(t *testing.T) {
+	var output bytes.Buffer
+	auditor, err := NewSlogAuditor(slog.New(slog.NewJSONHandler(&output, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal := policyAuditEvent(time.Now().UTC(), VerdictAllow, "proposal-allowed")
+	proposal.Actor = "user:operator"
+	proposal.Role = tenancy.RoleOperator
+	proposal.Action = tenancy.ActionProposeIntent
+	proposal.Verb = "deployment.restart"
+	invalid := proposal
+	invalid.Verb = invalidVerb
+	invalid.Verdict = VerdictDeny
+	invalid.ReasonCode = "invalid-request"
+	invalidRead := policyAuditEvent(time.Now().UTC(), VerdictDeny, "invalid-request")
+	invalidRead.Verb = invalidVerb
+	for _, event := range []AuditEvent{proposal, invalid, invalidRead} {
+		if err := auditor.Record(context.Background(), event); err != nil {
+			t.Fatalf("Record(%s) error = %v", event.Verb, err)
+		}
+	}
+	logged := output.String()
+	for _, field := range []string{`"action":"propose-intent"`, `"verb":"deployment.restart"`, `"verb":"invalid"`} {
+		if !strings.Contains(logged, field) {
+			t.Fatalf("proposal audit missing %s: %s", field, logged)
+		}
+	}
+	for _, forbidden := range []string{"arguments_digest", "resolved_digest", "payments", "token", "secret"} {
+		if strings.Contains(logged, forbidden) {
+			t.Fatalf("proposal audit leaked %q: %s", forbidden, logged)
+		}
+	}
+}
+
+func TestAuditEventRejectsUnsafeInvalidRequestSentinel(t *testing.T) {
+	base := policyAuditEvent(time.Now().UTC(), VerdictDeny, "invalid-request")
+	base.Verb = invalidVerb
+	if err := base.Validate(); err != nil {
+		t.Fatalf("baseline invalid-request event should validate: %v", err)
+	}
+	for _, mutate := range []func(*AuditEvent){
+		func(event *AuditEvent) { event.Verdict = VerdictAllow },
+		func(event *AuditEvent) { event.Verdict = VerdictRequireApproval },
+		func(event *AuditEvent) { event.ReasonCode = "policy-deny" },
+	} {
+		event := base
+		mutate(&event)
+		if err := event.Validate(); err == nil {
+			t.Fatalf("AuditEvent.Validate() accepted unsafe invalid sentinel: %#v", event)
+		}
+	}
+}
+
+func TestAuditEventRejectsMalformedUTF8Actor(t *testing.T) {
+	t.Parallel()
+
+	event := policyAuditEvent(time.Now().UTC(), VerdictAllow, "phase-1-read")
+	event.Actor = string([]byte{'u', 's', 'e', 'r', ':', 0x80})
+	if err := event.Validate(); err == nil {
+		t.Fatal("AuditEvent.Validate() accepted a malformed UTF-8 actor")
+	}
+}
+
+func TestAuditEventRejectsImpossibleProposalRoleOutcome(t *testing.T) {
+	base := policyAuditEvent(time.Now().UTC(), VerdictDeny, "role-denied")
+	base.Action = tenancy.ActionProposeIntent
+	base.Verb = "deployment.restart"
+	if err := base.Validate(); err != nil {
+		t.Fatalf("role-denied proposal event should validate: %v", err)
+	}
+
+	invalidRequest := base
+	invalidRequest.ReasonCode = "invalid-request"
+	if err := invalidRequest.Validate(); err != nil {
+		t.Fatalf("pre-role invalid-request event should validate: %v", err)
+	}
+
+	for _, mutate := range []func(*AuditEvent){
+		func(event *AuditEvent) { event.Verdict = VerdictAllow; event.ReasonCode = "proposal-allowed" },
+		func(event *AuditEvent) {
+			event.Verdict = VerdictRequireApproval
+			event.ReasonCode = "approval-required"
+		},
+		func(event *AuditEvent) { event.ReasonCode = "policy-deny" },
+	} {
+		event := base
+		mutate(&event)
+		if err := event.Validate(); err == nil {
+			t.Fatalf("AuditEvent.Validate() accepted impossible role outcome: %#v", event)
+		}
+	}
+}
+
 func policyAuditEvent(at time.Time, verdict Verdict, reason string) AuditEvent {
 	return AuditEvent{
 		At: at, TraceID: tracing.ID("0123456789abcdef0123456789abcdef"), WorkspaceID: "workspace-a", Actor: "user:reader", Role: tenancy.RoleReader,
 		Action: tenancy.ActionRead, Verb: VerbFleetRead, Verdict: verdict, ReasonCode: reason,
 	}
 }
+
+type failingAuditHandler struct {
+	err error
+}
+
+func (handler failingAuditHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (handler failingAuditHandler) Handle(context.Context, slog.Record) error { return handler.err }
+
+func (handler failingAuditHandler) WithAttrs([]slog.Attr) slog.Handler { return handler }
+
+func (handler failingAuditHandler) WithGroup(string) slog.Handler { return handler }

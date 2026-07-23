@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="sith-workspace" content="{{.Workspace}}">
+  <meta name="sith-csrf" content="{{.FleetCSRFToken}}">
+  <meta name="sith-correlation-csrf" content="{{.CorrelationCSRFToken}}">
+  <meta name="sith-inventory-csrf" content="{{.InventoryCSRFToken}}">
+  <meta name="sith-cve-csrf" content="{{.CVECSRFToken}}">
+  <title>Sith fleet trust console</title>
+  <link rel="stylesheet" href="/v1/console/assets/console.css">
+  <script src="/v1/console/assets/console.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#cluster-ledger">Skip to cluster ledger</a>
+  <main class="console-shell">
+    <header class="masthead" aria-labelledby="console-title">
+      <div>
+        <p class="eyebrow">Sith / fleet evidence</p>
+        <h1 id="console-title">Trust the coverage,<br>then trust the view.</h1>
+      </div>
+      <dl class="workspace-stamp">
+        <div>
+          <dt>Workspace</dt>
+          <dd id="workspace-name">{{.Workspace}}</dd>
+        </div>
+        <div>
+          <dt>Mode</dt>
+          <dd>Hub · read only</dd>
+        </div>
+      </dl>
+    </header>
+
+    <section class="coverage-panel" aria-labelledby="coverage-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Evidence boundary</p>
+          <h2 id="coverage-title">Coverage rail</h2>
+        </div>
+        <button id="reload-fleet" class="reload-button" type="button">Read current snapshot</button>
+      </div>
+      <p id="coverage-summary" class="coverage-summary" aria-live="polite">Reading the signed workspace snapshot…</p>
+      <div id="coverage-rail" class="coverage-rail" role="img" aria-label="Fleet coverage is loading"></div>
+      <ul class="rail-legend" aria-label="Coverage states">
+        <li><span class="legend-mark current"></span>Current</li>
+        <li><span class="legend-mark stale"></span>Stale</li>
+        <li><span class="legend-mark truncated"></span>Partial</li>
+        <li><span class="legend-mark unreachable"></span>Unreachable</li>
+        <li><span class="legend-mark unknown"></span>Unaccounted</li>
+      </ul>
+      <ul id="coverage-details" class="coverage-details" aria-label="Named coverage gaps"></ul>
+    </section>
+
+    <section class="inventory-panel" aria-labelledby="inventory-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Normalized inventory ledger</p>
+          <h2 id="inventory-title">What has each spoke observed?</h2>
+        </div>
+        <p class="query-contract">Maximum 256 records · no raw payload</p>
+      </div>
+      <p class="inventory-intro">Choose one normalized resource kind and optionally narrow by exact namespace or name. Counts are typed projections; image digests and source metadata stay behind the evidence boundary.</p>
+      <form id="inventory-form" class="inventory-form" novalidate>
+        <label>
+          <span>Resource kind</span>
+          <select id="inventory-kind" name="kind" required>
+            <option value="Deployment">Deployment</option>
+            <option value="Pod">Pod</option>
+            <option value="Rollout">Rollout</option>
+          </select>
+        </label>
+        <label>
+          <span>Namespace <small>optional, exact</small></span>
+          <input id="inventory-namespace" name="namespace" type="text" maxlength="256" autocomplete="off" spellcheck="false" placeholder="payments">
+        </label>
+        <label>
+          <span>Name <small>optional, exact</small></span>
+          <input id="inventory-name" name="name" type="text" maxlength="256" autocomplete="off" spellcheck="false" placeholder="payments">
+        </label>
+        <button id="run-inventory" class="inventory-button" type="submit">Read inventory</button>
+      </form>
+      <div id="inventory-state" class="console-state inventory-state" role="status" aria-live="polite">
+        <p>No inventory selection has been read. No completeness claim is active.</p>
+      </div>
+      <div id="inventory-answer" class="inventory-answer" hidden>
+        <div class="answer-heading">
+          <p id="inventory-summary" class="correlation-summary"></p>
+          <p id="inventory-time" class="snapshot-time">No inventory read yet</p>
+        </div>
+        <ul id="inventory-gaps" class="coverage-details inventory-gaps" aria-label="Inventory coverage gaps"></ul>
+        <ol id="inventory-list" class="inventory-list" aria-label="Normalized inventory records"></ol>
+      </div>
+    </section>
+
+    <section class="cve-panel" aria-labelledby="cve-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Runtime vulnerability evidence</p>
+          <h2 id="cve-title">Where was this CVE observed?</h2>
+        </div>
+        <p class="query-contract">Maximum 256 records · immutable digests only</p>
+      </div>
+      <p class="cve-intro">Enter one canonical CVE identifier. Sith reports only persisted observations tied to immutable runtime image digests and keeps named coverage gaps beside the evidence.</p>
+      <form id="cve-form" class="cve-form" novalidate>
+        <label for="cve-identifier">
+          <span>CVE identifier</span>
+          <input id="cve-identifier" name="identifier" type="text" required minlength="13" maxlength="64" autocomplete="off" spellcheck="false" placeholder="CVE-2026-0001" aria-describedby="cve-input-help">
+        </label>
+        <p id="cve-input-help" class="input-help">Use uppercase canonical form, for example CVE-2026-0001.</p>
+        <button id="run-cve" class="cve-button" type="submit">Read CVE evidence</button>
+      </form>
+      <div id="cve-state" class="console-state cve-state" role="status" aria-live="polite">
+        <p>No CVE evidence has been read. No absence claim is active.</p>
+      </div>
+      <div id="cve-answer" class="cve-answer" hidden>
+        <div class="answer-heading">
+          <p id="cve-summary" class="correlation-summary"></p>
+          <p id="cve-time" class="snapshot-time">No CVE read yet</p>
+        </div>
+        <ul id="cve-gaps" class="coverage-details" aria-label="CVE evidence coverage gaps"></ul>
+        <ol id="cve-list" class="cve-list" aria-label="Runtime CVE evidence records"></ol>
+      </div>
+    </section>
+
+    <section class="correlation-panel" aria-labelledby="correlation-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Exact health correlation</p>
+          <h2 id="correlation-title">Where is this resource not Healthy?</h2>
+        </div>
+        <p class="query-contract">One persisted read · no refresh</p>
+      </div>
+      <p class="correlation-intro">Name one exact non-Secret resource. Sith reports only observed non-Healthy matches and keeps coverage gaps beside the answer.</p>
+      <form id="correlation-form" class="correlation-form" novalidate>
+        <label>
+          <span>Resource kind</span>
+          <input id="correlation-kind" name="kind" type="text" required maxlength="128" autocomplete="off" spellcheck="false" placeholder="Deployment">
+        </label>
+        <label>
+          <span>Exact name</span>
+          <input id="correlation-name" name="name" type="text" required maxlength="256" autocomplete="off" spellcheck="false" placeholder="payments">
+        </label>
+        <label>
+          <span>Namespace <small>optional</small></span>
+          <input id="correlation-namespace" name="namespace" type="text" maxlength="256" autocomplete="off" spellcheck="false" placeholder="payments">
+        </label>
+        <button id="run-correlation" class="correlation-button" type="submit">Correlate health</button>
+      </form>
+      <div id="correlation-state" class="console-state correlation-state" role="status" aria-live="polite">
+        <p>No correlation has been run. No health claim is active.</p>
+      </div>
+      <div id="correlation-answer" class="correlation-answer" hidden>
+        <div class="answer-heading">
+          <p id="correlation-summary" class="correlation-summary"></p>
+          <p id="correlation-time" class="snapshot-time">No correlation read yet</p>
+        </div>
+        <ul id="correlation-gaps" class="coverage-details" aria-label="Correlation coverage gaps"></ul>
+        <ol id="correlation-list" class="correlation-list" aria-label="Non-Healthy resource observations"></ol>
+      </div>
+    </section>
+
+    <section id="cluster-ledger" class="ledger" aria-labelledby="ledger-title">
+      <div class="section-heading ledger-heading">
+        <div>
+          <p class="eyebrow">Signed workspace only</p>
+          <h2 id="ledger-title">Cluster ledger</h2>
+        </div>
+        <p id="snapshot-time" class="snapshot-time">No snapshot read yet</p>
+      </div>
+      <div id="console-state" class="console-state" role="status" aria-live="polite">
+        <p>Establishing the evidence boundary.</p>
+      </div>
+      <ol id="cluster-list" class="cluster-list" aria-label="Clusters"></ol>
+    </section>
+  </main>
+</body>
+</html>

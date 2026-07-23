@@ -173,6 +173,20 @@ expect_failure "kind enumeration failure is not treated as cluster absence" \
   env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/kind-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
   KIND_BIN=/usr/bin/false bash -c 'source "$1"; cluster_exists sith-m0-hub' _ "${SCRIPT}"
 
+for helm_version in v4.2.3 v4.2.3+g43e8b7f; do
+  env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/helm-version-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
+    HELM_VERSION_OUTPUT="${helm_version}" bash -c \
+    'source "$1"; helm_version_is_pinned_release "${HELM_VERSION_OUTPUT}"' _ "${SCRIPT}"
+done
+pass "Helm version policy accepts the pinned release and official build metadata"
+
+for helm_version in v4.2.30 v4.2.3-rc.1 v4.2.3+vendor v4.2.3+g123456 v4.2.3+g43E8B7F; do
+  expect_failure "Helm version policy rejects lookalike ${helm_version}" \
+    env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/helm-version-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
+    HELM_VERSION_OUTPUT="${helm_version}" bash -c \
+    'source "$1"; helm_version_is_pinned_release "${HELM_VERSION_OUTPUT}"' _ "${SCRIPT}"
+done
+
 token_flag_marker="${TEST_ROOT}/token-flag"
 expect_failure "malformed token output still requires invalidation" \
   env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/token-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
@@ -194,30 +208,83 @@ expect_failure "malformed token output still requires invalidation" \
 [[ "$(cat "${token_flag_marker}")" == "1" ]]
 pass "token acquisition boundary is conservative"
 
-addon_wait_marker="${TEST_ROOT}/addon-wait"
+addon_wait_state="${TEST_ROOT}/addon-wait-state"
+printf '0\n' >"${addon_wait_state}"
 env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/addon-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
-  KUBECTL_BIN=fake_kubectl ADDON_WAIT_MARKER="${addon_wait_marker}" bash -c '
-    attempts=0
+  KUBECTL_BIN=fake_kubectl ADDON_WAIT_STATE="${addon_wait_state}" bash -c '
     fake_kubectl() {
-      for argument in "$@"; do
-        if [[ "${argument}" == "get" ]]; then
-          attempts=$((attempts + 1))
-          [[ "${attempts}" -ge 3 ]]
-          return
-        fi
-        if [[ "${argument}" == "wait" ]]; then
-          printf "%s\n" "${attempts}" >"${ADDON_WAIT_MARKER}"
-          return 0
-        fi
-      done
-      return 1
+      [[ " $* " == *" get "* && " $* " != *" wait "* ]] || return 90
+      local attempts
+      attempts=$(( $(cat "${ADDON_WAIT_STATE}") + 1 ))
+      printf "%s\n" "${attempts}" >"${ADDON_WAIT_STATE}"
+      if (( attempts >= 3 )); then
+        printf "uid-created\tTrue|"
+      fi
     }
-    sleep() { :; }
+    sleep() { SECONDS=$((SECONDS + 1)); }
     source "$1"
     wait_for_addon_creation spoke-a cluster-proxy
   ' _ "${SCRIPT}"
-[[ "$(cat "${addon_wait_marker}")" == "3" ]]
-pass "addon wait tolerates asynchronous creation before availability"
+[[ "$(cat "${addon_wait_state}")" == "4" ]]
+pass "addon wait tolerates delayed creation within one deadline"
+
+addon_recreate_state="${TEST_ROOT}/addon-recreate-state"
+printf '0\n' >"${addon_recreate_state}"
+env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/addon-recreate-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
+  KUBECTL_BIN=fake_kubectl ADDON_RECREATE_STATE="${addon_recreate_state}" bash -c '
+    fake_kubectl() {
+      [[ " $* " == *" get "* && " $* " != *" wait "* ]] || return 90
+      local attempts
+      attempts=$(( $(cat "${ADDON_RECREATE_STATE}") + 1 ))
+      printf "%s\n" "${attempts}" >"${ADDON_RECREATE_STATE}"
+      case "${attempts}" in
+        1) printf "uid-old\tFalse|" ;;
+        2) printf "uid-old\tTrue|" ;;
+        3) : ;;
+        4) printf "uid-new\tFalse|" ;;
+        5 | 6) printf "uid-new\tTrue|" ;;
+        *) return 91 ;;
+      esac
+    }
+    sleep() { SECONDS=$((SECONDS + 1)); }
+    source "$1"
+    wait_for_addon_creation spoke-a managed-serviceaccount
+  ' _ "${SCRIPT}"
+[[ "$(cat "${addon_recreate_state}")" == "6" ]]
+pass "addon wait rejects a deleted old instance and confirms the recreated UID"
+
+terminal_output="$(env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/addon-terminal-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
+  KUBECTL_BIN=fake_kubectl bash -c '
+    fake_kubectl() {
+      printf "SENSITIVE-SERVER-BODY\n" >&2
+      return 1
+    }
+    source "$1"
+    wait_for_addon_creation spoke-a cluster-proxy
+  ' _ "${SCRIPT}" 2>&1)" && {
+  printf '[m0-safety] FAIL: terminal addon read unexpectedly succeeded\n' >&2
+  exit 1
+}
+[[ "${terminal_output}" == *"cannot read current spoke-a managedclusteraddon/cluster-proxy state"* ]]
+[[ "${terminal_output}" != *"SENSITIVE-SERVER-BODY"* ]]
+pass "addon wait fails closed without logging terminal response bodies"
+
+expect_failure "addon wait rejects malformed or duplicate Available conditions" \
+  env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/addon-malformed-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
+  KUBECTL_BIN=fake_kubectl bash -c '
+    fake_kubectl() { printf "uid-malformed\tFalse|True|"; }
+    source "$1"
+    wait_for_addon_creation spoke-a cluster-proxy
+  ' _ "${SCRIPT}"
+
+expect_failure "addon creation and availability consume one absolute deadline" \
+  env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/addon-deadline-root" SITH_M0_ALLOW_NON_EXTENDED=1 \
+  KUBECTL_BIN=fake_kubectl bash -c '
+    fake_kubectl() { printf "uid-pending\tFalse|"; }
+    sleep() { SECONDS=$((SECONDS + 300)); }
+    source "$1"
+    wait_for_addon_creation spoke-a cluster-proxy
+  ' _ "${SCRIPT}"
 
 expect_failure "unrelated hub exec failure cannot satisfy the active deny" \
   env SITH_M0_SCRATCH_ROOT="${TEST_ROOT}/probe-root" SITH_M0_ALLOW_NON_EXTENDED=1 \

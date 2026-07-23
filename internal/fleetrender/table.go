@@ -114,6 +114,11 @@ func CoverageLine(coverage fleet.Coverage) string {
 	} else {
 		parts = append(parts, fmt.Sprintf("%d unreachable (%s)", len(coverage.Unreachable), strings.Join(coverage.Unreachable, ", ")))
 	}
+	if len(coverage.Truncated) == 0 {
+		parts = append(parts, "0 truncated")
+	} else {
+		parts = append(parts, fmt.Sprintf("%d truncated (%s)", len(coverage.Truncated), strings.Join(coverage.Truncated, ", ")))
+	}
 	return strings.Join(parts, " · ")
 }
 

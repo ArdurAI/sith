@@ -24,6 +24,10 @@
       {"lens": "timeline", "predicate": "change.kind", "observed": "deploy"}
     ],
     "missing_lenses": ["timeline"],
-    "advisory": {"command": true, "pr_diff": false, "sensitive": false}
+    "advisory": {"command": true, "pr_diff": false, "sensitive": false},
+    "remediation_candidate": {
+      "verb": "argocd.rollback",
+      "required_provenance": ["argocd.application.target", "argocd.revision"]
+    }
   }
 }

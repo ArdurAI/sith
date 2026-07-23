@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -21,8 +22,12 @@ import (
 )
 
 const (
-	helmContractVersion = "v4.2.2"
+	helmContractVersion = "v4.2.3"
 	validHubImage       = "registry.example.invalid/sith/hub@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+)
+
+var helmContractVersionPattern = regexp.MustCompile(
+	`^` + regexp.QuoteMeta(helmContractVersion) + `(?:\+g[0-9a-f]{7,40})?$`,
 )
 
 type helmProfileResources struct {
@@ -42,6 +47,8 @@ var hubProfileResources = map[string]helmProfileResources{
 }
 
 func TestHelmHubChartContract(t *testing.T) {
+	assertHelmVersionPolicy(t)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 	root := repositoryRoot(t)
@@ -52,7 +59,7 @@ func TestHelmHubChartContract(t *testing.T) {
 	if _, err := exec.LookPath(helm); err != nil {
 		t.Fatalf("find Helm binary %q: %v", helm, err)
 	}
-	if output, err := runHelm(ctx, t, helm, root, "version", "--short"); err != nil || !strings.HasPrefix(strings.TrimSpace(output), helmContractVersion) {
+	if output, err := runHelm(ctx, t, helm, root, "version", "--short"); err != nil || !helmVersionIsPinnedRelease(output) {
 		t.Fatalf("Helm version/output = %q / %v, want %s", output, err, helmContractVersion)
 	}
 
@@ -65,13 +72,30 @@ func TestHelmHubChartContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template light profile: %v\n%s", err, lightRendered)
 	}
-	lightObjects := assertHelmHubRender(t, lightRendered, "light")
+	lightObjects := assertHelmHubRender(t, lightRendered, "light", false)
 	heavyRendered, err := runHelm(ctx, t, helm, root, "template", "sith-hub", chart, "--namespace", "sith-system", "--values", writeHelmValues(t, profileHubValues("heavy")))
 	if err != nil {
 		t.Fatalf("helm template heavy profile: %v\n%s", err, heavyRendered)
 	}
-	heavyObjects := assertHelmHubRender(t, heavyRendered, "heavy")
+	heavyObjects := assertHelmHubRender(t, heavyRendered, "heavy", false)
 	assertProfileOnlyChangesResources(t, lightObjects, heavyObjects)
+	browserRendered, err := runHelm(ctx, t, helm, root, "template", "sith-hub", chart, "--namespace", "sith-system", "--values", writeHelmValues(t, browserOIDCHubValues()))
+	if err != nil {
+		t.Fatalf("helm template browser OIDC profile: %v\n%s", err, browserRendered)
+	}
+	assertBrowserOIDCDeployment(t, requiredHelmObject(t, assertHelmHubRender(t, browserRendered, "light", false), "Deployment"))
+	metricsRendered, err := runHelm(ctx, t, helm, root, "template", "sith-hub", chart, "--namespace", "sith-system", "--values", writeHelmValues(t, metricsHubValues()))
+	if err != nil {
+		t.Fatalf("helm template metrics profile: %v\n%s", err, metricsRendered)
+	}
+	assertLoopbackMetricsDeployment(t, requiredHelmObject(t, assertHelmHubRender(t, metricsRendered, "light", true), "Deployment"))
+	browserMetricsRendered, err := runHelm(ctx, t, helm, root, "template", "sith-hub", chart, "--namespace", "sith-system", "--values", writeHelmValues(t, browserMetricsHubValues()))
+	if err != nil {
+		t.Fatalf("helm template browser OIDC plus metrics profile: %v\n%s", err, browserMetricsRendered)
+	}
+	browserMetricsDeployment := requiredHelmObject(t, assertHelmHubRender(t, browserMetricsRendered, "light", true), "Deployment")
+	assertBrowserOIDCDeployment(t, browserMetricsDeployment)
+	assertLoopbackMetricsDeployment(t, browserMetricsDeployment)
 
 	for name, invalid := range map[string]string{
 		"mutable tag":                  strings.Replace(validHubValues(), validHubImage, "registry.example.invalid/sith/hub:latest", 1),
@@ -80,6 +104,10 @@ func TestHelmHubChartContract(t *testing.T) {
 		"unknown profile":              strings.Replace(validHubValues(), "profile: light", "profile: unbounded", 1),
 		"unexpected image pull secret": validHubValues() + "\nimagePullSecrets:\n  password: must-not-render\n",
 		"unexpected resources":         validHubValues() + "\nresources:\n  requests:\n    cpu: 999\n",
+		"partial browser OIDC":         strings.Replace(validHubValues(), `    issuer: ""`, "    issuer: https://idp.sith.example", 1),
+		"metrics hostname":             strings.Replace(validHubValues(), "  proxyAddress:", "  metrics:\n    listenAddress: localhost:9464\n  proxyAddress:", 1),
+		"metrics wildcard":             strings.Replace(validHubValues(), "  proxyAddress:", "  metrics:\n    listenAddress: 0.0.0.0:9464\n  proxyAddress:", 1),
+		"metrics bad port":             strings.Replace(validHubValues(), "  proxyAddress:", "  metrics:\n    listenAddress: 127.0.0.1:65536\n  proxyAddress:", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if output, err := runHelm(ctx, t, helm, root, "template", "sith-hub", chart, "--namespace", "sith-system", "--values", writeHelmValues(t, invalid)); err == nil {
@@ -92,10 +120,42 @@ func TestHelmHubChartContract(t *testing.T) {
 		"mutable image":        strings.Replace(validHubValues(), validHubImage, "registry.example.invalid/sith/hub:latest", 1),
 		"unknown profile":      strings.Replace(validHubValues(), "profile: light", "profile: unbounded", 1),
 		"unexpected resources": validHubValues() + "\nresources:\n  requests:\n    cpu: 999\n",
+		"metrics wildcard":     strings.Replace(validHubValues(), "  proxyAddress:", "  metrics:\n    listenAddress: 0.0.0.0:9464\n  proxyAddress:", 1),
+		"metrics bad port":     strings.Replace(validHubValues(), "  proxyAddress:", "  metrics:\n    listenAddress: 127.0.0.1:65536\n  proxyAddress:", 1),
 	} {
 		t.Run("skip schema validation "+name, func(t *testing.T) {
 			if output, err := runHelm(ctx, t, helm, root, "template", "sith-hub", chart, "--namespace", "sith-system", "--skip-schema-validation", "--values", writeHelmValues(t, invalid)); err == nil {
 				t.Fatalf("helm template --skip-schema-validation accepted %s:\n%s", name, output)
+			}
+		})
+	}
+}
+
+func helmVersionIsPinnedRelease(output string) bool {
+	return helmContractVersionPattern.MatchString(strings.TrimSuffix(output, "\n"))
+}
+
+func assertHelmVersionPolicy(t *testing.T) {
+	t.Helper()
+
+	for _, test := range []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{name: "plain release", output: "v4.2.3", want: true},
+		{name: "official build metadata", output: "v4.2.3+g43e8b7f\n", want: true},
+		{name: "lookalike patch", output: "v4.2.30", want: false},
+		{name: "prerelease", output: "v4.2.3-rc.1", want: false},
+		{name: "arbitrary suffix", output: "v4.2.3+vendor", want: false},
+		{name: "short commit", output: "v4.2.3+g123456", want: false},
+		{name: "uppercase commit", output: "v4.2.3+g43E8B7F", want: false},
+		{name: "leading whitespace", output: " v4.2.3+g43e8b7f\n", want: false},
+		{name: "extra output", output: "warning\nv4.2.3+g43e8b7f\n", want: false},
+	} {
+		t.Run("version policy/"+test.name, func(t *testing.T) {
+			if got := helmVersionIsPinnedRelease(test.output); got != test.want {
+				t.Fatalf("helmVersionIsPinnedRelease(%q) = %t, want %t", test.output, got, test.want)
 			}
 		})
 	}
@@ -114,6 +174,10 @@ runtime:
   sessionIssuer: https://issuer.sith.example
   sessionAudience: https://hub.sith.example
   sessionKeyID: session-2026-07
+  browserOIDC:
+    issuer: ""
+    clientID: ""
+    redirectURI: ""
   proxyAddress: cluster-proxy.open-cluster-management.svc:8090
   proxyServerName: cluster-proxy.open-cluster-management.svc
   kubeAPIServerName: kubernetes
@@ -121,6 +185,24 @@ migration:
   existingSecret: sith-migration
   applicationRole: sith_app
 `, profile, validHubImage)
+}
+
+func browserOIDCHubValues() string {
+	return strings.Replace(validHubValues(), `  browserOIDC:
+    issuer: ""
+    clientID: ""
+    redirectURI: ""`, `  browserOIDC:
+    issuer: https://idp.sith.example
+    clientID: sith-browser
+    redirectURI: https://hub.sith.example/v1/console/oidc/callback`, 1)
+}
+
+func metricsHubValues() string {
+	return strings.Replace(validHubValues(), "  proxyAddress:", "  metrics:\n    listenAddress: 127.0.0.1:9464\n  proxyAddress:", 1)
+}
+
+func browserMetricsHubValues() string {
+	return strings.Replace(browserOIDCHubValues(), "  proxyAddress:", "  metrics:\n    listenAddress: 127.0.0.1:9464\n  proxyAddress:", 1)
 }
 
 func writeHelmValues(t *testing.T, contents string) string {
@@ -147,7 +229,7 @@ func runHelm(ctx context.Context, t *testing.T, helm, root string, args ...strin
 	return string(output), err
 }
 
-func assertHelmHubRender(t *testing.T, rendered, profile string) []*unstructured.Unstructured {
+func assertHelmHubRender(t *testing.T, rendered, profile string, metricsEnabled bool) []*unstructured.Unstructured {
 	t.Helper()
 	if strings.Contains(rendered, "kind: Secret") || strings.Contains(rendered, "stringData:") || strings.Contains(rendered, "\ndata:") {
 		t.Fatal("rendered chart created or embedded secret data")
@@ -162,7 +244,7 @@ func assertHelmHubRender(t *testing.T, rendered, profile string) []*unstructured
 		}
 	}
 
-	serviceAccountName, selectorLabels := assertHubDeployment(t, requiredHelmObject(t, objects, "Deployment"), profile)
+	serviceAccountName, selectorLabels := assertHubDeployment(t, requiredHelmObject(t, objects, "Deployment"), profile, metricsEnabled)
 	assertHubRBAC(t, requiredHelmObject(t, objects, "ClusterRole"), requiredHelmObject(t, objects, "ClusterRoleBinding"), serviceAccountName)
 	assertMigrationJob(t, requiredHelmObject(t, objects, "Job"), profile)
 	assertHubService(t, requiredHelmObject(t, objects, "Service"), selectorLabels)
@@ -211,7 +293,7 @@ func requiredHelmObject(t *testing.T, objects []*unstructured.Unstructured, kind
 	return found
 }
 
-func assertHubDeployment(t *testing.T, deployment *unstructured.Unstructured, profile string) (string, map[string]any) {
+func assertHubDeployment(t *testing.T, deployment *unstructured.Unstructured, profile string, metricsEnabled bool) (string, map[string]any) {
 	t.Helper()
 	podSpec := nestedHelmMap(t, deployment.Object, "spec", "template", "spec")
 	if value, found, _ := unstructured.NestedBool(podSpec, "automountServiceAccountToken"); !found || !value {
@@ -224,9 +306,22 @@ func assertHubDeployment(t *testing.T, deployment *unstructured.Unstructured, pr
 	}
 	assertHelmContainerSecurity(t, container)
 	assertHelmProfileResources(t, container, profile)
+	assertHubProbes(t, container)
 	environment := helmEnvironment(t, container)
-	if len(environment) != 14 || environment["SITH_HUB_DATABASE_URL"] != "secret:sith-runtime/database-url" {
+	if !matchesHubEnvironmentMode(environment, metricsEnabled) || environment["SITH_HUB_DATABASE_URL"] != "secret:sith-runtime/database-url" {
 		t.Fatalf("hub environment = %#v", environment)
+	}
+	ports, found, err := unstructured.NestedSlice(container, "ports")
+	if err != nil || !found || len(ports) != map[bool]int{false: 1, true: 2}[metricsEnabled] {
+		t.Fatalf("hub container ports = %#v / %v", ports, err)
+	}
+	if !metricsEnabled {
+		for _, port := range ports {
+			entry, ok := port.(map[string]any)
+			if ok && entry["name"] == "metrics" {
+				t.Fatalf("metrics container port unexpectedly rendered: %#v", ports)
+			}
+		}
 	}
 	for _, name := range []string{"SITH_HUB_SESSION_PUBLIC_KEY_FILE", "SITH_HUB_SERVER_TLS_CERT_FILE", "SITH_HUB_SERVER_TLS_KEY_FILE", "SITH_HUB_PROXY_CA_FILE", "SITH_HUB_PROXY_CERT_FILE", "SITH_HUB_PROXY_KEY_FILE"} {
 		if !strings.HasPrefix(environment[name], "/var/run/sith/runtime/") {
@@ -252,6 +347,105 @@ func assertHubDeployment(t *testing.T, deployment *unstructured.Unstructured, pr
 	return serviceAccountName, nestedHelmMap(t, deployment.Object, "spec", "template", "metadata", "labels")
 }
 
+func assertHubProbes(t *testing.T, container map[string]any) {
+	t.Helper()
+	for _, probe := range []struct {
+		name         string
+		path         string
+		initialDelay int64
+		period       int64
+	}{
+		{name: "livenessProbe", path: "/healthz", initialDelay: 10, period: 10},
+		{name: "readinessProbe", path: "/readyz", initialDelay: 2, period: 5},
+	} {
+		configuration := nestedHelmMap(t, container, probe.name)
+		if _, found := configuration["tcpSocket"]; found {
+			t.Fatalf("%s regressed to a socket-only check: %#v", probe.name, configuration)
+		}
+		httpGet := nestedHelmMap(t, configuration, "httpGet")
+		if httpGet["path"] != probe.path || httpGet["port"] != "https" || httpGet["scheme"] != "HTTPS" ||
+			helmInt(t, configuration["initialDelaySeconds"]) != probe.initialDelay ||
+			helmInt(t, configuration["periodSeconds"]) != probe.period ||
+			helmInt(t, configuration["timeoutSeconds"]) != 1 ||
+			helmInt(t, configuration["successThreshold"]) != 1 ||
+			helmInt(t, configuration["failureThreshold"]) != 3 {
+			t.Fatalf("%s contract = %#v", probe.name, configuration)
+		}
+	}
+}
+
+func matchesHubEnvironmentMode(environment map[string]string, metricsEnabled bool) bool {
+	_, configured := environment["SITH_HUB_METRICS_LISTEN_ADDR"]
+	if configured != metricsEnabled {
+		return false
+	}
+	if metricsEnabled {
+		return len(environment) == 15 || len(environment) == 19
+	}
+	return len(environment) == 14 || len(environment) == 18
+}
+
+func assertLoopbackMetricsDeployment(t *testing.T, deployment *unstructured.Unstructured) {
+	t.Helper()
+	podSpec := nestedHelmMap(t, deployment.Object, "spec", "template", "spec")
+	container := onlyHelmContainer(t, podSpec)
+	environment := helmEnvironment(t, container)
+	if environment["SITH_HUB_METRICS_LISTEN_ADDR"] != "127.0.0.1:9464" {
+		t.Fatalf("loopback metrics environment = %#v", environment)
+	}
+	ports, found, err := unstructured.NestedSlice(container, "ports")
+	if err != nil || !found || len(ports) != 2 {
+		t.Fatalf("loopback metrics ports = %#v / %v", ports, err)
+	}
+	wantPorts := map[string]int64{"https": 8443, "metrics": 9464}
+	for _, port := range ports {
+		entry, ok := port.(map[string]any)
+		if !ok {
+			t.Fatalf("loopback metrics port entry = %#v", port)
+		}
+		name, ok := entry["name"].(string)
+		wantPort, found := wantPorts[name]
+		if !ok || !found || helmInt(t, entry["containerPort"]) != wantPort || entry["protocol"] != "TCP" {
+			t.Fatalf("loopback metrics port entry = %#v", entry)
+		}
+		delete(wantPorts, name)
+	}
+	if len(wantPorts) != 0 {
+		t.Fatalf("loopback metrics ports missing = %#v", wantPorts)
+	}
+}
+
+func assertBrowserOIDCDeployment(t *testing.T, deployment *unstructured.Unstructured) {
+	t.Helper()
+	podSpec := nestedHelmMap(t, deployment.Object, "spec", "template", "spec")
+	container := onlyHelmContainer(t, podSpec)
+	environment := helmEnvironment(t, container)
+	if (len(environment) != 18 && len(environment) != 19) || environment["SITH_HUB_BROWSER_OIDC_ISSUER"] != "https://idp.sith.example" ||
+		environment["SITH_HUB_BROWSER_OIDC_CLIENT_ID"] != "sith-browser" || environment["SITH_HUB_BROWSER_OIDC_REDIRECT_URI"] != "https://hub.sith.example/v1/console/oidc/callback" ||
+		environment["SITH_HUB_SESSION_PRIVATE_KEY_FILE"] != "/var/run/sith/runtime/session-private.pem" {
+		t.Fatalf("browser OIDC environment = %#v", environment)
+	}
+	volumes, found, err := unstructured.NestedSlice(podSpec, "volumes")
+	if err != nil || !found || len(volumes) != 1 {
+		t.Fatalf("browser OIDC volumes = %#v / %v", volumes, err)
+	}
+	volume, ok := volumes[0].(map[string]any)
+	if !ok {
+		t.Fatalf("browser OIDC volume = %#v", volumes[0])
+	}
+	items, found, err := unstructured.NestedSlice(nestedHelmMap(t, volume, "secret"), "items")
+	if err != nil || !found {
+		t.Fatalf("browser OIDC secret items = %#v / %v", volume, err)
+	}
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if ok && entry["key"] == "session-private.pem" && entry["path"] == "session-private.pem" {
+			return
+		}
+	}
+	t.Fatalf("browser OIDC session-private.pem mount missing: %#v", items)
+}
+
 func assertHubService(t *testing.T, service *unstructured.Unstructured, wantSelector map[string]any) {
 	t.Helper()
 	spec := nestedHelmMap(t, service.Object, "spec")
@@ -259,8 +453,12 @@ func assertHubService(t *testing.T, service *unstructured.Unstructured, wantSele
 		t.Fatalf("service spec = %#v", spec)
 	}
 	ports, found, err := unstructured.NestedSlice(spec, "ports")
-	if err != nil || !found || len(ports) == 0 {
+	if err != nil || !found || len(ports) != 1 {
 		t.Fatalf("service ports = %#v / %v", ports, err)
+	}
+	port, ok := ports[0].(map[string]any)
+	if !ok || port["name"] != "https" || helmInt(t, port["port"]) != 8443 || port["targetPort"] != "https" || port["protocol"] != "TCP" {
+		t.Fatalf("service port = %#v", ports[0])
 	}
 	if !reflect.DeepEqual(nestedHelmMap(t, spec, "selector"), wantSelector) {
 		t.Fatalf("service selector = %#v, want pod labels %#v", spec["selector"], wantSelector)

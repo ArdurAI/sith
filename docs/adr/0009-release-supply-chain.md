@@ -26,8 +26,8 @@ long-lived cross-repository credential.
 2. CI performs two complete snapshot builds and compares archive SHA-256 digests. It separately
    verifies checksum coverage, exact archive shape, native `sith version` metadata, and SPDX 2.3
    documents. SBOM timestamps and transparency-log signatures are not called reproducible.
-3. Syft v1.46.0 creates one SPDX SBOM per archive. The checksum manifest covers both archives and
-   SBOMs. Cosign v3.0.6 signs every archive, SBOM, and the checksum manifest with GitHub's short-lived
+3. Syft v1.49.0 creates one SPDX SBOM per archive. The checksum manifest covers both archives and
+   SBOMs. Cosign v3.1.2 signs every archive, SBOM, and the checksum manifest with GitHub's short-lived
    OIDC identity and emits self-contained Sigstore bundles.
 4. `actions/attest` v4 creates one SLSA provenance statement over the checksum manifest's subjects
    and one SPDX predicate binding for each archive/SBOM pair. Action dependencies are pinned to

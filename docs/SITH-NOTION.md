@@ -1756,6 +1756,15 @@ sequenceDiagram
 - Approvals are per-action, single-use, and bound to the resolved-args hash.
 - Changing the args after approval invalidates it (approve-then-swap is blocked).
 
+**Implementation status (F5.9a/F5.9b, 2026-07-21).** The durable server-side core persists a
+same-workspace, distinct-approver grant bound to the immutable resolved proposal digest and spends
+it with one conditional PostgreSQL update. Every new grant has one immutable 10-minute absolute
+lifetime minted from PostgreSQL statement time; consumption enforces the half-open
+`approved_at <= consumed_at < expires_at` interval in that same update. Expiry is bound into
+versioned lifecycle evidence, legacy grants are retained but fail closed, and historical audit
+formats remain independently verifiable. MCP transport, Ardur PDP policy, multi-approver counting,
+credential minting, and dispatch remain later slices; this does not claim F5.9 complete.
+
 **Key risk / guardrail.** Approve-then-swap (approve a benign action, then change args) is the
 classic agent bypass. Guardrail: the approval is bound to an arg-hash re-checked at dispatch, so a
 valid signature and a valid approval are both necessary but neither is sufficient if the args
@@ -2539,7 +2548,8 @@ and alerting · F10.5 crown-jewel hardening.
 ### F10.1 — Metrics
 
 **What it is.** Metrics about Sith's own health and behavior: control-plane liveness, federation
-freshness, intent throughput, refusal and abstention rates, PDP latency.
+freshness, intent throughput, bounded sanitized authentication-outcome counts, and future derived rates
+where trustworthy denominators exist, abstention rates, and PDP latency.
 
 **How it works.**
 1. The hub exposes metrics for scraping (control-plane health, DB, queue depths).
@@ -2960,18 +2970,21 @@ Guardrail: the taxonomy is closed; "re-skin a tool" is not an expressible connec
 
 ### F12.3 — Versioning and one-canonical-connector policy
 
-**What it is.** A minor-additive protocol contract and a rule of one canonical connector per
-tool — the Terraform discipline that prevents the Backstage redundancy/abandonment failure.
+**What it is.** A structured, explicitly negotiated framework wire contract, a separate opaque
+adapter/evidence contract version, and a rule of one canonical connector per tool — the Terraform
+discipline that prevents the Backstage redundancy/abandonment failure.
 
 **How it works.**
-1. Major protocol versions delineate compatibility; minor versions are strictly additive.
-2. The registry admits **one** canonical connector per target tool, with declared ownership.
-3. Breaking a connector's contract is a major-version, reviewed change — never a silent minor bump.
+1. Endpoints advertise exact structured `{major, minor}` framework wire versions; the highest
+   exact common version is selected. No common major or no explicitly common minor fails closed.
+2. Adapter/evidence contract versions remain opaque provenance and never drive wire compatibility.
+3. The registry admits **one** canonical connector per target tool, with declared ownership.
+4. Breaking the framework contract is a major-version, reviewed change — never a silent minor bump.
 
 ```mermaid
 flowchart TD
     A["Connector change"] --> B{"Breaking?"}
-    B -- "no" --> C["Minor: additive, compatible"]
+    B -- "no" --> C["Minor: additive and explicitly advertised"]
     B -- "yes" --> D["Major: reviewed compatibility break"]
     E["New connector for tool T"] --> F{"Canonical connector for T exists?"}
     F -- "yes" --> G["Improve the canonical one (no duplicate)"]
@@ -2979,7 +2992,8 @@ flowchart TD
 ```
 
 **Acceptance criteria.**
-- Minor protocol changes are additive; breaks require a major version and review.
+- Wire versions and opaque adapter versions are separate; only explicitly shared wire versions
+  negotiate, additive minors remain reviewed, and breaks require a major version and review.
 - The registry holds one canonical connector per tool with a named owner.
 
 **Key risk / guardrail.** Overlapping half-maintained connectors (the Backstage marketplace).
@@ -3051,6 +3065,18 @@ flowchart TD
 **Key risk / guardrail.** Inventing costs for clusters that don't report them. Guardrail: no
 OpenCost → no cost fact; the gap is shown, never estimated silently.
 
+**Current bounded slice (F13.1a, #282).** `internal/connector/opencost` accepts one
+already-authorized OpenCost v1.120.2 `/allocation` response for an explicit UTC window,
+`aggregate=namespace`, and one set covering the window. Idle, sharing, filtering, accumulation,
+and aggregated metadata are disabled. Because the allocation response does not prove currency,
+the slice requires a trusted USD assertion and rejects every other unit. It emits deterministic
+namespace-attached TELEMETRY `cost` facts with exact five-decimal component validation and uses the
+window end as source observation time. A successful empty allocation map returns zero facts;
+malformed,
+identity-mismatched, warned, partial, or synthetic/unscoped rows fail atomically. The slice performs
+no network access and does not complete the live adapter, fleet/team rollup, freshness policy,
+currency conversion, billing, optimization, or GPU-utilization work.
+
 ### F13.2 — Hub fleet cost rollup (per-workspace / per-team)
 
 **What it is.** The capability none of the OSS tools ship free: aggregate per-cluster costs across
@@ -3074,6 +3100,18 @@ flowchart TD
 
 **Key risk / guardrail.** A partial rollup read as complete. Guardrail: coverage is always shown.
 
+**Current bounded slice (F13.2a, #284).** `internal/connector/opencost` preserves every successful
+F13.1a projection in a per-scope snapshot, including a complete empty allocation set, and computes
+one deterministic workspace USD total for an exact caller-bound window. The caller supplies the
+unique expected cluster set; output separately names expected, reported, successful-empty, and
+missing scopes, so missing OpenCost coverage never becomes zero cost or a complete rollup. Every
+fact is revalidated against workspace, cluster, namespace, window, currency, lens, provenance,
+canonical payload, and native identity before all monetary components and totals are summed with
+exact decimal arithmetic. The rollup uses the window end as observation time only when at least one
+scope reported. It adds no live transport, endpoint, credential, persistence, Hub/runtime wiring,
+team/label attribution, UI, stale threshold, conversion, billing, optimization, GPU-efficiency
+inference, or write path, and therefore does not complete F13.2.
+
 ### F13.3 — GPU cost columns (DCGM)
 
 **What it is.** GPU cost/utilization columns in the fleet cost view where DCGM metrics exist —
@@ -3096,6 +3134,21 @@ flowchart TD
 
 **Key risk / guardrail.** Over-claiming per-workload GPU precision. Guardrail: attribution is
 best-effort and labelled; physical-GPU-level data is not presented as per-pod truth.
+
+**Current bounded slice (F13.3a, #286).** `internal/connector/dcgm` accepts one already-fetched
+successful Prometheus instant vector for the exact caller-asserted expression
+`DCGM_FI_DEV_GPU_UTIL`, with API series limiting and per-query lookback override disabled. It emits
+deterministic TELEMETRY derived facts with explicit
+`physical_gpu`, `mig_instance`, or `workload_best_effort` attribution. MIG ID/profile and
+namespace/pod/container labels are each all-or-nothing; physical or MIG device scope remains
+explicit when workload labels exist. Raw GPU UUID, hostname, PCI bus, scrape target, arbitrary pod
+labels, endpoint data, and credentials are discarded; only a SHA-256 native identity survives.
+Warnings, infos, ambiguous or duplicate identity, invalid percentages/timestamps, partial label
+groups, malformed/duplicate JSON, and resource-bound violations fail atomically. A successful
+empty vector returns zero facts and makes no coverage claim. The slice adds no client, network,
+credentials, RBAC, arbitrary PromQL, range aggregation, stale policy, persistence, runtime wiring,
+cost/idle-cost join, team mapping, UI/API, billing, optimization, mutation, or execution, and
+therefore does not complete F13.3.
 
 ### F13.4 — Freshness and non-goal guard
 

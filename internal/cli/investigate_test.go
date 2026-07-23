@@ -5,6 +5,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ArdurAI/sith/internal/brain"
+	connectorelasticsearch "github.com/ArdurAI/sith/internal/connector/elasticsearch"
 	"github.com/ArdurAI/sith/internal/fleet"
 )
 
@@ -38,6 +40,93 @@ func TestInvestigateJSONUsesStableVerdictSchema(t *testing.T) {
 	}
 	if len(result.Verdicts) != 1 || result.Verdicts[0].Rule != brain.RuleCrashLoop || result.Verdicts[0].Status != brain.StatusDetected {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestInvestigationSurfaceRendersSanitizedElasticsearchR3Evidence(t *testing.T) {
+	t.Parallel()
+	eventAt := time.Date(2026, 7, 18, 23, 30, 0, 0, time.UTC)
+	rawMarker := "DISCARD_RAW_PASSWORD=https://user:pass@example.invalid"
+	containerMarker := "discard-container-metadata"
+	response, err := json.Marshal(map[string]any{
+		"timed_out": false,
+		"_shards": map[string]any{
+			"total": 1, "successful": 1, "skipped": 0, "failed": 0,
+		},
+		"hits": map[string]any{
+			"hits": []any{map[string]any{
+				"fields": map[string]any{
+					"@timestamp":                []string{eventAt.Format(time.RFC3339Nano)},
+					"message":                   []string{"missing required environment variable " + rawMarker},
+					"orchestrator.cluster.name": []string{"alpha"},
+					"kubernetes.namespace":      []string{"synthetic"},
+					"kubernetes.pod.name":       []string{"payments-0"},
+					"kubernetes.container.name": []string{containerMarker},
+				},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal Elasticsearch response: %v", err)
+	}
+	facts, err := connectorelasticsearch.ProjectLogCauses(connectorelasticsearch.Projection{
+		Workspace: fleet.LocalWorkspace, Scope: "alpha", Namespace: "synthetic", Pod: "payments-0",
+		Container: containerMarker, WindowStart: eventAt.Add(-time.Minute), WindowEnd: eventAt,
+		ObservedAt: eventAt.Add(time.Minute), Response: response,
+	})
+	if err != nil {
+		t.Fatalf("ProjectLogCauses() error = %v", err)
+	}
+	input, err := brain.FromGraphFacts(
+		fleet.LocalWorkspace,
+		facts,
+		map[fleet.Lens]brain.LensCoverage{
+			fleet.LensLive:      {Available: true},
+			fleet.LensTelemetry: {Available: true},
+		},
+	)
+	if err != nil {
+		t.Fatalf("FromGraphFacts() error = %v", err)
+	}
+	input.Observations = append(input.Observations, brain.Observation{
+		Ref: fleet.ResourceRef{
+			SourceKind: "kubeconfig", Scope: "alpha", Kind: "Pod",
+			Namespace: "synthetic", Name: "payments-0",
+		},
+		Lens: fleet.LensLive, Key: "pod.failure", Value: "CrashLoopBackOff",
+		ObservedAt: eventAt.Add(time.Minute), Source: "alpha",
+	})
+	result, err := brain.Evaluate(input)
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if len(result.Verdicts) != 1 || result.Verdicts[0].Rule != brain.RuleCrashLoop ||
+		result.Verdicts[0].Status != brain.StatusConfirmed || result.Verdicts[0].FleetWide {
+		t.Fatalf("result = %#v, want confirmed entity-local R3", result)
+	}
+
+	for _, format := range []string{"text", "json"} {
+		format := format
+		t.Run(format, func(t *testing.T) {
+			t.Parallel()
+			var output bytes.Buffer
+			command := &cobra.Command{}
+			command.SetOut(&output)
+			if err := writeInvestigation(command, format, result); err != nil {
+				t.Fatalf("writeInvestigation(%s) error = %v", format, err)
+			}
+			encoded := output.String()
+			for _, expected := range []string{"R3", "logs.cause", "missing-config"} {
+				if !strings.Contains(encoded, expected) {
+					t.Errorf("output = %q, want %q", encoded, expected)
+				}
+			}
+			for _, discarded := range []string{rawMarker, containerMarker, "example.invalid", `"count"`, `"first_event_at"`, `"last_event_at"`} {
+				if strings.Contains(encoded, discarded) {
+					t.Errorf("output retained discarded Elasticsearch data %q: %s", discarded, encoded)
+				}
+			}
+		})
 	}
 }
 
@@ -84,5 +173,158 @@ func TestInvestigationSurfaceRendersR1ThroughR4Fixtures(t *testing.T) {
 				t.Fatalf("result/output = %#v/%q", result, output.String())
 			}
 		})
+	}
+}
+
+func TestInvestigationSurfaceRendersBoundedImagePullFailure(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	ref := fleet.ResourceRef{SourceKind: "fixture", Scope: "alpha", Kind: "Pod", Namespace: "prod", Name: "payments-0"}
+	result, err := brain.Evaluate(brain.Investigation{
+		Workspace: fleet.LocalWorkspace,
+		Coverage:  map[fleet.Lens]brain.LensCoverage{fleet.LensLive: {Available: true}},
+		Observations: []brain.Observation{{
+			Ref: ref, Lens: fleet.LensLive, Key: "pod.reason", Value: "ErrImagePull", ObservedAt: now, Source: "fixture",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+
+	var textOutput bytes.Buffer
+	textCommand := &cobra.Command{}
+	textCommand.SetOut(&textOutput)
+	if err := writeInvestigation(textCommand, "text", result); err != nil {
+		t.Fatalf("writeInvestigation(text) error = %v", err)
+	}
+	for _, expected := range []string{
+		"R7 image pull failure [confirmed]",
+		"evidence: live pod.reason=ErrImagePull",
+		"suggested: kubectl --context 'alpha' describe pod 'payments-0' -n 'prod'",
+		"sensitive: human review required",
+	} {
+		if !strings.Contains(textOutput.String(), expected) {
+			t.Errorf("text output = %q, want %q", textOutput.String(), expected)
+		}
+	}
+
+	var jsonOutput bytes.Buffer
+	jsonCommand := &cobra.Command{}
+	jsonCommand.SetOut(&jsonOutput)
+	if err := writeInvestigation(jsonCommand, "json", result); err != nil {
+		t.Fatalf("writeInvestigation(json) error = %v", err)
+	}
+	var decoded brain.Result
+	if err := json.Unmarshal(jsonOutput.Bytes(), &decoded); err != nil {
+		t.Fatalf("unmarshal R7 JSON: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded JSON = %#v, want %#v", decoded, result)
+	}
+}
+
+func TestInvestigationSurfaceRendersBoundedArgoSyncFailure(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 15, 45, 0, 0, time.UTC)
+	ref := fleet.ResourceRef{SourceKind: "argocd", Scope: "alpha", Kind: "Application", Namespace: "argocd", Name: "payments"}
+	result, err := brain.Evaluate(brain.Investigation{
+		Workspace: fleet.LocalWorkspace,
+		Coverage:  map[fleet.Lens]brain.LensCoverage{fleet.LensTimeline: {Available: true}},
+		Observations: []brain.Observation{{
+			Ref: ref, Lens: fleet.LensTimeline, Key: "change.kind", Value: "sync-failed", ObservedAt: now, Source: "argocd",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+
+	var textOutput bytes.Buffer
+	textCommand := &cobra.Command{}
+	textCommand.SetOut(&textOutput)
+	if err := writeInvestigation(textCommand, "text", result); err != nil {
+		t.Fatalf("writeInvestigation(text) error = %v", err)
+	}
+	for _, expected := range []string{
+		"R8 Argo CD sync failure [confirmed]",
+		"evidence: timeline change.kind=sync-failed",
+		"suggested: kubectl --context 'alpha' describe application.argoproj.io 'payments' -n 'argocd'",
+		"sensitive: human review required",
+	} {
+		if !strings.Contains(textOutput.String(), expected) {
+			t.Errorf("text output = %q, want %q", textOutput.String(), expected)
+		}
+	}
+
+	var jsonOutput bytes.Buffer
+	jsonCommand := &cobra.Command{}
+	jsonCommand.SetOut(&jsonOutput)
+	if err := writeInvestigation(jsonCommand, "json", result); err != nil {
+		t.Fatalf("writeInvestigation(json) error = %v", err)
+	}
+	var decoded brain.Result
+	if err := json.Unmarshal(jsonOutput.Bytes(), &decoded); err != nil {
+		t.Fatalf("unmarshal R8 JSON: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded JSON = %#v, want %#v", decoded, result)
+	}
+	if strings.Contains(jsonOutput.String(), "operationState") || strings.Contains(jsonOutput.String(), "revision") {
+		t.Fatalf("R8 JSON exposed discarded Argo payload fields: %s", jsonOutput.String())
+	}
+}
+
+func TestInvestigationSurfaceRendersBoundedWorkflowRunFailure(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 19, 55, 0, 123000000, time.UTC)
+	ref := fleet.ResourceRef{
+		SourceKind: "github", Scope: "github.com", Kind: "WorkflowRun",
+		Namespace: "ArdurAI", Name: "sith#30433642-attempt-2",
+	}
+	result, err := brain.Evaluate(brain.Investigation{
+		Workspace: fleet.LocalWorkspace,
+		Coverage:  map[fleet.Lens]brain.LensCoverage{fleet.LensTimeline: {Available: true}},
+		Observations: []brain.Observation{{
+			Ref: ref, Lens: fleet.LensTimeline, Key: "change.kind", Value: "workflow-run-failed",
+			ObservedAt: now, Source: "github.com",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+
+	var textOutput bytes.Buffer
+	textCommand := &cobra.Command{}
+	textCommand.SetOut(&textOutput)
+	if err := writeInvestigation(textCommand, "text", result); err != nil {
+		t.Fatalf("writeInvestigation(text) error = %v", err)
+	}
+	for _, expected := range []string{
+		"R9 GitHub Actions workflow-run failure [confirmed]",
+		"evidence: timeline change.kind=workflow-run-failed",
+		"suggested: inspect GitHub Actions workflow run 'sith#30433642-attempt-2' owned by 'ArdurAI' and its failed jobs and logs before considering a rerun",
+		"sensitive: human review required",
+	} {
+		if !strings.Contains(textOutput.String(), expected) {
+			t.Errorf("text output = %q, want %q", textOutput.String(), expected)
+		}
+	}
+
+	var jsonOutput bytes.Buffer
+	jsonCommand := &cobra.Command{}
+	jsonCommand.SetOut(&jsonOutput)
+	if err := writeInvestigation(jsonCommand, "json", result); err != nil {
+		t.Fatalf("writeInvestigation(json) error = %v", err)
+	}
+	var decoded brain.Result
+	if err := json.Unmarshal(jsonOutput.Bytes(), &decoded); err != nil {
+		t.Fatalf("unmarshal R9 JSON: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("decoded JSON = %#v, want %#v", decoded, result)
+	}
+	for _, discarded := range []string{`"workflow_id":`, `"run_attempt":`, `"conclusion":`, "jobs_url", "logs_url"} {
+		if strings.Contains(jsonOutput.String(), discarded) {
+			t.Fatalf("R9 JSON exposed discarded workflow-run payload field %q: %s", discarded, jsonOutput.String())
+		}
 	}
 }

@@ -25,8 +25,8 @@ type slogAuditor struct {
 }
 
 func (auditor slogAuditor) Record(ctx context.Context, event AuditEvent) error {
-	if auditor.logger == nil {
-		return fmt.Errorf("record policy audit: logger is required")
+	if auditor.logger == nil || ctx == nil {
+		return fmt.Errorf("record policy audit: logger and context are required")
 	}
 	if err := event.Validate(); err != nil {
 		return fmt.Errorf("record policy audit: %w", err)
@@ -44,11 +44,19 @@ func (auditor slogAuditor) Record(ctx context.Context, event AuditEvent) error {
 		"verdict", event.Verdict,
 		"reason_code", event.ReasonCode,
 	}
+	level := slog.LevelWarn
 	if event.Verdict == VerdictAllow {
-		auditor.logger.InfoContext(ctx, "policy decision", attributes...)
-		return nil
+		level = slog.LevelInfo
 	}
-	auditor.logger.WarnContext(ctx, "policy decision", attributes...)
+	handler := auditor.logger.Handler()
+	if !handler.Enabled(ctx, level) {
+		return fmt.Errorf("record policy audit: structured event level is disabled")
+	}
+	record := slog.NewRecord(time.Now(), level, "policy decision", 0)
+	record.Add(attributes...)
+	if err := handler.Handle(ctx, record); err != nil {
+		return fmt.Errorf("record policy audit: emit structured event: %w", err)
+	}
 	return nil
 }
 
@@ -66,7 +74,17 @@ func (event AuditEvent) Validate() error {
 	if err := validateSafeText("policy audit actor", event.Actor, maxActorBytes); err != nil {
 		return err
 	}
-	if !event.Role.Valid() || event.Action != tenancy.ActionRead || !event.Verb.Valid() {
+	if !event.Role.Valid() || (event.Action != tenancy.ActionRead && event.Action != tenancy.ActionExportAudit && event.Action != tenancy.ActionProposeIntent) {
+		return fmt.Errorf("policy audit has unsupported role, action, or verb")
+	}
+	if !event.Role.Allows(event.Action) && (event.Verdict != VerdictDeny || (event.ReasonCode != "role-denied" && event.ReasonCode != "invalid-request")) {
+		return fmt.Errorf("policy audit has impossible role and action outcome")
+	}
+	if event.Verb == invalidVerb {
+		if event.Verdict != VerdictDeny || event.ReasonCode != "invalid-request" {
+			return fmt.Errorf("policy audit has unsafe invalid-request sentinel")
+		}
+	} else if !event.Verb.validForAction(event.Action) {
 		return fmt.Errorf("policy audit has unsupported role, action, or verb")
 	}
 	return (Decision{Verdict: event.Verdict, ReasonCode: event.ReasonCode}).Validate()

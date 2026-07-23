@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "name": "r8-argocd-sync-failed",
+  "sanitized": true,
+  "investigation": {
+    "workspace": "local",
+    "coverage": {"timeline": {"available": true, "stale": false}},
+    "observations": [
+      {"ref": {"source_kind": "argocd", "scope": "alpha", "kind": "Application", "namespace": "argocd", "name": "payments"}, "lens": "timeline", "key": "change.kind", "value": "sync-failed", "observed_at": "2026-07-18T00:00:00Z", "source": "synthetic", "stale": false}
+    ]
+  },
+  "expect": {
+    "top_rule": "R8", "status": "confirmed", "scope": "alpha", "fleet_wide": false,
+    "cause_of": [],
+    "citation_evidence": [{"lens": "timeline", "predicate": "change.kind", "observed": "sync-failed"}],
+    "missing_lenses": [],
+    "advisory": {"command": true, "pr_diff": false, "sensitive": true}
+  }
+}

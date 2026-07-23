@@ -51,7 +51,8 @@ func compose(verdicts []Verdict) []Verdict {
 }
 
 func evaluateRule(candidate rule, observations []Observation, coverage map[fleet.Lens]LensCoverage) (Verdict, bool) {
-	trigger, ok := match(candidate.trigger, observations)
+	observations = candidate.applicableObservations(observations)
+	trigger, ok := match(candidate.trigger, observations, candidate.exactTrigger)
 	if !ok {
 		return Verdict{}, false
 	}
@@ -59,11 +60,12 @@ func evaluateRule(candidate rule, observations []Observation, coverage map[fleet
 	verdict := Verdict{
 		Rule: candidate.id, FailureMode: candidate.failureMode, Status: StatusConfirmed,
 		Hypothesis: candidate.rootCause, Scope: ref.Scope, Ref: ref, Advisory: renderAdvisory(candidate.advisory, ref),
+		RemediationCandidate: remediationCandidateFor(candidate.remediation),
 	}
 	verdict.Citations = append(verdict.Citations, citation(candidate.trigger, trigger))
 	verdict.Score += candidate.trigger.weight
 	for _, signal := range candidate.signals {
-		if observation, found := match(signal, observations); found {
+		if observation, found := match(signal, observations, false); found {
 			verdict.Citations = append(verdict.Citations, citation(signal, observation))
 			verdict.Score += signal.weight
 		}
@@ -87,7 +89,27 @@ func evaluateRule(candidate rule, observations []Observation, coverage map[fleet
 	return verdict, true
 }
 
-func match(predicate predicate, observations []Observation) (Observation, bool) {
+func (candidate rule) applicableObservations(observations []Observation) []Observation {
+	if candidate.sourceKind == "" && candidate.resourceKind == "" {
+		return observations
+	}
+	filtered := make([]Observation, 0, len(observations))
+	for _, observation := range observations {
+		if candidate.appliesTo(observation) {
+			filtered = append(filtered, observation)
+		}
+	}
+	return filtered
+}
+
+func (candidate rule) appliesTo(observation Observation) bool {
+	if candidate.sourceKind != "" && observation.Ref.SourceKind != candidate.sourceKind {
+		return false
+	}
+	return candidate.resourceKind == "" || observation.Ref.Kind == candidate.resourceKind
+}
+
+func match(predicate predicate, observations []Observation, exact bool) (Observation, bool) {
 	var stale Observation
 	staleMatched := false
 	for _, observation := range observations {
@@ -102,7 +124,7 @@ func match(predicate predicate, observations []Observation) (Observation, bool) 
 			continue
 		}
 		for _, expected := range predicate.values {
-			if strings.EqualFold(strings.TrimSpace(observation.Value), expected) {
+			if observation.Value == expected || (!exact && strings.EqualFold(observation.Value, expected)) {
 				if !observation.Stale {
 					return observation, true
 				}
@@ -115,7 +137,7 @@ func match(predicate predicate, observations []Observation) (Observation, bool) 
 
 func unavailable(lens fleet.Lens, coverage map[fleet.Lens]LensCoverage, observations []Observation) bool {
 	state, declared := coverage[lens]
-	if declared && (!state.Available || state.Stale) {
+	if !declared || !state.Available || state.Stale {
 		return true
 	}
 	for _, observation := range observations {
@@ -152,10 +174,18 @@ func correlateFleet(verdicts []Verdict, observations map[string][]Observation) [
 		rule   RuleID
 		digest string
 	}
-	groups := make(map[groupKey][]Verdict)
+	type groupMember struct {
+		verdict Verdict
+		digest  Observation
+	}
+	groups := make(map[groupKey]map[string]groupMember)
 	for _, verdict := range verdicts {
-		for _, observation := range observations[entityKey(verdict.Ref)] {
-			if observation.Key != fleet.OTelContainerImageRepoDigests {
+		if !supportsFleetCorrelation(verdict.Rule) {
+			continue
+		}
+		entity := entityKey(verdict.Ref)
+		for _, observation := range observations[entity] {
+			if observation.Key != fleet.OTelContainerImageRepoDigests || observation.Stale {
 				continue
 			}
 			digest, err := fleet.ImageDigestFromRepoDigest(observation.Value)
@@ -163,17 +193,28 @@ func correlateFleet(verdicts []Verdict, observations map[string][]Observation) [
 				continue
 			}
 			key := groupKey{verdict.Rule, digest}
-			groups[key] = append(groups[key], verdict)
+			if groups[key] == nil {
+				groups[key] = make(map[string]groupMember)
+			}
+			current, exists := groups[key][entity]
+			if !exists || preferCorrelationObservation(observation, current.digest) {
+				groups[key][entity] = groupMember{verdict: verdict, digest: observation}
+			}
 		}
 	}
 	result := make([]Verdict, 0)
-	for key, group := range groups {
+	for key, members := range groups {
+		group := make([]Verdict, 0, len(members))
+		for _, member := range members {
+			group = append(group, member.verdict)
+		}
 		sortVerdicts(group)
 		clusters := uniqueClusters(group)
 		if len(clusters) < 2 {
 			continue
 		}
 		correlated := group[0]
+		correlated.RemediationCandidate = cloneRemediationCandidate(correlated.RemediationCandidate)
 		correlated.FleetWide = true
 		correlated.Scope = "fleet"
 		correlated.Clusters = clusters
@@ -182,6 +223,7 @@ func correlateFleet(verdicts []Verdict, observations map[string][]Observation) [
 		correlated.Citations = nil
 		for _, verdict := range group {
 			correlated.Citations = append(correlated.Citations, verdict.Citations...)
+			correlated.Citations = append(correlated.Citations, evidenceCitation(members[entityKey(verdict.Ref)].digest))
 			correlated.MissingLenses = unionLenses(correlated.MissingLenses, verdict.MissingLenses)
 			if confidenceRank(verdict.Status) < confidenceRank(correlated.Status) {
 				correlated.Status = verdict.Status
@@ -191,6 +233,51 @@ func correlateFleet(verdicts []Verdict, observations map[string][]Observation) [
 		result = append(result, correlated)
 	}
 	return result
+}
+
+func supportsFleetCorrelation(ruleID RuleID) bool {
+	switch ruleID {
+	case RuleBadDeploy, RuleOOMKilled, RuleCrashLoop, RuleConfigDrift, RuleCertExpiry, RuleNodePressure:
+		return true
+	default:
+		return false
+	}
+}
+
+func preferCorrelationObservation(candidate, current Observation) bool {
+	if !candidate.ObservedAt.Equal(current.ObservedAt) {
+		return candidate.ObservedAt.After(current.ObservedAt)
+	}
+	if candidate.Source != current.Source {
+		return candidate.Source < current.Source
+	}
+	if candidate.Value != current.Value {
+		return candidate.Value < current.Value
+	}
+	if candidateRef, currentRef := correlationRefKey(candidate.Ref), correlationRefKey(current.Ref); candidateRef != currentRef {
+		return candidateRef < currentRef
+	}
+	return candidate.Lens < current.Lens
+}
+
+func correlationRefKey(ref fleet.ResourceRef) string {
+	parts := []string{ref.SourceKind, ref.Scope, ref.Kind, ref.Namespace, ref.Name}
+	keys := make([]string, 0, len(ref.Attributes))
+	for key := range ref.Attributes {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		parts = append(parts, key, ref.Attributes[key])
+	}
+	return strings.Join(parts, "\x00")
+}
+
+func evidenceCitation(observation Observation) Citation {
+	return Citation{
+		Ref: observation.Ref, Lens: observation.Lens, Predicate: observation.Key, Observed: observation.Value,
+		ObservedAt: observation.ObservedAt, Source: observation.Source, Stale: observation.Stale,
+	}
 }
 
 func sortCitations(citations []Citation) {

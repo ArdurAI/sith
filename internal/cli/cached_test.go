@@ -145,7 +145,8 @@ func (*cacheReader) Capabilities() []connector.Capability {
 
 func (reader *cacheReader) Descriptor() connector.Descriptor {
 	return connector.Descriptor{
-		Kind: reader.Kind(), ConnKind: connector.KindReadAdapter, ProtocolV: "1.0.0", Owner: "test",
+		Kind: reader.Kind(), ConnKind: connector.KindReadAdapter,
+		WireVersions: []connector.WireVersion{connector.CurrentWireVersion()}, AdapterVersion: "1.0.0", Owner: "test",
 		Capabilities: reader.Capabilities(),
 	}
 }

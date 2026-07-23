@@ -1694,6 +1694,21 @@ sequenceDiagram
 - Approvals are per-action, single-use, and bound to the resolved-args hash.
 - Changing the args after approval invalidates it (approve-then-swap is blocked).
 
+**Implementation status (F5.9a, 2026-07-18).** The durable server-side core persists a
+same-workspace, distinct-approver grant bound to the existing immutable resolved proposal digest.
+The non-owner application role can insert the forced-RLS row and atomically set only
+`consumed_at`; it cannot rewrite or delete the intent, identities, or digest. Missing, foreign,
+mismatched, and replayed grants share one fail-closed refusal, and a real PostgreSQL concurrency
+test proves exactly one consumer wins.
+
+**Implementation status (F5.9b, 2026-07-21).** Every new grant has one immutable 10-minute
+absolute lifetime minted from PostgreSQL statement time. Consumption checks the half-open
+`approved_at <= consumed_at < expires_at` interval in the same conditional update that spends the
+grant. Expiry is bound into versioned lifecycle evidence; legacy grants are retained but fail
+closed, and format-1/2 audit records remain independently verifiable beside format 3. MCP
+elicitation transport, Ardur PDP policy, multi-approver counting, credential minting, and dispatch
+remain later slices; this status does not claim F5.9 complete.
+
 **Key risk / guardrail.** Approve-then-swap (approve a benign action, then change args) is the
 classic agent bypass. Guardrail: the approval is bound to an arg-hash re-checked at dispatch, so a
 valid signature and a valid approval are both necessary but neither is sufficient if the args
@@ -1851,6 +1866,20 @@ flowchart TD
 **Key risk / guardrail.** A cross-tenant leak in an export would be a serious confidentiality
 breach. Guardrail: query and export inherit E1's tenant scoping and DB RLS, so a record is only
 ever visible within its own workspace.
+
+**Implemented F6.4 boundary (2026-07-18).** F6.4a and F6.4b expose and offline-verify one complete
+privacy-minimized Sith policy/approval chain of at most 512 entries. F6.4c adds a distinct paged
+export for larger retained chains without changing that complete-document route. The first page is
+bound to the current head after its own admin-only `audit.export` decision is durably appended;
+each later request is independently authenticated, authorized, and audited, while those later
+audit rows remain outside the fixed snapshot. A versioned fixed-size canonical base64url
+continuation carries a domain-separated workspace binding, snapshot head, next sequence, and prior
+hash. It grants no authority and is revalidated against forced-RLS head and boundary rows in a
+Repeatable Read transaction before at most 512 consecutive entries are returned. Every transaction
+commits before encoding. `sith audit verify-pages` reads bounded stable files one at a time and
+succeeds only for an ordered same-workspace, same-snapshot genesis-to-head sequence. This remains
+an internal-continuity proof, not external authenticity, WORM retention, asynchronous export, the
+Ardur decision ledger, the full action lifecycle, or E6 completion.
 
 ### E6 exit criteria
 
@@ -2106,6 +2135,16 @@ badges so coverage gaps are visible.
    as a single fleet-wide answer.
 4. The view is read-only and holds no privileged path — it only shows what the API returns for the
    actor's workspace.
+
+The first Hub rendering slice (#218) deliberately starts at the bounded `FleetResult` altitude:
+cluster reachability, observation time, and honest coverage gaps. It uses its own cookie/session +
+CSRF adapter over the existing PEP read and cannot mount local operations or trigger collection.
+#220 adds the next F8.1 slice: an explicit exact-resource, fixed-not-Healthy query through the
+existing tenant-scoped PEP correlator. The browser receives only cluster scope, resource identity,
+normalized health, observation time, stale state, and coverage assessment; raw fact payloads and
+provenance remain server-side. A 257-row sentinel makes over-bound results unavailable rather than
+silently partial, and a separate session/workspace/purpose proof prevents fleet-proof reuse.
+Inventory records and the service picker remain later read-only slices.
 
 ```mermaid
 flowchart TD
@@ -2477,11 +2516,13 @@ and alerting · F10.5 crown-jewel hardening.
 ### F10.1 — Metrics
 
 **What it is.** Metrics about Sith's own health and behavior: control-plane liveness, federation
-freshness, intent throughput, refusal and abstention rates, PDP latency.
+freshness, intent throughput, bounded sanitized authentication-outcome counts, and future derived rates
+where trustworthy denominators exist, abstention rates, and PDP latency.
 
 **How it works.**
 1. The hub exposes metrics for scraping (control-plane health, DB, queue depths).
-2. Federation metrics track per-spoke read freshness and dispatch success.
+2. Federation metrics track bounded aggregate request-time freshness and, once write federation
+   exists, dispatch success without tenant-proportional labels.
 3. Governance metrics track intents proposed/allowed/denied, abstention rate, and approval
    latency.
 4. These describe Sith itself; Sith does not retain other systems' metric series.
@@ -2489,7 +2530,7 @@ freshness, intent throughput, refusal and abstention rates, PDP latency.
 ```mermaid
 flowchart TD
     A["Sith hub"] --> B["Control-plane metrics: liveness, DB, queues"]
-    A --> C["Federation metrics: per-spoke freshness, dispatch success"]
+    A --> C["Federation metrics: aggregate read freshness, future dispatch success"]
     A --> D["Governance metrics: intents allowed/denied, abstention rate, approval latency"]
     B --> E["Exposed for scraping (about Sith itself)"]
     C --> E
@@ -2504,6 +2545,56 @@ flowchart TD
 **Key risk / guardrail.** Accreting other systems' telemetry would drift Sith into a telemetry
 lake. Guardrail: metrics describe Sith's own behavior only; federated health reads stay a bounded
 cache (E2), not a series store.
+
+**Implementation note (F10.1d).** Authorized persisted fleet reads emit one aggregate closed
+coverage result: `complete`, `degraded`, `empty`, or `error`. Coverage inconsistency, result/count
+mismatch, staleness, unreachability, truncation, and unaccounted scopes collapse to `degraded`;
+only an internally consistent zero-scope result is `empty`. The fixed four-series counter has no tenant, spoke,
+resource, selector, identity, trace, age, or raw-error label and uses only the existing opt-in
+loopback scrape boundary. It is SLI substrate, not an SLO target, error budget, or alert.
+
+**Implementation note (F10.1f).** Each authorized persisted fleet read emits the existing coverage
+outcome and one paired request-time freshness outcome: `fresh`, `stale`, `unknown`, `empty`, or
+`error`. `fresh` requires a non-empty complete consistent result in which every returned cluster has
+a unique identity and non-zero observation time. A structurally valid result with a proven stale
+retained scope is `stale`; unobserved, inconsistent, mismatched, or otherwise non-stale degraded
+coverage is `unknown`.
+Only a consistent zero-scope result is `empty`, and a storage failure before a result exists is
+`error`. The five preinitialized series carry no tenant, identity, trace, request, spoke, cluster,
+resource, selector, credential, endpoint, age, or raw-error labels. The pair is validated before
+either counter changes and observer panic remains isolated. This is request-time SLI substrate, not
+continuous monitoring, a per-spoke series, alert, SLO, error budget, dispatch-success signal, or
+PDP-latency signal.
+
+**Implementation note (F10.1e).** Each valid completed Hub database readiness check emits one
+fixed `ready|unavailable` attempt and latency observation through the existing isolated loopback
+registry. Dependency errors, deadline expiry, caller cancellation, and recovered checker panic
+collapse to `unavailable`; invalid requests emit nothing and invalid observation values are
+discarded. The two preinitialized outcome series carry no tenant, spoke, request, endpoint,
+credential, error, or panic detail. Instrumentation is panic-isolated from the body-free probe and
+adds no listener, Service, exporter, persistence, remote write, or cloud resource.
+
+**Implementation note (F10.1g).** Each refusal emitted by the existing sanitized bearer/session
+middleware boundary increments one preinitialized, unlabeled `sith_auth_refusals_total` counter.
+Runtime fanout independently reaches the existing process audit observer and the metric observer;
+observer panics cannot suppress a later destination or alter the uniform HTTP 401 response. The
+counter carries no reason, credential mode, tenant, workspace, actor, principal, token, IP, path,
+request, trace, or correlation label. It does not count successful authentication, OIDC provider
+exchange/callback failures, authorization denials, or every future authentication mode. The legacy
+counter alone is not a denominator and remains compatible with existing scrapes.
+
+**Implementation note (F10.1h).** Each completed local bearer-token or browser-session verifier
+decision increments one of exactly two preinitialized
+`sith_auth_attempts_total{outcome="accepted|refused"}` series. `accepted` is emitted immediately
+after verifier success and before workspace authorization; a later forbidden authorization is
+therefore not misclassified as failed authentication. Every `refused` outcome also increments the
+legacy unlabeled refusal counter exactly once. Metrics consume both outcomes, while the process
+audit observer and structured-log adapter remain refusal-only and accepted observations cannot
+write a datagram, log, or delivery-drop count. The outcome label is closed and carries no
+credential mode, reason, tenant, workspace, actor, principal, token, IP, path, method, request,
+trace, correlation, authorization, or handler-result dimension. The counters exclude provider
+exchange/callback failures and define no ratio, alert, brute-force detector, SLO, error budget,
+page, listener, exporter, persistence, remote write, or cloud resource.
 
 ### F10.2 — Distributed tracing
 
@@ -2601,6 +2692,65 @@ flowchart TD
 whole fleet. Guardrail: SLOs with error budgets and security alerting make degradation visible and
 actionable rather than silent.
 
+**Implementation note (F10.4a).** The first portable rule contract covers only existing bounded
+Hub symptoms: fail-closed policy-audit errors, lost authentication-refusal delivery records, and a
+sustained aggregate snapshot failure ratio. It deliberately adds no remote scrape path or monitoring
+CRD and does not claim the still-missing read-freshness, dispatch-success, or PDP-latency SLOs.
+
+**Implementation note (F10.4b).** A fourth portable warning consumes the bounded F10.1d outcome
+counter and fires only when more than five percent of at least twenty aggregate eligible fleet reads
+are `degraded` or `error` over fifteen minutes for ten minutes. Eligible outcomes are `complete`,
+`degraded`, and `error`; legitimate `empty` reads are excluded from both numerator and denominator.
+This is a user-visible coverage symptom, not a snapshot-age guarantee, SLO target, error budget, or
+burn-rate page.
+
+**Implementation note (F10.4c).** A fifth portable warning consumes only the bounded F10.1e
+`ready|unavailable` counter. It fires when more than five percent of at least twenty aggregate
+database-readiness checks are `unavailable` over fifteen minutes and the condition persists for ten
+minutes. The expression aggregates away all source labels, guards its denominator, and remains quiet
+for missing, low-volume, all-ready, and transient data. It is a control-plane availability symptom,
+not a read-freshness or paging SLO, and adds no scrape, rule-evaluation, notification, or cloud
+infrastructure.
+
+**Implementation note (F10.4d).** A sixth portable warning uses the existing traffic-independent
+`sith_build_info` gauge to detect when no expected Sith sample reaches the rule evaluator for
+ten minutes and the absence persists for five more. The rule emits one fixed-label warning, depends
+on no operator-specific target identity or Kubernetes metric, and is valid only where an operator
+has intentionally installed the documented Hub scrape/forwarding path. It cannot detect failure of
+its own evaluator, Alertmanager, or receiver; an external synthetic remains required for the full
+notification path.
+
+**Implementation note (F10.4e).** A seventh portable warning consumes only the bounded F10.1f
+`fresh|stale|unknown|empty|error` counter. It fires when more than five percent of at least twenty
+aggregate freshness-eligible `fresh|stale` reads are proven `stale` over fifteen minutes and the
+condition persists for ten minutes. `unknown`, `error`, and `empty` are excluded from both numerator
+and denominator because none proves snapshot age. The expression aggregates away every source
+label and adds no scrape, storage, remote-write, notification, or cloud infrastructure. This is a
+request-time aggregate symptom, not continuous freshness monitoring, an SLO, an error budget, or a
+page.
+
+**Implementation note (F10.4f).** An eighth portable warning consumes only the existing bounded
+`sith_policy_decisions_total{verb,outcome}` counter. It fires when more than five percent of at least
+twenty aggregate eligible `allow|deny|require-approval|error` decisions end in `error` over fifteen minutes
+and the condition persists for ten minutes. `deny` and `require-approval` are valid decisions and
+remain in the denominator, not the numerator. The expression aggregates away `verb` and every
+source label and adds no runtime, scrape, storage, remote-write, notification, or cloud
+infrastructure. This is a fail-closed PEP symptom, not external Ardur PDP latency, an SLO, an error
+budget, a page, or a dispatch-success signal.
+
+**Implementation note (F10.4g).** A ninth portable warning consumes only the bounded
+`sith_auth_attempts_total{outcome="accepted|refused"}` counter. It fires when at least twenty
+aggregate attempts are `refused` and none are `accepted` over fifteen minutes, and the condition
+persists for ten minutes. Any accepted attempt suppresses it. The freshness guard also requires at
+least one recent scraped sample from the preinitialized accepted-outcome series during the most
+recent ten minutes; that proves series visibility, not an accepted authentication event. Missing or
+stale accepted-series data stays quiet rather than turning incomplete telemetry into a security
+claim.
+The expression aggregates away every source label and emits one fixed warning. It is refusal-only
+traffic, not a generic refusal ratio, brute-force or credential-stuffing detector, actor
+attribution, SLO, error budget, page, or complete authentication-monitoring claim, and it adds no
+runtime, scrape, storage, remote-write, notification, or cloud infrastructure.
+
 ### F10.5 — Crown-jewel hardening
 
 **What it is.** The hardening the hub demands as the highest-value target: signer-key protection,
@@ -2637,6 +2787,14 @@ flowchart TD
 worst-case scenario. Guardrail: defense-in-depth — even full hub control cannot get a shell on a
 spoke or bypass spoke-side re-validation, and the closed vocabulary plus per-spoke allowlists bound
 the damage (threat-model S1).
+
+**Implementation note (F10.5a).** The Hub's existing TLS listener exposes fixed, body-free
+`GET /healthz` and `GET /readyz` routes for Kubernetes. Liveness checks only process responsiveness;
+readiness performs one least-privilege application-pool PostgreSQL ping under a one-second server
+deadline. Database failure never enters the liveness decision, preventing dependency-driven restart
+storms, and OCM/spoke reachability remains a fleet-coverage concern rather than a whole-Hub
+readiness dependency. The contract adds no listener, Service port, credential, error detail, or
+tenant-proportional signal.
 
 ### E10 exit criteria
 
@@ -2898,18 +3056,21 @@ Guardrail: the taxonomy is closed; "re-skin a tool" is not an expressible connec
 
 ### F12.3 — Versioning and one-canonical-connector policy
 
-**What it is.** A minor-additive protocol contract and a rule of one canonical connector per
-tool — the Terraform discipline that prevents the Backstage redundancy/abandonment failure.
+**What it is.** A structured, explicitly negotiated framework wire contract, a separate opaque
+adapter/evidence contract version, and a rule of one canonical connector per tool — the Terraform
+discipline that prevents the Backstage redundancy/abandonment failure.
 
 **How it works.**
-1. Major protocol versions delineate compatibility; minor versions are strictly additive.
-2. The registry admits **one** canonical connector per target tool, with declared ownership.
-3. Breaking a connector's contract is a major-version, reviewed change — never a silent minor bump.
+1. Endpoints advertise exact structured `{major, minor}` framework wire versions; the highest
+   exact common version is selected. No common major or no explicitly common minor fails closed.
+2. Adapter/evidence contract versions remain opaque provenance and never drive wire compatibility.
+3. The registry admits **one** canonical connector per target tool, with declared ownership.
+4. Breaking the framework contract is a major-version, reviewed change — never a silent minor bump.
 
 ```mermaid
 flowchart TD
     A["Connector change"] --> B{"Breaking?"}
-    B -- "no" --> C["Minor: additive, compatible"]
+    B -- "no" --> C["Minor: additive and explicitly advertised"]
     B -- "yes" --> D["Major: reviewed compatibility break"]
     E["New connector for tool T"] --> F{"Canonical connector for T exists?"}
     F -- "yes" --> G["Improve the canonical one (no duplicate)"]
@@ -2917,7 +3078,8 @@ flowchart TD
 ```
 
 **Acceptance criteria.**
-- Minor protocol changes are additive; breaks require a major version and review.
+- Wire versions and opaque adapter versions are separate; only explicitly shared wire versions
+  negotiate, additive minors remain reviewed, and breaks require a major version and review.
 - The registry holds one canonical connector per tool with a named owner.
 
 **Key risk / guardrail.** Overlapping half-maintained connectors (the Backstage marketplace).
@@ -2989,6 +3151,18 @@ flowchart TD
 **Key risk / guardrail.** Inventing costs for clusters that don't report them. Guardrail: no
 OpenCost → no cost fact; the gap is shown, never estimated silently.
 
+**Current bounded slice (F13.1a, #282).** `internal/connector/opencost` accepts one
+already-authorized OpenCost v1.120.2 `/allocation` response for an explicit UTC window,
+`aggregate=namespace`, and one set covering the window. Idle, sharing, filtering, accumulation,
+and aggregated metadata are disabled. Because the allocation response does not prove currency,
+the slice requires a trusted USD assertion and rejects every other unit. It emits deterministic
+namespace-attached TELEMETRY `cost` facts with exact five-decimal component validation and uses the
+window end as source observation time. A successful empty allocation map returns zero facts;
+malformed,
+identity-mismatched, warned, partial, or synthetic/unscoped rows fail atomically. The slice performs
+no network access and does not complete the live adapter, fleet/team rollup, freshness policy,
+currency conversion, billing, optimization, or GPU-utilization work.
+
 ### F13.2 — Hub fleet cost rollup (per-workspace / per-team)
 
 **What it is.** The capability none of the OSS tools ship free: aggregate per-cluster costs across
@@ -3012,6 +3186,18 @@ flowchart TD
 
 **Key risk / guardrail.** A partial rollup read as complete. Guardrail: coverage is always shown.
 
+**Current bounded slice (F13.2a, #284).** `internal/connector/opencost` preserves every successful
+F13.1a projection in a per-scope snapshot, including a complete empty allocation set, and computes
+one deterministic workspace USD total for an exact caller-bound window. The caller supplies the
+unique expected cluster set; output separately names expected, reported, successful-empty, and
+missing scopes, so missing OpenCost coverage never becomes zero cost or a complete rollup. Every
+fact is revalidated against workspace, cluster, namespace, window, currency, lens, provenance,
+canonical payload, and native identity before all monetary components and totals are summed with
+exact decimal arithmetic. The rollup uses the window end as observation time only when at least one
+scope reported. It adds no live transport, endpoint, credential, persistence, Hub/runtime wiring,
+team/label attribution, UI, stale threshold, conversion, billing, optimization, GPU-efficiency
+inference, or write path, and therefore does not complete F13.2.
+
 ### F13.3 — GPU cost columns (DCGM)
 
 **What it is.** GPU cost/utilization columns in the fleet cost view where DCGM metrics exist —
@@ -3034,6 +3220,21 @@ flowchart TD
 
 **Key risk / guardrail.** Over-claiming per-workload GPU precision. Guardrail: attribution is
 best-effort and labelled; physical-GPU-level data is not presented as per-pod truth.
+
+**Current bounded slice (F13.3a, #286).** `internal/connector/dcgm` accepts one already-fetched
+successful Prometheus instant vector for the exact caller-asserted expression
+`DCGM_FI_DEV_GPU_UTIL`, with API series limiting and per-query lookback override disabled. It emits
+deterministic TELEMETRY derived facts with explicit
+`physical_gpu`, `mig_instance`, or `workload_best_effort` attribution. MIG ID/profile and
+namespace/pod/container labels are each all-or-nothing; physical or MIG device scope remains
+explicit when workload labels exist. Raw GPU UUID, hostname, PCI bus, scrape target, arbitrary pod
+labels, endpoint data, and credentials are discarded; only a SHA-256 native identity survives.
+Warnings, infos, ambiguous or duplicate identity, invalid percentages/timestamps, partial label
+groups, malformed/duplicate JSON, and resource-bound violations fail atomically. A successful
+empty vector returns zero facts and makes no coverage claim. The slice adds no client, network,
+credentials, RBAC, arbitrary PromQL, range aggregation, stale policy, persistence, runtime wiring,
+cost/idle-cost join, team mapping, UI/API, billing, optimization, mutation, or execution, and
+therefore does not complete F13.3.
 
 ### F13.4 — Freshness and non-goal guard
 

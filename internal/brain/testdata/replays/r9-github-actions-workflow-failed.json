@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "name": "r9-github-actions-workflow-failed",
+  "sanitized": true,
+  "investigation": {
+    "workspace": "local",
+    "coverage": {"timeline": {"available": true, "stale": false}},
+    "observations": [
+      {"ref": {"source_kind": "github", "scope": "github.example", "kind": "WorkflowRun", "namespace": "example-org", "name": "example-repo#30433642-attempt-2"}, "lens": "timeline", "key": "change.kind", "value": "workflow-run-failed", "observed_at": "2026-07-18T19:55:00Z", "source": "github.example", "stale": false}
+    ]
+  },
+  "expect": {
+    "top_rule": "R9", "status": "confirmed", "scope": "github.example", "fleet_wide": false,
+    "cause_of": [],
+    "citation_evidence": [{"lens": "timeline", "predicate": "change.kind", "observed": "workflow-run-failed"}],
+    "missing_lenses": [],
+    "advisory": {"command": true, "pr_diff": false, "sensitive": true}
+  }
+}

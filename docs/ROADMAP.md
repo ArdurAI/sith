@@ -27,6 +27,19 @@ executable evidence and dependency caveats are in
 [`experiments/M0-ocm-falsification.md`](experiments/M0-ocm-falsification.md). The bespoke
 transport/agent scope is deleted; the hub track proceeds to Phase 1.
 
+> **Lifecycle-safe add-on convergence (2026-07-16).** #198 replaces the creation poll plus
+> one-shot availability wait with one absolute deadline and current-object checks. Transient
+> NotFound and delete/recreate transitions remain retryable, but the runner accepts availability
+> only after the same current UID reports `Available=True` twice. Authorization, API, duplicate or
+> malformed condition, and malformed identity failures remain terminal and do not print response
+> bodies.
+
+> **Pinned Helm alignment (2026-07-16).** #197 aligns CI, the hub chart contract, and the M0
+> falsification runner on the official Helm `v4.2.3` patch release and its verified Linux amd64
+> archive checksum. Cross-file policy coverage rejects divergent pins, while both runtime gates
+> reject prefix lookalikes and accept only the exact release or Helm's `+g<hex-commit>` build
+> metadata.
+
 > **Phase-1 ClusterGateway authorization gate (2026-07-13).** M0 proves reverse-tunnel
 > connectivity and scoped-token RBAC; it does **not** authorize a Sith transport to use a
 > ClusterGateway proxy that forwards a hub caller's inbound `Authorization` header. The tracked
@@ -129,6 +142,29 @@ always-green slices, each leaving the binary more useful than the last:
 | — | Local advisory Investigation Brain (R1–R6, reachable lenses) | #48 |
 | P | Packaging & supply chain (parallel; does not gate 1–6) | #27 |
 
+> **Local fan-out hardening evidence (2026-07-16).** #181 contains client-go operations that
+> outlive cancellation; #185 paginates Kubernetes resource lists within a deterministic
+> fleet-wide materialization budget and reports incomplete scopes explicitly. #190 applies the
+> same opaque-continuation discipline to generic server Tables, caps each response page at 4 MiB
+> and each request at 16 MiB, rejects ignored limits and continuation cycles, and retains display
+> fields only for selected facts. Unit adversarial coverage and a real second-page kind fixture
+> prove that the presentation path remains bounded without dropping late-page server columns.
+> #192 pages every list-watch bootstrap at 250 objects under one absolute request deadline and
+> accepts a complete snapshot only within 10,000 objects and 128 pages per scope and kind. Empty
+> or changed resource versions, ignored limits, continuation failures/cycles, cancellation, and
+> budget exhaustion emit `WatchError` without opening a stream; a real late-page ConfigMap proves
+> the watch starts from the completed consistent snapshot.
+> #187 workspace-qualifies fleet-cache record identity, coverage, sync/pause/error state, and
+> change notifications; missing or mixed-workspace replace/watch mutations fail closed, with
+> race, fuzz, and real two-cluster kind coverage proving identical resource identities remain
+> independent across workspaces.
+> #196 anchors kubeconfig directory traversal and file reads to `os.Root`, rejects root or file
+> identity replacement before parsing, refuses deferred local credential/plugin paths, and keeps
+> all race diagnostics relative and content-free.
+> #193 reads persisted cluster state and facts inside one workspace-scoped PostgreSQL
+> `REPEATABLE READ, READ ONLY` transaction, so coverage and staleness always describe the same
+> fact snapshot while transaction-local RLS remains the backstop.
+
 **Exit criteria.**
 - First run to a populated cross-cluster answer in **< 10 minutes**, offline.
 - A correlation query returns a correct answer over **≥ 2 kubeconfig contexts**.
@@ -162,6 +198,27 @@ kubeconfigs — the read source is abstracted so hub mode and local mode share o
   **DB-level RLS backstop present from day one** ([ADR-0003](adr/0003-tenancy-isolation.md)).
 - A cross-cluster correlation query (e.g. "every cluster where deployment X is unhealthy").
 - The **policy-hook seam** at the (future) intent boundary, returning "allow" for reads.
+
+> **Hub refresh hardening evidence (2026-07-16).** #195 independently authorizes every caller,
+> coalesces only concurrent refreshes for the same validated workspace, and runs shared work on a
+> detached internal trace so leader/waiter cancellation and request context cannot cross caller
+> boundaries. Completed, failed, and panicking flights are removed; different workspaces remain
+> independent. #193 separately reads persisted coverage and facts from one repeatable-read
+> workspace snapshot. #194 admits spoke transports through a validated 1-64 worker pool with a
+> conservative default of four, serializes persistence and coverage mutation, and cancels all
+> admitted peers before returning a parent-cancellation or store error. These boundaries are kept
+> separate from refresh coordination so caller isolation, transport fan-out, and database snapshot
+> consistency can each fail closed independently.
+
+> **P1 operator-console boundary.** #218 adds a separate Hub-only read console rather than mounting
+> the capability-bearing local `sith ui`. Its HttpOnly session is verified server-side and bound to
+> signed workspace membership; a short-lived session/workspace-bound CSRF token gates the one
+> persisted-fleet read. The bearer API stays bearer-only. The view surfaces current, stale,
+> unreachable, truncated, inconsistent, and unaccounted coverage without polling, collector
+> refresh, connector access, local operations, or writes. #220 composes the existing PEP-governed
+> `hubfleet.Correlator` into that boundary. One explicit exact-resource submit performs one bounded
+> persisted health query and returns only a fail-closed minimal projection plus named coverage
+> gaps; its purpose-specific proof cannot be replayed as the fleet-snapshot proof.
 
 **Exit criteria.**
 - A single query returns a correct, tenant-scoped, cross-cluster answer over **≥ 2 spokes**.
@@ -258,6 +315,39 @@ transparent, abstaining** reasoner over E2's four-lens graph that *proposes, nev
   advisory in local mode, governed in the hub. One brain, two modes. The AI-SRE tools become
   *clients* of this governance, not competitors — their advice becomes a typed `plan` Sith gates.
 
+The first adjacent rule, **R7**, adds exact `ImagePullBackOff` / `ErrImagePull` symptom detection
+over the existing sanitized LIVE cache. It remains local, read-only, entity-scoped, and explicitly
+uncertain about the underlying registry, reference, network, rate-limit, or platform cause.
+
+The second adjacent rule, **R8**, consumes only attached, workspace-valid Argo CD Application
+TIMELINE facts emitted by the bounded `1.0.0` projector for operation phases `Failed` or `Error`,
+with explicit caller-declared TIMELINE coverage; coverage is never inferred from fact presence.
+It does not equate `OutOfSync` or degraded health with a failed operation, retain the source
+revision or raw payload, diagnose the underlying cause, or correlate fleet-wide. R8 is available
+to reviewed graph-fact callers; the cache-backed local CLI still has no Argo fetch path.
+
+The third adjacent rule, **R9**, consumes only an unattached, workspace-valid GitHub `WorkflowRun`
+TIMELINE fact from the bounded `workflow-runs/2026-03-10` projector. The projector requires trusted
+repository and run identity, exact status `completed`, and conclusion `failure`, `timed_out`, or
+`startup_failure`; incomplete and completed non-failure runs abstain. The graph bridge requires
+matching source/provenance, run/attempt/native identity, event time, a closed payload, and explicit
+caller-declared TIMELINE coverage. R9 retains no job, step, log, actor, branch, commit, URL, or raw
+response data, makes no root-cause claim, and remains source-native and entity-local. It offers only
+sensitive human inspection guidance and adds no GitHub client, token, storage, alert, correlation,
+typed intent, policy handoff, mutation, or execution. The cache-backed local CLI still has no
+workflow-run fetch path.
+
+The existing **R3** rule now also accepts the reviewed Elasticsearch `search/ecs-v1` graph fact
+through a narrow bridge. Only an attached Pod TELEMETRY `FactDerived` with exact Elasticsearch
+source/provenance, matching scope and namespace, a revalidated SHA-256 native/resource identity
+bound to the retained workspace, Pod, aggregate, and collection fields, and a closed `logs.cause`
+payload can become an observation. The accepted values remain `panic`,
+`missing-config`, and `dependency-failure`; count, container, event-window metadata, and the source
+fact payload are discarded after validation. The last classified event time and stale flag are
+preserved, while TELEMETRY coverage remains entirely caller-declared. Evidence attached to another
+Pod cannot strengthen the CrashLoop verdict. This bridge adds no Elasticsearch client, endpoint,
+index, query execution, credential, persistence, correlation, typed intent, mutation, or execution.
+
 ## Integration waves (E12) — the connector coverage the brain needs
 
 Connectors ship in four waves (`docs/specs/E2-readfed-brain-integrations.md` §4), each scored by
@@ -267,6 +357,73 @@ need:**
 
 - **W1 — daily core:** Kubernetes (the substrate) · GitHub · ArgoCD · Prometheus · Elasticsearch ·
   AWS. With just this, R1/R2/R4/R5/R6 reach *confident* and R3 reaches *detect*.
+  Issue #206 establishes the first ArgoCD contract as a bounded, sanitized `Application`-to-graph
+  projector before any network adapter or out-of-process framework is generalized around it.
+  Issue #209 establishes the matching Prometheus `/api/v1/alerts` contract: already-fetched active
+  alerts become bounded TELEMETRY facts, annotations and unknown labels are discarded, and only one
+  unambiguous allowlisted Kubernetes identity can attach a fact to the graph. The endpoint remains
+  query-through; this slice adds no network client, series retention, credential loading, or writes.
+  Issue #212 establishes the GitHub merge-event contract: one already-fetched, API-versioned pull
+  request response becomes a bounded TIMELINE fact only when its merge evidence is internally
+  consistent. Caller-provided repository identity remains authoritative, sensitive response fields
+  are discarded, and the event stays unattached until an explicit repository-to-workload relation
+  exists. This slice adds no HTTP client, token loading, persistence, or GitHub write capability.
+  Issue #278 adds the equally bounded workflow-run failure contract: one already-fetched REST
+  response becomes an unattached TIMELINE fact only for an exact completed failure conclusion.
+  Unknown and ambiguous evidence fails closed, non-failure runs abstain, sensitive response fields
+  are discarded, and no fetch, token, persistence, correlation, alert, or write path is added.
+  Issue #214 establishes the Elasticsearch log-evidence contract: one already-fetched, complete
+  Search API response using the current ECS Kubernetes field profile becomes at most three bounded
+  TELEMETRY cause facts for R3. Cluster, namespace, and Pod identity must match the trusted caller.
+  A supplied container requires every hit to carry that exact container; an omitted container is a
+  deliberate Pod-wide query, accepts hits with any or no container field, and emits no container
+  identity. The trusted query window is the inclusive `[start, end]` interval, its duration cannot
+  exceed fifteen minutes, and its end cannot be more than five minutes ahead of collection time;
+  the duration cap is not a freshness claim. A future live reader must issue these same bounds.
+  Raw messages are classified in memory and discarded.
+  Missing cluster identity, partial or failed shards, `_source`, unknown fields, and ambiguous values
+  fail closed. This slice adds no HTTP client, index discovery, credentials, persistence, or writes.
+  Issue #280 connects those already-reviewed facts to R3 without widening the source contract:
+  exact `elasticsearch` / `search/ecs-v1` provenance and Pod identity are validated again, only the
+  closed cause classification enters the brain, cross-Pod evidence stays separate, and declared
+  TELEMETRY coverage and staleness remain authoritative.
+  Issue #216 establishes the AWS autoscaler-evidence contract: one already-fetched EKS
+  `DescribeNodegroup` response becomes a bounded LIVE inventory fact and a bounded LIVE
+  provider-health fact attached to an already-trusted Sith cluster. The response's partition,
+  account, region, cluster, nodegroup, and ARN must agree with the trusted request identity;
+  regions fail closed against the EKS endpoints currently documented for the commercial,
+  GovCloud, and China partitions, so an AWS region launch requires an intentional contract update;
+  scaling values, status, capacity type, and health issue codes fail closed against explicit
+  bounds and the AWS API's reviewed taxonomies. Facts retain only nodegroup name, capacity type,
+  min/desired/max counts, provider status, and sorted issue codes. IAM roles, account and region,
+  raw ARNs, Auto Scaling group names, resource IDs, health messages, tags, labels/taints, subnets,
+  launch templates, SSH/security-group data, and unknown fields are discarded. `ACTIVE` with no
+  EKS issues is provider-state evidence only; it does not prove Kubernetes nodes or workloads are
+  healthy.
+
+  A future live AWS caller must enumerate only an explicit region allowlist, keep `ListClusters`
+  on its native-EKS default (connected external clusters are out of scope), exhaust opaque
+  `ListClusters` and `ListNodegroups` tokens with page and loop bounds, and use finite timeouts,
+  bounded concurrency, jittered retries, and API-quota-aware polling. It must use the standard AWS
+  SDK chain only for temporary, refreshable role, workload-identity, or federated credentials.
+  Long-lived static access keys are forbidden even when an environment variable or shared
+  credentials file exposes them; a live caller must fail closed when credentials cannot expire.
+  Least privilege is
+  `eks:ListClusters` on `Resource: "*"` (AWS exposes no resource type for that action),
+  `eks:DescribeCluster` plus `eks:ListNodegroups` on permitted cluster ARNs, and
+  `eks:DescribeNodegroup` on permitted nodegroup ARNs. CloudWatch, CloudTrail, Kubernetes token
+  minting, network access, credentials, persistence, and writes are not part of this projector.
+  The projector has no AWS-side effect or infrastructure cost; a future caller's polling cadence
+  still consumes EKS API quota and network traffic and must remain bounded. See the primary AWS
+  [ListClusters](https://docs.aws.amazon.com/eks/latest/APIReference/API_ListClusters.html),
+  [ListNodegroups](https://docs.aws.amazon.com/eks/latest/APIReference/API_ListNodegroups.html),
+  [DescribeNodegroup](https://docs.aws.amazon.com/eks/latest/APIReference/API_DescribeNodegroup.html),
+  [commercial and GovCloud endpoints](https://docs.aws.amazon.com/general/latest/gr/eks.html),
+  [China availability](https://docs.amazonaws.cn/en_us/aws/latest/userguide/eks.html),
+  [health issue](https://docs.aws.amazon.com/eks/latest/APIReference/API_Issue.html),
+  [service authorization](https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonelastickubernetesservice.html),
+  and [credential provider](https://docs.aws.amazon.com/sdkref/latest/guide/standardized-credentials.html)
+  contracts.
 - **W2 — desired-state/diff:** Helm · Kustomize · kubectl-diff (readers, **not** action targets in v1).
 - **W3 — viz/tracing/clouds:** Grafana (deep-link only) · OTel (semconv key backbone) · OpenShift ·
   Azure · GCP.

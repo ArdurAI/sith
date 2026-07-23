@@ -68,8 +68,36 @@ func (database *AppDB) Close() {
 	}
 }
 
+// Ping verifies that the least-privilege application pool can acquire and ping PostgreSQL. It is
+// intentionally scope-free because it executes no tenant query and exists only for Hub readiness.
+func (database *AppDB) Ping(ctx context.Context) error {
+	if database == nil || database.pool == nil || ctx == nil {
+		return fmt.Errorf("ping hub database: database and context are required")
+	}
+	return database.pool.Ping(ctx)
+}
+
 // InWorkspace runs one callback in an explicit transaction with transaction-local RLS scope.
 func (database *AppDB) InWorkspace(ctx context.Context, scope tenancy.Scope, run func(pgx.Tx) error) error {
+	return database.inWorkspace(ctx, scope, pgx.TxOptions{
+		IsoLevel:   pgx.ReadCommitted,
+		AccessMode: pgx.ReadWrite,
+	}, run)
+}
+
+func (database *AppDB) inWorkspaceReadSnapshot(ctx context.Context, scope tenancy.Scope, run func(pgx.Tx) error) error {
+	return database.inWorkspace(ctx, scope, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	}, run)
+}
+
+func (database *AppDB) inWorkspace(
+	ctx context.Context,
+	scope tenancy.Scope,
+	options pgx.TxOptions,
+	run func(pgx.Tx) error,
+) error {
 	if database == nil || database.pool == nil || ctx == nil {
 		return fmt.Errorf("run workspace transaction: database and context are required")
 	}
@@ -80,10 +108,7 @@ func (database *AppDB) InWorkspace(ctx context.Context, scope tenancy.Scope, run
 	if scope.Subject() == "" || !scope.Role().Valid() || scope.RequireWorkspace(workspaceID) != nil {
 		return fmt.Errorf("run workspace transaction: validated workspace scope is required")
 	}
-	return pgx.BeginTxFunc(ctx, database.pool, pgx.TxOptions{
-		IsoLevel:   pgx.ReadCommitted,
-		AccessMode: pgx.ReadWrite,
-	}, func(tx pgx.Tx) error {
+	return pgx.BeginTxFunc(ctx, database.pool, options, func(tx pgx.Tx) error {
 		if err := setWorkspaceScope(ctx, tx, workspaceID); err != nil {
 			return err
 		}

@@ -3,7 +3,9 @@
 package kubeconfig
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -57,6 +59,55 @@ type portForwardFactory func(
 ) (portForwarder, error)
 
 var _ localops.Client = (*Adapter)(nil)
+
+// tableResponseGuard keeps untrusted API error bodies inside the adapter's reviewed HTTP boundary.
+// Successful Table bodies remain stream-decoded under the tighter page and total budgets in table.go.
+type tableResponseGuard struct {
+	transport http.RoundTripper
+}
+
+func (guard tableResponseGuard) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := guard.transport.RoundTrip(request)
+	if err != nil || response == nil ||
+		(response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices) {
+		return response, err
+	}
+	if response.Body != nil {
+		_ = response.Body.Close()
+	}
+	if response.StatusCode < 100 || response.StatusCode > 999 {
+		return nil, fmt.Errorf("server table returned an invalid HTTP status code")
+	}
+	reason := metav1.StatusReasonUnknown
+	statusCode := int32(response.StatusCode) // #nosec G115 -- net/http status codes are range checked immediately above.
+	if response.StatusCode == http.StatusGone {
+		reason = metav1.StatusReasonExpired
+	}
+	payload, marshalErr := json.Marshal(metav1.Status{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"},
+		Status:   metav1.StatusFailure,
+		Reason:   reason,
+		Message:  "server table request failed",
+		Code:     statusCode,
+	})
+	if marshalErr != nil {
+		return nil, fmt.Errorf("construct bounded table error response: %w", marshalErr)
+	}
+	response.Body = io.NopCloser(bytes.NewReader(payload))
+	response.ContentLength = int64(len(payload))
+	response.Header.Set("Content-Type", "application/json")
+	return response, nil
+}
+
+func guardTableErrorResponses(config *rest.Config) {
+	previous := config.WrapTransport
+	config.WrapTransport = func(transport http.RoundTripper) http.RoundTripper {
+		if previous != nil {
+			transport = previous(transport)
+		}
+		return tableResponseGuard{transport: transport}
+	}
+}
 
 // Logs opens one pod log stream in the explicitly selected context.
 func (adapter *Adapter) Logs(

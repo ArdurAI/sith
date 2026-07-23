@@ -26,12 +26,13 @@ type Cluster struct {
 	ObservedAt time.Time `json:"observed_at,omitempty"`
 }
 
-// Coverage summarizes which requested scopes answered and which were unreachable.
+// Coverage summarizes which requested scopes answered and which were incomplete or unreachable.
 type Coverage struct {
 	Requested   int      `json:"requested"`
 	Reachable   int      `json:"reachable"`
 	Unreachable []string `json:"unreachable,omitempty"`
 	Stale       []string `json:"stale,omitempty"`
+	Truncated   []string `json:"truncated,omitempty"`
 }
 
 // CoverageGap explains why coverage is not safe to treat as complete.
@@ -42,6 +43,7 @@ const (
 	CoverageGapInconsistent CoverageGap = "inconsistent"
 	CoverageGapUnreachable  CoverageGap = "unreachable"
 	CoverageGapStale        CoverageGap = "stale"
+	CoverageGapTruncated    CoverageGap = "truncated"
 	CoverageGapUnaccounted  CoverageGap = "unaccounted"
 )
 
@@ -52,6 +54,7 @@ type CoverageAssessment struct {
 	Gaps         []CoverageGap `json:"gaps,omitempty"`
 	Unreachable  []string      `json:"unreachable,omitempty"`
 	Stale        []string      `json:"stale,omitempty"`
+	Truncated    []string      `json:"truncated,omitempty"`
 	Unaccounted  int           `json:"unaccounted,omitempty"`
 	Inconsistent bool          `json:"inconsistent"`
 }
@@ -61,13 +64,16 @@ type CoverageAssessment struct {
 func (c Coverage) Assessment() CoverageAssessment {
 	unreachable, unreachableValid := coverageScopes(c.Unreachable)
 	stale, staleValid := coverageScopes(c.Stale)
+	truncated, truncatedValid := coverageScopes(c.Truncated)
 
 	assessment := CoverageAssessment{
 		Unreachable: unreachable,
 		Stale:       stale,
+		Truncated:   truncated,
 	}
 	if c.Requested < 0 || c.Reachable < 0 || c.Reachable > c.Requested || len(stale) > c.Requested ||
-		!unreachableValid || !staleValid {
+		len(truncated) > c.Reachable || !unreachableValid || !staleValid || !truncatedValid ||
+		coverageScopesOverlap(unreachable, truncated) {
 		assessment.Inconsistent = true
 	} else {
 		remaining := c.Requested - c.Reachable
@@ -88,11 +94,29 @@ func (c Coverage) Assessment() CoverageAssessment {
 	if len(assessment.Stale) != 0 {
 		assessment.Gaps = append(assessment.Gaps, CoverageGapStale)
 	}
+	if len(assessment.Truncated) != 0 {
+		assessment.Gaps = append(assessment.Gaps, CoverageGapTruncated)
+	}
 	if assessment.Unaccounted != 0 {
 		assessment.Gaps = append(assessment.Gaps, CoverageGapUnaccounted)
 	}
 	assessment.Complete = len(assessment.Gaps) == 0
 	return assessment
+}
+
+func coverageScopesOverlap(left, right []string) bool {
+	leftIndex, rightIndex := 0, 0
+	for leftIndex < len(left) && rightIndex < len(right) {
+		switch {
+		case left[leftIndex] == right[rightIndex]:
+			return true
+		case left[leftIndex] < right[rightIndex]:
+			leftIndex++
+		default:
+			rightIndex++
+		}
+	}
+	return false
 }
 
 // Complete reports whether the coverage is internally consistent and every requested scope answered with fresh data.

@@ -35,6 +35,43 @@ func TestEnforcerAllowsClosedReadAndAudits(t *testing.T) {
 	}
 }
 
+func TestEnforcerAllowsOnlyAdminAuditExportAndAuditsDedicatedAction(t *testing.T) {
+	for _, role := range []tenancy.Role{tenancy.RoleReader, tenancy.RoleOperator, tenancy.RoleApprover, tenancy.RoleAdmin} {
+		t.Run(string(role), func(t *testing.T) {
+			auditor := &recordingAuditor{}
+			enforcer, err := NewEnforcer(Config{Hook: AllowReadHook{}, Auditor: auditor})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = enforcer.AuthorizeAuditExport(context.Background(), testRoleScope(t, role))
+			if role == tenancy.RoleAdmin {
+				if err != nil {
+					t.Fatalf("AuthorizeAuditExport() error = %v", err)
+				}
+				if len(auditor.events) != 1 || auditor.events[0].Action != tenancy.ActionExportAudit ||
+					auditor.events[0].Verb != VerbAuditExport || auditor.events[0].Verdict != VerdictAllow ||
+					auditor.events[0].ReasonCode != "phase-1-audit-export" {
+					t.Fatalf("admin audit event = %#v", auditor.events)
+				}
+				return
+			}
+			if !errors.Is(err, ErrDenied) || len(auditor.events) != 1 ||
+				auditor.events[0].Verdict != VerdictDeny || auditor.events[0].ReasonCode != "role-denied" {
+				t.Fatalf("role %q error/events = %v/%#v", role, err, auditor.events)
+			}
+		})
+	}
+
+	auditor := &recordingAuditor{}
+	enforcer, err := NewEnforcer(Config{Hook: AllowReadHook{}, Auditor: auditor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := enforcer.AuthorizeRead(context.Background(), testRoleScope(t, tenancy.RoleReader), NewReadInput(VerbAuditExport, nil)); !errors.Is(err, ErrDenied) || len(auditor.events) != 1 || auditor.events[0].Verb != invalidVerb {
+		t.Fatalf("ordinary read reused audit export verb: error/events = %v/%#v", err, auditor.events)
+	}
+}
+
 func TestEnforcerFailsClosedForUnsafePolicyOutcomes(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -127,6 +164,20 @@ func TestReadInputBindsCanonicalArgumentsAndRejectsAlteredDigest(t *testing.T) {
 	}
 }
 
+func TestNormalizedAuditRequestErasesPolicyBindingDigest(t *testing.T) {
+	request := Request{
+		WorkspaceID: "workspace-a", Actor: "user:reader", Role: tenancy.RoleReader,
+		Action: tenancy.ActionRead, Verb: VerbFleetRead, ArgumentsDigest: "token=caller-secret",
+	}
+	normalized, ok := normalizedAuditRequest(request)
+	if !ok {
+		t.Fatal("normalizedAuditRequest() rejected safe audit identity")
+	}
+	if normalized.ArgumentsDigest != "" {
+		t.Fatalf("normalized audit request retained binding digest %q", normalized.ArgumentsDigest)
+	}
+}
+
 type recordingAuditor struct {
 	events []AuditEvent
 }
@@ -139,6 +190,19 @@ func (auditor *recordingAuditor) Record(_ context.Context, event AuditEvent) err
 func testScope(t *testing.T) tenancy.Scope {
 	t.Helper()
 	principal, err := tenancy.NewPrincipal("user:reader", map[tenancy.WorkspaceID]tenancy.Role{"workspace-a": tenancy.RoleReader})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := principal.Scope("workspace-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scope
+}
+
+func testRoleScope(t *testing.T, role tenancy.Role) tenancy.Scope {
+	t.Helper()
+	principal, err := tenancy.NewPrincipal("user:test", map[tenancy.WorkspaceID]tenancy.Role{"workspace-a": role})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -23,12 +23,30 @@
     "runtime": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["existingSecret", "sessionIssuer", "sessionAudience", "sessionKeyID", "proxyAddress", "proxyServerName", "kubeAPIServerName"],
+      "required": ["existingSecret", "sessionIssuer", "sessionAudience", "sessionKeyID", "browserOIDC", "proxyAddress", "proxyServerName", "kubeAPIServerName"],
       "properties": {
         "existingSecret": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
         "sessionIssuer": {"type": "string", "minLength": 1},
         "sessionAudience": {"type": "string", "minLength": 1},
         "sessionKeyID": {"type": "string", "minLength": 1},
+        "browserOIDC": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["issuer", "clientID", "redirectURI"],
+          "properties": {
+            "issuer": {"type": "string"},
+            "clientID": {"type": "string"},
+            "redirectURI": {"type": "string"}
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["listenAddress"],
+          "properties": {
+            "listenAddress": {"type": "string", "pattern": "^(|127\\.0\\.0\\.1:[1-9][0-9]{0,4}|\\[::1\\]:[1-9][0-9]{0,4})$"}
+          }
+        },
         "proxyAddress": {"type": "string", "minLength": 1},
         "proxyServerName": {"type": "string", "minLength": 1},
         "kubeAPIServerName": {"type": "string", "minLength": 1}

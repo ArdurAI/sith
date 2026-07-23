@@ -28,6 +28,12 @@ const (
 
 var errImportLimit = errors.New("kubeconfig directory import limit reached")
 
+type directoryImportHooks struct {
+	afterRootInspection func()
+	afterRootOpen       func()
+	beforeFileOpen      func(string)
+}
+
 type importedConfig struct {
 	raw         *clientcmdapi.Config
 	metadata    map[string]contextMetadata
@@ -43,6 +49,10 @@ type contextMetadata struct {
 // returned config is namespaced by an opaque per-file identifier so duplicate context names cannot
 // silently shadow one another.
 func loadDirectory(root string) (importedConfig, error) {
+	return loadDirectoryWithHooks(root, directoryImportHooks{})
+}
+
+func loadDirectoryWithHooks(root string, hooks directoryImportHooks) (importedConfig, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		return importedConfig{}, fmt.Errorf("kubeconfig directory is required")
@@ -58,18 +68,28 @@ func loadDirectory(root string) (importedConfig, error) {
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return importedConfig{}, fmt.Errorf("kubeconfig directory must be a real directory, not a symlink or file")
 	}
+	if hooks.afterRootInspection != nil {
+		hooks.afterRootInspection()
+	}
+	rootHandle, err := os.OpenRoot(absolute)
+	if err != nil {
+		return importedConfig{}, errors.New("cannot open kubeconfig directory")
+	}
+	defer func() { _ = rootHandle.Close() }()
+	openedRootInfo, err := rootHandle.Stat(".")
+	if err != nil || !openedRootInfo.IsDir() || !os.SameFile(info, openedRootInfo) {
+		return importedConfig{}, errors.New("kubeconfig directory changed during import")
+	}
+	if hooks.afterRootOpen != nil {
+		hooks.afterRootOpen()
+	}
 
 	result := importedConfig{
 		raw:      clientcmdapi.NewConfig(),
 		metadata: make(map[string]contextMetadata),
 	}
 	entries := 0
-	err = filepath.WalkDir(absolute, func(path string, entry fs.DirEntry, walkErr error) error {
-		relative, relativeErr := filepath.Rel(absolute, path)
-		if relativeErr != nil {
-			return errors.New("cannot scan kubeconfig directory")
-		}
-		relative = filepath.ToSlash(relative)
+	err = fs.WalkDir(rootHandle.FS(), ".", func(relative string, entry fs.DirEntry, walkErr error) error {
 		if relative == "." {
 			if walkErr != nil {
 				return errors.New("cannot read kubeconfig directory")
@@ -115,7 +135,11 @@ func loadDirectory(root string) (importedConfig, error) {
 			result.diagnostics = append(result.diagnostics, importDiagnostic(relative, message))
 			return nil
 		}
-		config, readErr := loadKubeconfigFile(path, fileInfo.Size())
+		if hooks.beforeFileOpen != nil {
+			hooks.beforeFileOpen(relative)
+		}
+		origin := filepath.Join(absolute, filepath.FromSlash(relative))
+		config, readErr := loadKubeconfigFile(rootHandle, relative, origin, fileInfo)
 		if readErr != nil {
 			result.diagnostics = append(result.diagnostics, importDiagnostic(relative, "invalid kubeconfig"))
 			return nil
@@ -138,15 +162,25 @@ func loadDirectory(root string) (importedConfig, error) {
 	return result, nil
 }
 
-func loadKubeconfigFile(path string, size int64) (*clientcmdapi.Config, error) {
-	if size < 0 || size > maxImportBytes {
-		return nil, fmt.Errorf("kubeconfig exceeds the import size limit")
-	}
-	file, err := os.Open(path) // #nosec G304 -- path is discovered beneath a user-selected directory without symlink traversal.
+func loadKubeconfigFile(root *os.Root, relative, origin string, walkedInfo fs.FileInfo) (*clientcmdapi.Config, error) {
+	localName := filepath.FromSlash(relative)
+	file, err := root.Open(localName)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(walkedInfo, openedInfo) {
+		return nil, errors.New("kubeconfig entry changed during import")
+	}
+	currentInfo, err := root.Lstat(localName)
+	if err != nil || currentInfo.Mode()&os.ModeSymlink != 0 || !currentInfo.Mode().IsRegular() ||
+		!os.SameFile(openedInfo, currentInfo) {
+		return nil, errors.New("kubeconfig entry changed during import")
+	}
+	if openedInfo.Size() < 0 || openedInfo.Size() > maxImportBytes {
+		return nil, fmt.Errorf("kubeconfig exceeds the import size limit")
+	}
 	payload, err := io.ReadAll(io.LimitReader(file, maxImportBytes+1))
 	if err != nil {
 		return nil, err
@@ -158,11 +192,37 @@ func loadKubeconfigFile(path string, size int64) (*clientcmdapi.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	setLocationOfOrigin(config, path)
+	if err := rejectDeferredLocalReferences(config); err != nil {
+		return nil, err
+	}
+	setLocationOfOrigin(config, origin)
 	if err := clientcmd.ResolveLocalPaths(config); err != nil {
 		return nil, err
 	}
 	return config, nil
+}
+
+func rejectDeferredLocalReferences(config *clientcmdapi.Config) error {
+	for _, cluster := range config.Clusters {
+		if cluster != nil && cluster.CertificateAuthority != "" {
+			return errors.New("directory-imported kubeconfig must embed certificate authority data")
+		}
+	}
+	for _, authInfo := range config.AuthInfos {
+		if authInfo == nil {
+			continue
+		}
+		if authInfo.ClientCertificate != "" || authInfo.ClientKey != "" {
+			return errors.New("directory-imported kubeconfig must embed client certificate data")
+		}
+		if authInfo.TokenFile != "" {
+			return errors.New("directory-imported kubeconfig must embed bearer token data")
+		}
+		if authInfo.Exec != nil && strings.ContainsAny(authInfo.Exec.Command, `/\`) {
+			return errors.New("directory-imported kubeconfig exec command must resolve through PATH")
+		}
+	}
+	return nil
 }
 
 func setLocationOfOrigin(config *clientcmdapi.Config, path string) {

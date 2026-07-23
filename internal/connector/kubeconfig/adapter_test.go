@@ -77,6 +77,7 @@ func TestGenericResourceResolutionIsCached(t *testing.T) {
 		}},
 	)
 	var resolveCalls atomic.Int32
+	var tableRequests []tableRequest
 	adapter, err := New(
 		WithLoadingRules(testLoadingRules(t, testConfig("alpha"))),
 		withProbe(func(_ context.Context, _ *rest.Config) error { return nil }),
@@ -90,8 +91,9 @@ func TestGenericResourceResolutionIsCached(t *testing.T) {
 		}),
 		withTableFactory(func(_ *rest.Config) (tablePrinter, error) {
 			return func(
-				_ context.Context, _ resourceSpec, _, _, _ string,
+				_ context.Context, _ resourceSpec, request tableRequest,
 			) (map[string][]fleet.DisplayField, error) {
+				tableRequests = append(tableRequests, request)
 				return map[string][]fleet.DisplayField{
 					tableObjectKey("apps", "sample"): {{Name: "Name", Value: "sample"}, {Name: "Ready", Value: "1/1"}},
 				}, nil
@@ -116,6 +118,17 @@ func TestGenericResourceResolutionIsCached(t *testing.T) {
 	if resolveCalls.Load() != 1 {
 		t.Fatalf("resolver calls = %d, want one cached resolution", resolveCalls.Load())
 	}
+	if len(tableRequests) != 2 {
+		t.Fatalf("table requests = %#v, want query-budget retention keys", tableRequests)
+	}
+	for index, request := range tableRequests {
+		if request.rowBudget != 1 || len(request.retainKeys) != 1 {
+			t.Fatalf("table request %d = %#v, want query-budget retention keys", index, request)
+		}
+		if _, ok := request.retainKeys[tableObjectKey("apps", "sample")]; !ok {
+			t.Fatalf("table request %d retain keys = %#v, want only the selected fact", index, request.retainKeys)
+		}
+	}
 
 	evidence, err := adapter.Read(context.Background(), result.Facts[0].Ref)
 	if err != nil {
@@ -129,10 +142,25 @@ func TestGenericResourceResolutionIsCached(t *testing.T) {
 func TestWatchStreamsSnapshotUpsertAndDelete(t *testing.T) {
 	t.Parallel()
 	client := fakeClient(pod("api-0", "apps", "registry/api:v1", nil))
+	var bootstrapOptionsMu sync.Mutex
+	var bootstrapOptions []metav1.ListOptions
+	recordingClient := listOptionsRecordingClient{
+		Interface: client,
+		record: func(options metav1.ListOptions) {
+			bootstrapOptionsMu.Lock()
+			bootstrapOptions = append(bootstrapOptions, options)
+			bootstrapOptionsMu.Unlock()
+		},
+	}
+	client.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		list := podList("", pod("api-0", "apps", "registry/api:v1", nil))
+		list.SetResourceVersion("2")
+		return true, list, nil
+	})
 	adapter, err := New(
 		WithLoadingRules(testLoadingRules(t, testConfig("alpha"))),
 		withProbe(func(_ context.Context, _ *rest.Config) error { return nil }),
-		withDynamicFactory(func(_ *rest.Config) (dynamic.Interface, error) { return client, nil }),
+		withDynamicFactory(func(_ *rest.Config) (dynamic.Interface, error) { return recordingClient, nil }),
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -145,9 +173,18 @@ func TestWatchStreamsSnapshotUpsertAndDelete(t *testing.T) {
 	}
 	snapshot := receiveWatchEvent(ctx, t, events)
 	if snapshot.Type != connector.WatchSnapshot || snapshot.Scope != "alpha" || len(snapshot.Facts) != 1 {
-		t.Fatalf("snapshot = %#v", snapshot)
+		t.Fatalf("snapshot = %#v, error = %v", snapshot, snapshot.Err)
 	}
 	waitForWatchAction(ctx, t, client)
+	bootstrapOptionsMu.Lock()
+	observedOptions := append([]metav1.ListOptions(nil), bootstrapOptions...)
+	bootstrapOptionsMu.Unlock()
+	if !slices.ContainsFunc(observedOptions, func(options metav1.ListOptions) bool {
+		return options.Limit == watchBootstrapPageSize && options.Continue == ""
+	}) {
+		t.Fatalf("watch list options = %#v, want bounded bootstrap request", observedOptions)
+	}
+	assertWatchResourceVersion(t, client, "2")
 
 	created := pod("api-1", "apps", "registry/api:v2", nil)
 	if _, err := client.Resource(schema.GroupVersionResource{Version: "v1", Resource: "pods"}).
@@ -166,6 +203,53 @@ func TestWatchStreamsSnapshotUpsertAndDelete(t *testing.T) {
 	if deleted.Type != connector.WatchDelete || deleted.Ref.Name != "api-1" {
 		t.Fatalf("delete = %#v", deleted)
 	}
+}
+
+type listOptionsRecordingClient struct {
+	dynamic.Interface
+	record func(metav1.ListOptions)
+}
+
+func (client listOptionsRecordingClient) Resource(
+	resource schema.GroupVersionResource,
+) dynamic.NamespaceableResourceInterface {
+	return &listOptionsRecordingNamespaceable{
+		NamespaceableResourceInterface: client.Interface.Resource(resource),
+		record:                         client.record,
+	}
+}
+
+type listOptionsRecordingNamespaceable struct {
+	dynamic.NamespaceableResourceInterface
+	record func(metav1.ListOptions)
+}
+
+func (resource *listOptionsRecordingNamespaceable) Namespace(namespace string) dynamic.ResourceInterface {
+	return &listOptionsRecordingResource{
+		ResourceInterface: resource.NamespaceableResourceInterface.Namespace(namespace),
+		record:            resource.record,
+	}
+}
+
+func (resource *listOptionsRecordingNamespaceable) List(
+	ctx context.Context,
+	options metav1.ListOptions,
+) (*unstructured.UnstructuredList, error) {
+	resource.record(options)
+	return resource.NamespaceableResourceInterface.List(ctx, options)
+}
+
+type listOptionsRecordingResource struct {
+	dynamic.ResourceInterface
+	record func(metav1.ListOptions)
+}
+
+func (resource *listOptionsRecordingResource) List(
+	ctx context.Context,
+	options metav1.ListOptions,
+) (*unstructured.UnstructuredList, error) {
+	resource.record(options)
+	return resource.ResourceInterface.List(ctx, options)
 }
 
 func TestDiscoverIsIndependentAndPreservesLastSeen(t *testing.T) {
@@ -234,6 +318,7 @@ func TestDiscoverIsIndependentAndPreservesLastSeen(t *testing.T) {
 func TestDiscoverTimesOutProbeThatIgnoresContext(t *testing.T) {
 	t.Parallel()
 	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
 	adapter, err := New(
 		WithLoadingRules(testLoadingRules(t, testConfig("blocked"))),
 		WithProbeTimeout(20*time.Millisecond),
@@ -247,7 +332,6 @@ func TestDiscoverTimesOutProbeThatIgnoresContext(t *testing.T) {
 	}
 	started := time.Now()
 	discovery, err := adapter.Discover(context.Background())
-	close(release)
 	if err != nil {
 		t.Fatalf("Discover() error = %v", err)
 	}
@@ -256,6 +340,52 @@ func TestDiscoverTimesOutProbeThatIgnoresContext(t *testing.T) {
 	}
 	if !slices.Equal(discovery.Unreachable, []string{"blocked"}) {
 		t.Fatalf("Unreachable = %v, want [blocked]", discovery.Unreachable)
+	}
+}
+
+func TestDiscoverBoundsProbeThatIgnoresContextWithoutStallingPeers(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	var blockedCalls atomic.Int32
+	var peerCalls atomic.Int32
+	adapter, err := New(
+		WithLoadingRules(testLoadingRules(t, testConfig("blocked-a", "blocked-b", "peer"))),
+		WithProbeTimeout(20*time.Millisecond),
+		WithMaxConcurrency(4),
+		withProbe(func(_ context.Context, config *rest.Config) error {
+			if config.Host == "https://peer.invalid" {
+				peerCalls.Add(1)
+				return nil
+			}
+			blockedCalls.Add(1)
+			<-release
+			return nil
+		}),
+		withDynamicFactory(func(_ *rest.Config) (dynamic.Interface, error) { return fakeClient(), nil }),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	for run := 1; run <= 3; run++ {
+		discovery, err := adapter.Discover(context.Background())
+		if err != nil {
+			t.Fatalf("Discover() run %d error = %v", run, err)
+		}
+		if !slices.Equal(discovery.Unreachable, []string{"blocked-a", "blocked-b"}) {
+			t.Fatalf("Discover() run %d unreachable = %v, want [blocked-a blocked-b]", run, discovery.Unreachable)
+		}
+		if len(discovery.Scopes) != 3 || !discovery.Scopes[2].Reachable {
+			t.Fatalf("Discover() run %d scopes = %#v, want reachable peer", run, discovery.Scopes)
+		}
+	}
+
+	if got := blockedCalls.Load(); got != 4 {
+		t.Fatalf("blocked probe calls = %d, want each blocked context bounded at 2", got)
+	}
+	if got := peerCalls.Load(); got != 3 {
+		t.Fatalf("peer probe calls = %d, want one healthy probe per discovery", got)
 	}
 }
 
@@ -335,6 +465,185 @@ func TestQueryAndReadReturnSourceStampedEvidenceWithPartialCoverage(t *testing.T
 	_, err = adapter.Read(context.Background(), fleet.ResourceRef{Scope: "beta", Kind: "Pod", Name: "x"})
 	if !errors.Is(err, ErrUnreachableScope) {
 		t.Fatalf("Read(unreachable) error = %v, want ErrUnreachableScope", err)
+	}
+}
+
+func TestQueryPaginatesWithinDeterministicMultiScopeBudget(t *testing.T) {
+	t.Parallel()
+	clients := map[string]*dynamicfake.FakeDynamicClient{
+		"https://alpha.invalid": fakeClient(),
+		"https://beta.invalid":  fakeClient(),
+	}
+	var alphaOptions, betaOptions []metav1.ListOptions
+	clients["https://alpha.invalid"].PrependReactor("list", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		options, ok := action.(interface{ GetListOptions() metav1.ListOptions })
+		if !ok {
+			return true, nil, errors.New("list action did not expose list options")
+		}
+		alphaOptions = append(alphaOptions, options.GetListOptions())
+		switch options.GetListOptions().Continue {
+		case "":
+			return true, podList("alpha-next", pod("zeta", "apps", "registry/zeta:v1", nil)), nil
+		case "alpha-next":
+			return true, podList("", pod("alpha", "apps", "registry/alpha:v1", nil)), nil
+		default:
+			return true, nil, fmt.Errorf("unexpected alpha continue token %q", options.GetListOptions().Continue)
+		}
+	})
+	clients["https://beta.invalid"].PrependReactor("list", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		options, ok := action.(interface{ GetListOptions() metav1.ListOptions })
+		if !ok {
+			return true, nil, errors.New("list action did not expose list options")
+		}
+		betaOptions = append(betaOptions, options.GetListOptions())
+		switch options.GetListOptions().Continue {
+		case "":
+			return true, podList("beta-next", pod("bravo", "apps", "registry/bravo:v1", nil)), nil
+		case "beta-next":
+			return true, podList("", pod("charlie", "apps", "registry/charlie:v1", nil)), nil
+		default:
+			return true, nil, fmt.Errorf("unexpected beta continue token %q", options.GetListOptions().Continue)
+		}
+	})
+
+	adapter, err := New(
+		WithLoadingRules(testLoadingRules(t, testConfig("beta", "alpha"))),
+		WithMaxConcurrency(2),
+		withProbe(func(_ context.Context, _ *rest.Config) error { return nil }),
+		withDynamicFactory(func(config *rest.Config) (dynamic.Interface, error) {
+			return clients[config.Host], nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	result, err := adapter.Query(context.Background(), fleet.Query{
+		Selector: fleet.Selector{ResourceKind: "Pod", Namespace: "apps"},
+		Limit:    3,
+	})
+	if err != nil {
+		t.Fatalf("Query() error = %v", err)
+	}
+	if len(alphaOptions) != 2 || alphaOptions[0].Limit != queryListPageSize || alphaOptions[0].Continue != "" ||
+		alphaOptions[1].Limit != queryListPageSize || alphaOptions[1].Continue != "alpha-next" {
+		t.Fatalf("alpha list options = %#v, want bounded pages with continuation", alphaOptions)
+	}
+	if len(betaOptions) != 2 || betaOptions[0].Limit != queryListPageSize || betaOptions[0].Continue != "" ||
+		betaOptions[1].Limit != queryListPageSize || betaOptions[1].Continue != "beta-next" {
+		t.Fatalf("beta list options = %#v, want bounded pages with continuation", betaOptions)
+	}
+	if result.Coverage.Requested != 2 || result.Coverage.Reachable != 2 ||
+		len(result.Coverage.Truncated) != 0 || !result.Coverage.Complete() {
+		t.Fatalf("Coverage = %#v, want complete paginated coverage", result.Coverage)
+	}
+	want := []string{"alpha/alpha", "alpha/zeta", "beta/bravo"}
+	got := make([]string, 0, len(result.Facts))
+	for _, fact := range result.Facts {
+		got = append(got, fact.Ref.Scope+"/"+fact.Ref.Name)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("facts = %v, want deterministic global order %v", got, want)
+	}
+}
+
+func TestQueryScopeReportsTruncationAtItemBudget(t *testing.T) {
+	t.Parallel()
+	client := fakeClient()
+	var options []metav1.ListOptions
+	client.PrependReactor("list", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		listOptions, ok := action.(interface{ GetListOptions() metav1.ListOptions })
+		if !ok {
+			return true, nil, errors.New("list action did not expose list options")
+		}
+		options = append(options, listOptions.GetListOptions())
+		return true, podList("next", pod("alpha", "apps", "registry/alpha:v1", nil), pod("bravo", "apps", "registry/bravo:v1", nil)), nil
+	})
+	adapter := &Adapter{settings: defaultOptions()}
+	result := adapter.queryScope(
+		context.Background(), "alpha", client, nil, resourceSpecs["pod"], false, "",
+		fleet.Query{Kinds: []fleet.FactKind{fleet.FactInventory}, Selector: fleet.Selector{ResourceKind: "Pod", Namespace: "apps"}},
+		2,
+	)
+	if result.err != nil {
+		t.Fatalf("queryScope() error = %v", result.err)
+	}
+	if len(options) != 1 || options[0].Limit != 2 || options[0].Continue != "" {
+		t.Fatalf("list options = %#v, want one page capped at the remaining item budget", options)
+	}
+	if len(result.facts) != 2 || !result.truncated {
+		t.Fatalf("queryScope() = %#v, want two facts and explicit truncation", result)
+	}
+}
+
+func TestQueryContinuationTimeoutDiscardsPartialPages(t *testing.T) {
+	t.Parallel()
+	client := fakeClient()
+	secondPage := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	client.PrependReactor("list", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		options, ok := action.(interface{ GetListOptions() metav1.ListOptions })
+		if !ok {
+			return true, nil, errors.New("list action did not expose list options")
+		}
+		if options.GetListOptions().Continue == "" {
+			return true, podList("next", pod("first", "apps", "registry/first:v1", nil)), nil
+		}
+		close(secondPage)
+		<-release
+		close(finished)
+		return true, podList("", pod("second", "apps", "registry/second:v1", nil)), nil
+	})
+	adapter, err := New(
+		WithLoadingRules(testLoadingRules(t, testConfig("alpha"))),
+		WithRequestTimeout(20*time.Millisecond),
+		withProbe(func(_ context.Context, _ *rest.Config) error { return nil }),
+		withDynamicFactory(func(_ *rest.Config) (dynamic.Interface, error) { return client, nil }),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	result, err := adapter.Query(context.Background(), fleet.Query{
+		Selector: fleet.Selector{ResourceKind: "Pod", Namespace: "apps"},
+		Limit:    2,
+	})
+	<-secondPage
+	close(release)
+	<-finished
+	if err != nil {
+		t.Fatalf("Query() error = %v", err)
+	}
+	if len(result.Facts) != 0 || result.Coverage.Reachable != 0 ||
+		!slices.Equal(result.Coverage.Unreachable, []string{"alpha"}) || len(result.Coverage.Truncated) != 0 {
+		t.Fatalf("Query() = %#v, want timed-out continuation to discard all partial facts", result)
+	}
+}
+
+func TestQueryScopeItemBudgets(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		scopes int
+		want   []int
+	}{
+		{name: "no scopes", want: nil},
+		{name: "sorted remainder", scopes: 3, want: []int{3334, 3333, 3333}},
+		{name: "even split", scopes: 2, want: []int{queryListItemBudget / 2, queryListItemBudget / 2}},
+		{name: "more scopes than budget", scopes: queryListItemBudget + 1, want: append(make([]int, queryListItemBudget), 0)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			for index := range min(test.scopes, queryListItemBudget) {
+				if test.name == "more scopes than budget" {
+					test.want[index] = 1
+				}
+			}
+			if got := queryScopeItemBudgets(test.scopes); !slices.Equal(got, test.want) {
+				t.Fatalf("queryScopeItemBudgets(%d) = %v, want %v", test.scopes, got, test.want)
+			}
+		})
 	}
 }
 
@@ -545,6 +854,137 @@ func TestDefaultProbeExecCredentialMixedCloudIsolatedAndMemoryOnly(t *testing.T)
 	assertSandboxExcludesSecrets(t, sandbox, secretMaterial)
 }
 
+func TestDefaultProbeExecCredentialTimeoutIsContained(t *testing.T) {
+	if os.Getenv("SITH_EXEC_HELPER") == "1" {
+		runExecCredentialHelper()
+	}
+
+	sandbox := t.TempDir()
+	startPath := filepath.Join(sandbox, "helper-started")
+	releasePath := filepath.Join(sandbox, "release-helper")
+	t.Cleanup(func() { _ = os.WriteFile(releasePath, []byte("release"), 0o600) })
+	const tokenEnv = "SITH_EXEC_TEST_BLOCKED_TOKEN"
+	const token = "blocked-ephemeral-token-181"
+	t.Setenv(tokenEnv, token)
+
+	var blockedRequests atomic.Int32
+	blockedServer := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		blockedRequests.Add(1)
+		if request.URL.Path != "/version" {
+			http.NotFound(writer, request)
+			return
+		}
+		if request.Header.Get("Authorization") != "Bearer "+token {
+			http.Error(writer, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"gitVersion":"v1.36.1"}`))
+	}))
+	t.Cleanup(blockedServer.Close)
+
+	var peerRequests atomic.Int32
+	peerServer := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		peerRequests.Add(1)
+		if request.URL.Path != "/version" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"gitVersion":"v1.36.1"}`))
+	}))
+	t.Cleanup(peerServer.Close)
+
+	config := clientcmdapi.NewConfig()
+	for name, server := range map[string]*httptest.Server{"blocked": blockedServer, "peer": peerServer} {
+		config.Clusters[name] = &clientcmdapi.Cluster{
+			Server: server.URL,
+			CertificateAuthorityData: pem.EncodeToMemory(&pem.Block{
+				Type: "CERTIFICATE", Bytes: server.Certificate().Raw,
+			}),
+		}
+		config.AuthInfos[name] = &clientcmdapi.AuthInfo{}
+		config.Contexts[name] = &clientcmdapi.Context{Cluster: name, AuthInfo: name}
+	}
+	config.AuthInfos["blocked"].Exec = &clientcmdapi.ExecConfig{
+		Command:         os.Args[0],
+		Args:            []string{"-test.run=TestDefaultProbeExecCredentialTimeoutIsContained"},
+		APIVersion:      "client.authentication.k8s.io/v1",
+		InteractiveMode: clientcmdapi.NeverExecInteractiveMode,
+		Env: []clientcmdapi.ExecEnvVar{
+			{Name: "SITH_EXEC_HELPER", Value: "1"},
+			{Name: "SITH_EXEC_TOKEN_ENV", Value: tokenEnv},
+			{Name: "SITH_EXEC_START_PATH", Value: startPath},
+			{Name: "SITH_EXEC_RELEASE_PATH", Value: releasePath},
+		},
+	}
+
+	adapter, err := New(
+		WithLoadingRules(testLoadingRules(t, *config)),
+		WithProbeTimeout(100*time.Millisecond),
+		WithMaxConcurrency(4),
+		withDynamicFactory(func(_ *rest.Config) (dynamic.Interface, error) { return fakeClient(), nil }),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	for run := 1; run <= 3; run++ {
+		discovery, err := adapter.Discover(context.Background())
+		if err != nil {
+			t.Fatalf("Discover() run %d error = %v", run, err)
+		}
+		if !slices.Equal(discovery.Unreachable, []string{"blocked"}) {
+			t.Fatalf("Discover() run %d unreachable = %v, want [blocked]", run, discovery.Unreachable)
+		}
+	}
+	if got := peerRequests.Load(); got != 3 {
+		t.Fatalf("peer requests = %d, want one request per discovery", got)
+	}
+	if got := blockedRequests.Load(); got != 0 {
+		t.Fatalf("blocked requests before helper release = %d, want 0", got)
+	}
+	started, err := os.ReadFile(startPath)
+	if err != nil {
+		t.Fatalf("read helper start marker: %v", err)
+	}
+	if got := string(started); got != "started\n" {
+		t.Fatalf("helper start markers = %q, want one process", got)
+	}
+
+	if err := os.WriteFile(releasePath, []byte("release"), 0o600); err != nil {
+		t.Fatalf("release exec helper: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		adapter.gate.mu.Lock()
+		active := adapter.gate.byScope["blocked"]
+		adapter.gate.mu.Unlock()
+		if active == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("retained operations = %d after helper release, want 0", active)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	discovery, err := adapter.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover() after helper release error = %v", err)
+	}
+	if len(discovery.Unreachable) != 0 {
+		t.Fatalf("Discover() after helper release unreachable = %v, want none", discovery.Unreachable)
+	}
+	if blockedRequests.Load() == 0 {
+		t.Fatal("blocked context made no authenticated request after helper release")
+	}
+	discoveryJSON, err := json.Marshal(discovery)
+	if err != nil {
+		t.Fatalf("marshal discovery: %v", err)
+	}
+	assertNoSecretMaterial(t, "fleet discovery", discoveryJSON, []string{token})
+	assertSandboxExcludesSecrets(t, sandbox, []string{token})
+}
+
 func runExecCredentialHelper() {
 	var input struct {
 		APIVersion string `json:"apiVersion"`
@@ -555,6 +995,25 @@ func runExecCredentialHelper() {
 	tokenEnv := os.Getenv("SITH_EXEC_TOKEN_ENV")
 	if tokenEnv == "" || os.Getenv(tokenEnv) == "" {
 		os.Exit(2)
+	}
+	if startPath := os.Getenv("SITH_EXEC_START_PATH"); startPath != "" {
+		marker, err := os.OpenFile(startPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			os.Exit(2)
+		}
+		if _, err := marker.WriteString("started\n"); err != nil || marker.Close() != nil {
+			os.Exit(2)
+		}
+		releasePath := os.Getenv("SITH_EXEC_RELEASE_PATH")
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			if _, err := os.Stat(releasePath); err == nil {
+				break
+			} else if !errors.Is(err, fs.ErrNotExist) || time.Now().After(deadline) {
+				os.Exit(2)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 	status := map[string]any{"token": os.Getenv(tokenEnv)}
 	certificateEnv, keyEnv := os.Getenv("SITH_EXEC_CERTIFICATE_ENV"), os.Getenv("SITH_EXEC_KEY_ENV")
@@ -630,6 +1089,33 @@ func fakeClient(objects ...runtime.Object) *dynamicfake.FakeDynamicClient {
 		{Version: "v1", Resource: "pods"}: "PodList",
 	}
 	return fakeClientWithKinds(listKinds, objects...)
+}
+
+func podList(continueToken string, objects ...*unstructured.Unstructured) *unstructured.UnstructuredList {
+	list := &unstructured.UnstructuredList{Items: make([]unstructured.Unstructured, 0, len(objects))}
+	list.SetAPIVersion("v1")
+	list.SetKind("PodList")
+	list.SetContinue(continueToken)
+	list.SetResourceVersion("test-resource-version")
+	for _, object := range objects {
+		list.Items = append(list.Items, *object.DeepCopy())
+	}
+	return list
+}
+
+func assertWatchResourceVersion(t *testing.T, client *dynamicfake.FakeDynamicClient, want string) {
+	t.Helper()
+	for _, action := range client.Actions() {
+		watchAction, ok := action.(k8stesting.WatchAction)
+		if !ok {
+			continue
+		}
+		if got := watchAction.GetWatchRestrictions().ResourceVersion; got != want {
+			t.Fatalf("watch resourceVersion = %q, want %q", got, want)
+		}
+		return
+	}
+	t.Fatal("watch action not found")
 }
 
 func fakeClientWithKinds(

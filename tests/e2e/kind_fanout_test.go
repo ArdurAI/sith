@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	"github.com/ArdurAI/sith/internal/brain"
+	"github.com/ArdurAI/sith/internal/connector"
 	"github.com/ArdurAI/sith/internal/connector/kubeconfig"
 	"github.com/ArdurAI/sith/internal/fleet"
 	"github.com/ArdurAI/sith/internal/fleetcache"
@@ -125,6 +127,25 @@ func TestKindFleetFanout(t *testing.T) {
 			t.Errorf("query did not return a source-stamped namespace from %s", scope)
 		}
 	}
+	exerciseWorkspaceIsolatedFleetCache(ctx, t, adapter, "kind-"+clusterNames[0])
+	liveContextNames := []string{"kind-" + clusterNames[0], "kind-" + clusterNames[1]}
+	paged, err := adapter.Query(ctx, fleet.Query{
+		Kinds:    []fleet.FactKind{fleet.FactInventory},
+		Scopes:   liveContextNames,
+		Selector: fleet.Selector{ResourceKind: "Namespace"},
+		Limit:    2,
+	})
+	if err != nil {
+		t.Fatalf("query paginated namespaces across kind contexts: %v", err)
+	}
+	if len(paged.Facts) != 2 || paged.Coverage.Requested != 2 || paged.Coverage.Reachable != 2 ||
+		len(paged.Coverage.Truncated) != 0 || !paged.Coverage.Complete() {
+		t.Fatalf("paginated kind query = %#v, want a fleet-limited result from complete bounded scans", paged)
+	}
+	if paged.Facts[0].Ref.String() >= paged.Facts[1].Ref.String() ||
+		paged.Facts[0].Ref.Scope != liveContextNames[0] || paged.Facts[1].Ref.Scope != liveContextNames[0] {
+		t.Fatalf("paginated kind facts = %#v, want the first two globally sorted refs", paged.Facts)
+	}
 	assertRealKindEntityGraph(ctx, t, adapter, clusterNames)
 	exerciseReadFederationSnapshots(ctx, t, adapter, clusterNames)
 
@@ -200,11 +221,20 @@ func TestKindFleetFanout(t *testing.T) {
 		"kind-" + clusterNames[0]: false,
 		"kind-" + clusterNames[1]: false,
 	}
+	paginatedDisplay := false
 	for _, record := range genericSnapshot.Records {
 		if record.Kind == "ConfigMap" && record.Name == "sith-generic-sample" {
 			for _, field := range record.Display {
 				if field.Name == "Data" {
 					genericScopes[record.Cluster] = true
+				}
+			}
+		}
+		if record.Kind == "ConfigMap" && record.Cluster == "kind-"+clusterNames[0] &&
+			record.Name == "sith-table-page-259" {
+			for _, field := range record.Display {
+				if field.Name == "Data" {
+					paginatedDisplay = true
 				}
 			}
 		}
@@ -214,6 +244,9 @@ func TestKindFleetFanout(t *testing.T) {
 			t.Errorf("generic lens did not return a ConfigMap from %s", scope)
 		}
 	}
+	if !paginatedDisplay {
+		t.Error("generic lens did not retain server columns from the second bounded Table page")
+	}
 	if genericSnapshot.Coverage.Reachable != 2 || !strings.Contains(genericStderr, "warning: covered 2/3 clusters") {
 		t.Fatalf("generic coverage/stderr = %#v/%q, want partial two-of-three", genericSnapshot.Coverage, genericStderr)
 	}
@@ -221,6 +254,18 @@ func TestKindFleetFanout(t *testing.T) {
 	if err != nil || !strings.Contains(string(genericText), "DATA") || !strings.Contains(string(genericText), "sith-generic-sample") {
 		t.Fatalf("generic server-column text/error = %q/%v", genericText, err)
 	}
+
+	bootstrapCtx, bootstrapCancel := context.WithCancel(ctx)
+	bootstrapEvents, err := adapter.Watch(bootstrapCtx, "ConfigMap")
+	if err != nil {
+		bootstrapCancel()
+		t.Fatalf("open paginated ConfigMap watch: %v", err)
+	}
+	waitForWatchSnapshotFact(
+		ctx, t, bootstrapEvents, "ConfigMap", "kind-"+clusterNames[0], "sith-table-page-259",
+	)
+	bootstrapCancel()
+	waitForWatchClose(ctx, t, bootstrapEvents)
 
 	watchStore := fleetcache.New()
 	watchHydrator, err := hydrate.New(adapter, watchStore, hydrate.WithResyncInterval(10*time.Minute))
@@ -230,7 +275,7 @@ func TestKindFleetFanout(t *testing.T) {
 	watchCtx, watchCancel := context.WithCancel(ctx)
 	watchDone := make(chan error, 1)
 	go func() { watchDone <- watchHydrator.Run(watchCtx) }()
-	waitForCacheRecord(ctx, t, watchStore, "kind-"+clusterNames[0], "sith-vuln-sample", true)
+	waitForCacheRecord(ctx, t, watchStore, "Pod", "kind-"+clusterNames[0], "sith-vuln-sample", true)
 	watchClient := dynamicClientForContext(t, kubeconfigPath, "kind-"+clusterNames[0])
 	watchPod := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1",
@@ -244,12 +289,12 @@ func TestKindFleetFanout(t *testing.T) {
 		Namespace("default").Create(ctx, watchPod, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create watched pod: %v", err)
 	}
-	waitForCacheRecord(ctx, t, watchStore, "kind-"+clusterNames[0], "sith-watch-sample", true)
+	waitForCacheRecord(ctx, t, watchStore, "Pod", "kind-"+clusterNames[0], "sith-watch-sample", true)
 	if err := watchClient.Resource(schema.GroupVersionResource{Version: "v1", Resource: "pods"}).
 		Namespace("default").Delete(ctx, "sith-watch-sample", metav1.DeleteOptions{}); err != nil {
 		t.Fatalf("delete watched pod: %v", err)
 	}
-	waitForCacheRecord(ctx, t, watchStore, "kind-"+clusterNames[0], "sith-watch-sample", false)
+	waitForCacheRecord(ctx, t, watchStore, "Pod", "kind-"+clusterNames[0], "sith-watch-sample", false)
 	watchCancel()
 	if err := <-watchDone; err != nil {
 		t.Fatalf("watch hydrator shutdown: %v", err)
@@ -304,6 +349,67 @@ func TestKindFleetFanout(t *testing.T) {
 	if degraded.Coverage.Reachable != 1 || !slices.Contains(degraded.Coverage.Unreachable, "kind-"+clusterNames[1]) ||
 		!slices.Contains(degraded.Coverage.Unreachable, deadContext) {
 		t.Fatalf("degraded coverage = %#v, want beta and dead context unreachable", degraded.Coverage)
+	}
+}
+
+func exerciseWorkspaceIsolatedFleetCache(
+	ctx context.Context,
+	t *testing.T,
+	adapter *kubeconfig.Adapter,
+	scope string,
+) {
+	t.Helper()
+	result, err := adapter.Query(ctx, fleet.Query{
+		Kinds:  []fleet.FactKind{fleet.FactInventory},
+		Scopes: []string{scope},
+		Selector: fleet.Selector{
+			ResourceKind: "Pod",
+			Name:         "sith-vuln-sample",
+			Namespace:    "default",
+		},
+	})
+	if err != nil || len(result.Facts) != 1 || !result.Coverage.Complete() {
+		t.Fatalf("query real pod for workspace isolation = %#v, error = %v", result, err)
+	}
+
+	store := fleetcache.New()
+	fact := result.Facts[0]
+	discovery := connector.Discovery{Scopes: []connector.Scope{{
+		Name: fact.Ref.Scope, Reachable: true, ObservedAt: fact.ObservedAt,
+	}}}
+	for _, workspace := range []string{"workspace-a", "workspace-b"} {
+		if err := store.SetDiscovery(workspace, discovery); err != nil {
+			t.Fatalf("set %s discovery: %v", workspace, err)
+		}
+		workspaceFact := fact
+		workspaceFact.Workspace = workspace
+		if err := store.Replace(workspace, "Pod", fleet.QueryResult{
+			Facts: []fleet.Fact{workspaceFact}, Coverage: fleet.Coverage{Requested: 1, Reachable: 1},
+		}); err != nil {
+			t.Fatalf("replace real fact in %s: %v", workspace, err)
+		}
+	}
+	if err := store.ApplyWatchEvent(connector.WatchEvent{
+		Type: connector.WatchError, Workspace: "workspace-a", Kind: "Pod", Scope: fact.Ref.Scope,
+		Err: fmt.Errorf("simulated workspace-a watch failure"),
+	}); err != nil {
+		t.Fatalf("apply workspace A watch failure: %v", err)
+	}
+	if err := store.ApplyWatchEvent(connector.WatchEvent{
+		Type: connector.WatchDelete, Workspace: "workspace-b", Kind: "Pod", Scope: fact.Ref.Scope,
+		Ref: fact.Ref, ObservedAt: fact.ObservedAt,
+	}); err != nil {
+		t.Fatalf("apply workspace B watch delete: %v", err)
+	}
+
+	snapshotA := store.Query("workspace-a", fleetcache.Query{Kind: "Pod"})
+	if len(snapshotA.Records) != 1 || snapshotA.Records[0].Workspace != "workspace-a" ||
+		snapshotA.LastError == "" || !slices.Equal(snapshotA.Coverage.Unreachable, []string{fact.Ref.Scope}) {
+		t.Fatalf("workspace A real-fact snapshot = %#v, want isolated degraded record", snapshotA)
+	}
+	snapshotB := store.Query("workspace-b", fleetcache.Query{Kind: "Pod"})
+	if len(snapshotB.Records) != 0 || snapshotB.LastError != "" || !snapshotB.Coverage.Complete() {
+		t.Fatalf("workspace B real-fact snapshot = %#v, want independent successful delete", snapshotB)
 	}
 }
 
@@ -530,6 +636,9 @@ func seedKindResources(ctx context.Context, t *testing.T, kubeconfigPath string,
 			Namespace("default").Create(ctx, configMap, metav1.CreateOptions{}); err != nil {
 			t.Fatalf("create configmap in %s: %v", contextName, err)
 		}
+		if index == 0 {
+			seedPaginatedTableResources(ctx, t, client, contextName)
+		}
 		replicas := int64(index)
 		deployment := &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "apps/v1",
@@ -549,6 +658,51 @@ func seedKindResources(ctx context.Context, t *testing.T, kubeconfigPath string,
 		if _, err := client.Resource(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}).
 			Namespace("default").Create(ctx, deployment, metav1.CreateOptions{}); err != nil {
 			t.Fatalf("create deployment in %s: %v", contextName, err)
+		}
+	}
+}
+
+func seedPaginatedTableResources(
+	ctx context.Context,
+	t *testing.T,
+	client dynamic.Interface,
+	contextName string,
+) {
+	t.Helper()
+	const count = 260
+	const concurrency = 16
+	semaphore := make(chan struct{}, concurrency)
+	errors := make(chan error, count)
+	var waitGroup sync.WaitGroup
+	for index := range count {
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			case <-ctx.Done():
+				errors <- ctx.Err()
+				return
+			}
+			name := fmt.Sprintf("sith-table-page-%03d", index)
+			configMap := &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": "v1",
+				"kind":       "ConfigMap",
+				"metadata":   map[string]any{"name": name, "namespace": "default"},
+				"data":       map[string]any{"page": name},
+			}}
+			if _, err := client.Resource(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}).
+				Namespace("default").Create(ctx, configMap, metav1.CreateOptions{}); err != nil {
+				errors <- fmt.Errorf("create paginated table fixture %s in %s: %w", name, contextName, err)
+			}
+		}()
+	}
+	waitGroup.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
 		}
 	}
 }
@@ -662,7 +816,7 @@ func waitForCacheRecord(
 	ctx context.Context,
 	t *testing.T,
 	store *fleetcache.Store,
-	cluster, name string,
+	kind, cluster, name string,
 	want bool,
 ) {
 	t.Helper()
@@ -672,7 +826,7 @@ func waitForCacheRecord(
 	defer deadline.Stop()
 	for {
 		found := false
-		for _, record := range store.Query(fleet.LocalWorkspace, fleetcache.Query{Kind: "Pod"}).Records {
+		for _, record := range store.Query(fleet.LocalWorkspace, fleetcache.Query{Kind: kind}).Records {
 			if record.Cluster == cluster && record.Name == name {
 				found = true
 				break
@@ -687,6 +841,62 @@ func waitForCacheRecord(
 		case <-deadline.C:
 			t.Fatalf("cached record %s/%s presence = %t, want %t", cluster, name, found, want)
 		case <-ticker.C:
+		}
+	}
+}
+
+func waitForWatchSnapshotFact(
+	ctx context.Context,
+	t *testing.T,
+	events <-chan connector.WatchEvent,
+	kind, cluster, name string,
+) {
+	t.Helper()
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case event, open := <-events:
+			if !open {
+				t.Fatalf("watch closed before %s/%s appeared in %s snapshot", cluster, name, kind)
+			}
+			if event.Kind != kind || event.Scope != cluster {
+				continue
+			}
+			if event.Type == connector.WatchError {
+				t.Fatalf("watch bootstrap for %s/%s failed: %v", kind, cluster, event.Err)
+			}
+			if event.Type != connector.WatchSnapshot {
+				continue
+			}
+			for _, fact := range event.Facts {
+				if fact.Ref.Name == name {
+					return
+				}
+			}
+			t.Fatalf("%s snapshot for %s omitted late-page object %s", kind, cluster, name)
+		case <-ctx.Done():
+			t.Fatalf("wait for %s snapshot in %s: %v", kind, cluster, ctx.Err())
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for %s snapshot in %s", kind, cluster)
+		}
+	}
+}
+
+func waitForWatchClose(ctx context.Context, t *testing.T, events <-chan connector.WatchEvent) {
+	t.Helper()
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case _, open := <-events:
+			if !open {
+				return
+			}
+		case <-ctx.Done():
+			t.Fatalf("wait for watch shutdown: %v", ctx.Err())
+		case <-deadline.C:
+			t.Fatal("watch did not close after cancellation")
 		}
 	}
 }

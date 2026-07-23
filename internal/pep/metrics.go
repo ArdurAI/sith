@@ -6,10 +6,11 @@ import (
 	"context"
 	"time"
 
+	"github.com/ArdurAI/sith/internal/intent"
 	"github.com/ArdurAI/sith/internal/tracing"
 )
 
-// DecisionOutcome is the bounded self-observability result of one policy read attempt.
+// DecisionOutcome is the bounded self-observability result of one policy decision.
 // It intentionally carries no workspace, actor, selector, credential, or reason-code material.
 type DecisionOutcome string
 
@@ -21,7 +22,7 @@ const (
 	DecisionOutcomeError           DecisionOutcome = "error"
 )
 
-// DecisionObserver receives passive, bounded measurements for policy reads. Implementations must
+// DecisionObserver receives passive, bounded measurements for policy decisions. Implementations must
 // not block or mutate the authorization path. The enforcer isolates observer panics defensively.
 type DecisionObserver interface {
 	ObserveDecision(verb Verb, outcome DecisionOutcome, duration time.Duration)
@@ -66,7 +67,7 @@ func traceOutcome(outcome DecisionOutcome) tracing.Outcome {
 }
 
 func normalizedObservedVerb(verb Verb) Verb {
-	if verb.Valid() {
+	if verb.Valid() || intent.Verb(verb).Valid() {
 		return verb
 	}
 	return "invalid"

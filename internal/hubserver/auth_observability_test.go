@@ -62,7 +62,7 @@ func TestAuthenticateWithObserverRecordsOnlyUniformRefusals(t *testing.T) {
 	}
 }
 
-func TestAuthenticateWithObserverIsSilentAfterValidAuthentication(t *testing.T) {
+func TestAuthenticateWithObserverRecordsAcceptedAfterValidAuthentication(t *testing.T) {
 	now := time.Date(2026, 7, 14, 13, 0, 0, 0, time.UTC)
 	publicKey, privateKey := hubTestKeyPair()
 	verifier, err := hubauth.NewJWTVerifier(hubauth.JWTConfig{
@@ -82,8 +82,21 @@ func TestAuthenticateWithObserverIsSilentAfterValidAuthentication(t *testing.T) 
 	request.Header.Set("Authorization", "Bearer "+signHubTestToken(t, hubValidClaims(now), privateKey))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusNoContent || len(events) != 0 {
+	if response.Code != http.StatusNoContent || len(events) != 1 || events[0] != (AuthEvent{Outcome: AuthOutcomeAccepted}) {
 		t.Fatalf("status = %d events = %#v", response.Code, events)
+	}
+}
+
+func TestAuthEventValidationUsesOnlyClosedOutcomes(t *testing.T) {
+	for _, outcome := range []AuthOutcome{AuthOutcomeAccepted, AuthOutcomeRefused} {
+		if err := (AuthEvent{Outcome: outcome}).Validate(); err != nil {
+			t.Fatalf("Validate(%q) = %v", outcome, err)
+		}
+	}
+	for _, outcome := range []AuthOutcome{"", "token=secret", "forbidden"} {
+		if err := (AuthEvent{Outcome: outcome}).Validate(); err == nil {
+			t.Fatalf("Validate(%q) accepted an unsupported outcome", outcome)
+		}
 	}
 }
 
@@ -95,6 +108,7 @@ func TestObserveAuthRejectsUnsafeEventsAndContainsObserverPanics(t *testing.T) {
 	}
 
 	ObserveAuth(AuthObserverFunc(func(AuthEvent) { panic("observer fault") }), AuthEvent{Outcome: AuthOutcomeRefused})
+	ObserveAuth(AuthObserverFunc(func(AuthEvent) { panic("observer fault") }), AuthEvent{Outcome: AuthOutcomeAccepted})
 
 	handler, err := AuthenticateWithObserver(authVerifierFunc(func(context.Context, string) (tenancy.Principal, error) {
 		return tenancy.Principal{}, errors.New("invalid")
@@ -108,5 +122,62 @@ func TestObserveAuthRejectsUnsafeEventsAndContainsObserverPanics(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "https://hub.sith.test/api", nil))
 	if response.Code != http.StatusUnauthorized || response.Body.String() != "{\"error\":\"unauthorized\"}\n" {
 		t.Fatalf("status = %d, body = %q", response.Code, response.Body.String())
+	}
+
+	successful, err := AuthenticateWithObserver(authVerifierFunc(func(context.Context, string) (tenancy.Principal, error) {
+		return tenancy.Principal{}, nil
+	}), AuthObserverFunc(func(AuthEvent) { panic("observer fault") }), http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	successRequest := httptest.NewRequest(http.MethodGet, "https://hub.sith.test/api", nil)
+	successRequest.Header.Set("Authorization", "Bearer valid")
+	successResponse := httptest.NewRecorder()
+	successful.ServeHTTP(successResponse, successRequest)
+	if successResponse.Code != http.StatusNoContent {
+		t.Fatalf("successful authentication with panicking observer status = %d", successResponse.Code)
+	}
+}
+
+func TestAuthObserverFanoutIsolatesEachRequiredDestination(t *testing.T) {
+	var deliveries []string
+	first := AuthObserverFunc(func(AuthEvent) {
+		deliveries = append(deliveries, "first")
+		panic("observer fault")
+	})
+	second := AuthObserverFunc(func(AuthEvent) { deliveries = append(deliveries, "second") })
+	observers := []AuthObserver{first, second}
+	fanout, err := NewAuthObserverFanout(observers...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observers[1] = AuthObserverFunc(func(AuthEvent) { t.Fatal("fanout retained caller-owned slice") })
+
+	ObserveAuth(fanout, AuthEvent{Outcome: AuthOutcomeRefused})
+	ObserveAuth(fanout, AuthEvent{Outcome: AuthOutcomeAccepted})
+	if len(deliveries) != 4 || deliveries[0] != "first" || deliveries[1] != "second" ||
+		deliveries[2] != "first" || deliveries[3] != "second" {
+		t.Fatalf("fanout deliveries = %#v, want independently isolated order", deliveries)
+	}
+
+	deliveries = nil
+	ObserveAuth(fanout, AuthEvent{Outcome: "token=secret"})
+	if len(deliveries) != 0 {
+		t.Fatalf("unsafe event reached fanout destinations: %#v", deliveries)
+	}
+}
+
+func TestNewAuthObserverFanoutRejectsIncompleteConfiguration(t *testing.T) {
+	observer := AuthObserverFunc(func(AuthEvent) {})
+	for _, observers := range [][]AuthObserver{
+		nil,
+		{observer},
+		{observer, nil},
+	} {
+		if fanout, err := NewAuthObserverFanout(observers...); err == nil || fanout != nil {
+			t.Fatalf("NewAuthObserverFanout(%#v) = %#v, %v", observers, fanout, err)
+		}
 	}
 }

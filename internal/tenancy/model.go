@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 const maxIdentityLength = 256
@@ -35,6 +36,7 @@ type Action string
 // Supported authorization classes.
 const (
 	ActionRead            Action = "read"
+	ActionExportAudit     Action = "export-audit"
 	ActionProposeIntent   Action = "propose-intent"
 	ActionApproveIntent   Action = "approve-intent"
 	ActionManageWorkspace Action = "manage-workspace"
@@ -102,14 +104,14 @@ func (role Role) Allows(action Action) bool {
 	case RoleApprover:
 		return action == ActionRead || action == ActionApproveIntent
 	case RoleAdmin:
-		return action == ActionRead || action == ActionManageWorkspace
+		return action == ActionRead || action == ActionExportAudit || action == ActionManageWorkspace
 	default:
 		return false
 	}
 }
 
 func validateIdentity(name, value string) error {
-	if value == "" || strings.TrimSpace(value) != value {
+	if value == "" || !utf8.ValidString(value) || strings.TrimSpace(value) != value {
 		return fmt.Errorf("%s must be a non-empty, trimmed value", name)
 	}
 	if len(value) > maxIdentityLength {
@@ -124,7 +126,7 @@ func validateIdentity(name, value string) error {
 }
 
 func validateDisplayName(name, value string) error {
-	if value == "" || strings.TrimSpace(value) != value {
+	if value == "" || !utf8.ValidString(value) || strings.TrimSpace(value) != value {
 		return fmt.Errorf("%s must be a non-empty, trimmed value", name)
 	}
 	if len(value) > maxIdentityLength {

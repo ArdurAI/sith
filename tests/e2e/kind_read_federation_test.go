@@ -39,9 +39,10 @@ func exerciseReadFederationSnapshots(
 		failures:  make(map[string]hubfleet.FailureKind),
 	}
 	collector, err := hubfleet.NewCollector(hubfleet.CollectorConfig{
-		Store:     store,
-		Transport: kindSnapshotTransport{adapter: adapter},
-		PEP:       e2eReadPEP(t),
+		LifecycleContext: ctx,
+		Store:            store,
+		Transport:        kindSnapshotTransport{adapter: adapter},
+		PEP:              e2eReadPEP(t),
 	})
 	if err != nil {
 		t.Fatalf("construct read-federation collector: %v", err)

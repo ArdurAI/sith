@@ -20,6 +20,9 @@ func TestAppDBRejectsMissingBoundary(t *testing.T) {
 	if err := (*AppDB)(nil).InWorkspace(context.Background(), tenancy.Scope{}, nil); err == nil {
 		t.Fatal("nil database unexpectedly accepted")
 	}
+	if err := (*AppDB)(nil).Ping(context.Background()); err == nil {
+		t.Fatal("nil database readiness check unexpectedly succeeded")
+	}
 }
 
 func TestSecureTransportRejectsMissingTLS(t *testing.T) {

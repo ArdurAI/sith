@@ -78,7 +78,7 @@ func (correlator *Correlator) Correlate(
 	if err := scope.Authorize(tenancy.ActionRead); err != nil {
 		return fleet.QueryResult{}, fmt.Errorf("correlate fleet: %w", err)
 	}
-	if err := request.validate(); err != nil {
+	if err := request.Validate(); err != nil {
 		return fleet.QueryResult{}, fmt.Errorf("correlate fleet: %w", err)
 	}
 	canonicalArguments := strings.Join([]string{request.ResourceKind, request.Name, request.Namespace, request.HealthNot, fmt.Sprintf("%d", request.Limit)}, "\x00")
@@ -101,7 +101,8 @@ func (correlator *Correlator) Correlate(
 	return result, nil
 }
 
-func (request CorrelationRequest) validate() error {
+// Validate rejects malformed or unsafe correlation inputs before any policy or storage call.
+func (request CorrelationRequest) Validate() error {
 	for _, field := range []struct {
 		name    string
 		value   string

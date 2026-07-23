@@ -22,11 +22,37 @@ import (
 )
 
 const (
-	watchBuffer         = 256
-	initialWatchBackoff = 250 * time.Millisecond
-	maximumWatchBackoff = 5 * time.Second
-	watchTimeoutSeconds = int64(300)
+	watchBuffer                = 256
+	initialWatchBackoff        = 250 * time.Millisecond
+	maximumWatchBackoff        = 5 * time.Second
+	watchTimeoutSeconds        = int64(300)
+	watchBootstrapPageSize     = 250
+	watchBootstrapObjectBudget = 10_000
+	watchBootstrapPageBudget   = 128
 )
+
+type watchBootstrapLimits struct {
+	pageSize     int
+	objectBudget int
+	pageBudget   int
+}
+
+func defaultWatchBootstrapLimits() watchBootstrapLimits {
+	return watchBootstrapLimits{
+		pageSize:     watchBootstrapPageSize,
+		objectBudget: watchBootstrapObjectBudget,
+		pageBudget:   watchBootstrapPageBudget,
+	}
+}
+
+type watchBootstrapLister interface {
+	List(context.Context, metav1.ListOptions) (*unstructured.UnstructuredList, error)
+}
+
+type watchBootstrap struct {
+	objects         []unstructured.Unstructured
+	resourceVersion string
+}
 
 // Watch opens independent list-watch loops for every reachable scope and requested kind.
 func (adapter *Adapter) Watch(ctx context.Context, kinds ...string) (<-chan connector.WatchEvent, error) {
@@ -47,7 +73,8 @@ func (adapter *Adapter) Watch(ctx context.Context, kinds ...string) (<-chan conn
 				go func(scopeName, resourceKind string) {
 					defer waitGroup.Done()
 					sendWatchEvent(ctx, events, connector.WatchEvent{
-						Type: connector.WatchError, Kind: resourceKind, Scope: scopeName, Err: ErrUnreachableScope,
+						Type: connector.WatchError, Workspace: fleet.LocalWorkspace,
+						Kind: resourceKind, Scope: scopeName, Err: ErrUnreachableScope,
 					})
 				}(name, kind)
 				continue
@@ -94,11 +121,11 @@ func (adapter *Adapter) watchScope(
 			}
 		}
 		resource := resourceInterface(client, spec, "")
-		list, err := callWithTimeout(ctx, adapter.settings.requestTimeout, func(requestCtx context.Context) (*unstructured.UnstructuredList, error) {
-			return resource.List(requestCtx, metav1.ListOptions{})
+		bootstrap, err := callWithTimeout(ctx, adapter.gate, scope, adapter.settings.requestTimeout, func(requestCtx context.Context) (watchBootstrap, error) {
+			return loadWatchBootstrap(requestCtx, resource, defaultWatchBootstrapLimits())
 		})
 		if err != nil {
-			if !adapter.reportWatchError(ctx, events, kind, scope, fmt.Errorf("list before watch: %w", err)) ||
+			if !adapter.reportWatchError(ctx, events, kind, scope, err) ||
 				!waitForWatchRetry(ctx, backoff) {
 				return
 			}
@@ -114,7 +141,7 @@ func (adapter *Adapter) watchScope(
 				}
 				return
 			}
-			display, err = table(ctx, spec, "", "", "")
+			display, err = table(ctx, spec, tableRequest{rowBudget: len(bootstrap.objects)})
 			if err != nil {
 				if !adapter.reportWatchError(ctx, events, kind, scope, err) || !waitForWatchRetry(ctx, backoff) {
 					return
@@ -123,7 +150,7 @@ func (adapter *Adapter) watchScope(
 				continue
 			}
 		}
-		facts, err := factsFromObjects(list.Items, spec, scope, observedAt, display)
+		facts, err := factsFromObjects(bootstrap.objects, spec, scope, observedAt, display)
 		if err != nil {
 			if !adapter.reportWatchError(ctx, events, kind, scope, err) {
 				return
@@ -131,7 +158,8 @@ func (adapter *Adapter) watchScope(
 			return
 		}
 		if !sendWatchEvent(ctx, events, connector.WatchEvent{
-			Type: connector.WatchSnapshot, Kind: kind, Scope: scope, Facts: facts, ObservedAt: observedAt,
+			Type: connector.WatchSnapshot, Workspace: fleet.LocalWorkspace,
+			Kind: kind, Scope: scope, Facts: facts, ObservedAt: observedAt,
 		}) {
 			return
 		}
@@ -139,7 +167,7 @@ func (adapter *Adapter) watchScope(
 		backoff = initialWatchBackoff
 
 		stream, err := resource.Watch(ctx, metav1.ListOptions{
-			ResourceVersion: list.GetResourceVersion(), AllowWatchBookmarks: true, TimeoutSeconds: pointer(watchTimeoutSeconds),
+			ResourceVersion: bootstrap.resourceVersion, AllowWatchBookmarks: true, TimeoutSeconds: pointer(watchTimeoutSeconds),
 		})
 		if err != nil {
 			if !adapter.reportWatchError(ctx, events, kind, scope, fmt.Errorf("open watch: %w", err)) ||
@@ -164,6 +192,71 @@ func (adapter *Adapter) watchScope(
 			backoff = min(backoff*2, maximumWatchBackoff)
 		}
 	}
+}
+
+func loadWatchBootstrap(
+	ctx context.Context,
+	lister watchBootstrapLister,
+	limits watchBootstrapLimits,
+) (watchBootstrap, error) {
+	if limits.pageSize <= 0 || limits.objectBudget <= 0 || limits.pageBudget <= 0 ||
+		limits.pageSize > limits.objectBudget {
+		return watchBootstrap{}, errors.New("watch bootstrap limits are invalid")
+	}
+	result := watchBootstrap{
+		objects: make([]unstructured.Unstructured, 0, min(limits.pageSize, limits.objectBudget)),
+	}
+	continueToken := ""
+	seenTokens := make(map[string]struct{})
+	for page := 0; page < limits.pageBudget; page++ {
+		remaining := limits.objectBudget - len(result.objects)
+		if remaining <= 0 {
+			return watchBootstrap{}, fmt.Errorf("watch bootstrap exceeds the %d-object budget", limits.objectBudget)
+		}
+		pageLimit := min(limits.pageSize, remaining)
+		list, err := lister.List(ctx, metav1.ListOptions{
+			Limit:    int64(pageLimit), // #nosec G115 -- pageLimit is positive and bounded by objectBudget.
+			Continue: continueToken,
+		})
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return watchBootstrap{}, fmt.Errorf("watch bootstrap list: %w", ctxErr)
+			}
+			if apierrors.IsResourceExpired(err) {
+				return watchBootstrap{}, errors.New("watch bootstrap continuation expired")
+			}
+			return watchBootstrap{}, fmt.Errorf("watch bootstrap list page %d failed", page+1)
+		}
+		if list == nil {
+			return watchBootstrap{}, errors.New("watch bootstrap API server returned an empty list response")
+		}
+		if len(list.Items) > pageLimit {
+			return watchBootstrap{}, errors.New("watch bootstrap API server ignored the requested page limit")
+		}
+		resourceVersion := list.GetResourceVersion()
+		if resourceVersion == "" {
+			return watchBootstrap{}, errors.New("watch bootstrap returned an empty resourceVersion")
+		}
+		if result.resourceVersion == "" {
+			result.resourceVersion = resourceVersion
+		} else if resourceVersion != result.resourceVersion {
+			return watchBootstrap{}, errors.New("watch bootstrap resourceVersion changed between pages")
+		}
+		result.objects = append(result.objects, list.Items...)
+		next := list.GetContinue()
+		if next == "" {
+			return result, nil
+		}
+		if len(result.objects) >= limits.objectBudget {
+			return watchBootstrap{}, fmt.Errorf("watch bootstrap exceeds the %d-object budget", limits.objectBudget)
+		}
+		if _, repeated := seenTokens[next]; repeated {
+			return watchBootstrap{}, errors.New("watch bootstrap API server repeated a continuation token")
+		}
+		seenTokens[next] = struct{}{}
+		continueToken = next
+	}
+	return watchBootstrap{}, fmt.Errorf("watch bootstrap exceeds the %d-page budget", limits.pageBudget)
 }
 
 func (adapter *Adapter) consumeWatch(
@@ -199,12 +292,15 @@ func (adapter *Adapter) consumeWatch(
 				return err
 			}
 			watchEvent := connector.WatchEvent{
-				Kind: kind, Scope: scope, ObservedAt: observedAt, Ref: evidence.Ref,
+				Workspace: fleet.LocalWorkspace, Kind: kind, Scope: scope, ObservedAt: observedAt, Ref: evidence.Ref,
 			}
 			switch event.Type {
 			case watch.Added, watch.Modified:
 				if generic {
-					display, tableErr := table(ctx, spec, object.GetNamespace(), object.GetName(), "")
+					display, tableErr := table(ctx, spec, tableRequest{
+						namespace: object.GetNamespace(),
+						name:      object.GetName(),
+					})
 					if tableErr != nil {
 						return tableErr
 					}
@@ -234,7 +330,7 @@ func (adapter *Adapter) reportWatchError(
 	err error,
 ) bool {
 	return sendWatchEvent(ctx, events, connector.WatchEvent{
-		Type: connector.WatchError, Kind: kind, Scope: scope, Err: err,
+		Type: connector.WatchError, Workspace: fleet.LocalWorkspace, Kind: kind, Scope: scope, Err: err,
 	})
 }
 

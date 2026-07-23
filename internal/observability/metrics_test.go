@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/ArdurAI/sith/internal/hubfleet"
+	"github.com/ArdurAI/sith/internal/hubserver"
 	"github.com/ArdurAI/sith/internal/pep"
 )
 
@@ -23,8 +24,44 @@ func TestMetricsExposeOnlyBoundedSelfObservability(t *testing.T) {
 	}
 	metrics.ObserveDecision(pep.VerbFleetRead, pep.DecisionOutcomeAllow, 125*time.Millisecond)
 	metrics.ObserveDecision(pep.Verb("workspace-a/token=secret"), pep.DecisionOutcome("untrusted"), -time.Second)
+	metrics.ObservePolicyAudit(pep.AuditSinkDurable, pep.AuditOutcomeSuccess, 15*time.Millisecond)
+	metrics.ObservePolicyAudit(pep.AuditSinkProcess, pep.AuditOutcomeError, -time.Second)
+	metrics.ObservePolicyAudit(pep.AuditSink("workspace-a/token=secret"), pep.AuditOutcome("untrusted"), time.Second)
 	metrics.ObserveSpokeSnapshot(hubfleet.SnapshotOutcomeSuccess, 25*time.Millisecond)
 	metrics.ObserveSpokeSnapshot(hubfleet.SnapshotOutcome("spoke-a/token=secret"), -time.Second)
+	metrics.ObserveFleetRead(hubfleet.FleetReadObservation{
+		Outcome: hubfleet.FleetReadOutcomeComplete, Freshness: hubfleet.FleetFreshnessOutcomeFresh,
+	})
+	metrics.ObserveFleetRead(hubfleet.FleetReadObservation{
+		Outcome: hubfleet.FleetReadOutcomeDegraded, Freshness: hubfleet.FleetFreshnessOutcomeStale,
+	})
+	metrics.ObserveFleetRead(hubfleet.FleetReadObservation{
+		Outcome: hubfleet.FleetReadOutcomeDegraded, Freshness: hubfleet.FleetFreshnessOutcomeUnknown,
+	})
+	metrics.ObserveFleetRead(hubfleet.FleetReadObservation{
+		Outcome: hubfleet.FleetReadOutcomeEmpty, Freshness: hubfleet.FleetFreshnessOutcomeEmpty,
+	})
+	metrics.ObserveFleetRead(hubfleet.FleetReadObservation{
+		Outcome: hubfleet.FleetReadOutcomeError, Freshness: hubfleet.FleetFreshnessOutcomeError,
+	})
+	metrics.ObserveFleetRead(hubfleet.FleetReadObservation{
+		Outcome:   hubfleet.FleetReadOutcome("workspace-a/token=secret"),
+		Freshness: hubfleet.FleetFreshnessOutcome("spoke-a/token=secret"),
+	})
+	metrics.ObserveFleetRead(hubfleet.FleetReadObservation{
+		Outcome: hubfleet.FleetReadOutcomeComplete, Freshness: hubfleet.FleetFreshnessOutcomeStale,
+	})
+	metrics.ObserveFleetRead(hubfleet.FleetReadObservation{
+		Outcome:   hubfleet.FleetReadOutcomeComplete,
+		Freshness: hubfleet.FleetFreshnessOutcome("spoke-a/token=secret"),
+	})
+	metrics.ObserveReadiness(hubserver.ReadinessOutcomeReady, 10*time.Millisecond)
+	metrics.ObserveReadiness(hubserver.ReadinessOutcomeUnavailable, -time.Second)
+	metrics.ObserveReadiness(hubserver.ReadinessOutcome("database endpoint secret"), time.Second)
+	metrics.ObserveAuth(hubserver.AuthEvent{Outcome: hubserver.AuthOutcomeAccepted})
+	metrics.ObserveAuth(hubserver.AuthEvent{Outcome: hubserver.AuthOutcomeRefused})
+	metrics.ObserveAuth(hubserver.AuthEvent{Outcome: "token=secret"})
+	metrics.ObserveAuthRefusalDeliveryDrop()
 
 	response := httptest.NewRecorder()
 	metrics.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://metrics.invalid/metrics", nil))
@@ -36,20 +73,45 @@ func TestMetricsExposeOnlyBoundedSelfObservability(t *testing.T) {
 		"sith_build_info",
 		"sith_policy_decisions_total",
 		"sith_policy_decision_duration_seconds",
+		"sith_policy_audit_attempts_total",
+		"sith_policy_audit_duration_seconds",
+		`sith_policy_audit_attempts_total{outcome="success",sink="durable"} 1`,
+		`sith_policy_audit_attempts_total{outcome="error",sink="durable"} 0`,
+		`sith_policy_audit_attempts_total{outcome="success",sink="process"} 0`,
+		`sith_policy_audit_attempts_total{outcome="error",sink="process"} 1`,
 		"sith_federation_spoke_snapshot_attempts_total",
 		"sith_federation_spoke_snapshot_duration_seconds",
+		`sith_federation_fleet_read_results_total{outcome="complete"} 1`,
+		`sith_federation_fleet_read_results_total{outcome="degraded"} 2`,
+		`sith_federation_fleet_read_results_total{outcome="empty"} 1`,
+		`sith_federation_fleet_read_results_total{outcome="error"} 1`,
+		`sith_federation_fleet_read_freshness_total{outcome="fresh"} 1`,
+		`sith_federation_fleet_read_freshness_total{outcome="stale"} 1`,
+		`sith_federation_fleet_read_freshness_total{outcome="unknown"} 1`,
+		`sith_federation_fleet_read_freshness_total{outcome="empty"} 1`,
+		`sith_federation_fleet_read_freshness_total{outcome="error"} 1`,
+		`sith_hub_readiness_checks_total{outcome="ready"} 1`,
+		`sith_hub_readiness_checks_total{outcome="unavailable"} 1`,
+		`sith_hub_readiness_check_duration_seconds_count{outcome="ready"} 1`,
+		`sith_hub_readiness_check_duration_seconds_count{outcome="unavailable"} 1`,
+		`sith_auth_attempts_total{outcome="accepted"} 1`,
+		`sith_auth_attempts_total{outcome="refused"} 1`,
+		"sith_auth_refusals_total 1",
+		"sith_auth_refusal_delivery_drops_total 1",
 		`verb="fleet.read"`,
 		`verb="invalid"`,
 		`outcome="allow"`,
 		`outcome="error"`,
 		`outcome="success"`,
 		`outcome="store-error"`,
+		`sink="durable"`,
+		`sink="process"`,
 	} {
 		if !strings.Contains(body, metric) {
 			t.Fatalf("metrics output missing %q: %s", metric, body)
 		}
 	}
-	for _, forbidden := range []string{"workspace-a", "spoke-a", "token=secret", "untrusted"} {
+	for _, forbidden := range []string{"workspace-a", "spoke-a", "token=secret", "untrusted", "database endpoint secret"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("metrics output leaked %q: %s", forbidden, body)
 		}
@@ -80,14 +142,32 @@ func TestMetricsUseIndependentRegistriesAndNormalizeBuildLabels(t *testing.T) {
 	if !strings.Contains(body, `sith_build_info{commit="unknown",version="unknown"} 1`) {
 		t.Fatalf("unsafe build metadata was not normalized: %s", body)
 	}
+	for _, preinitialized := range []string{
+		`sith_federation_fleet_read_freshness_total{outcome="fresh"} 0`,
+		`sith_federation_fleet_read_freshness_total{outcome="stale"} 0`,
+		`sith_federation_fleet_read_freshness_total{outcome="unknown"} 0`,
+		`sith_federation_fleet_read_freshness_total{outcome="empty"} 0`,
+		`sith_federation_fleet_read_freshness_total{outcome="error"} 0`,
+		`sith_hub_readiness_checks_total{outcome="ready"} 0`,
+		`sith_hub_readiness_checks_total{outcome="unavailable"} 0`,
+		`sith_hub_readiness_check_duration_seconds_count{outcome="ready"} 0`,
+		`sith_hub_readiness_check_duration_seconds_count{outcome="unavailable"} 0`,
+		`sith_auth_attempts_total{outcome="accepted"} 0`,
+		`sith_auth_attempts_total{outcome="refused"} 0`,
+		`sith_auth_refusals_total 0`,
+	} {
+		if !strings.Contains(body, preinitialized) {
+			t.Fatalf("metrics output missing preinitialized readiness series %q: %s", preinitialized, body)
+		}
+	}
 }
 
 func TestMetricsRejectDuplicateRegistrations(t *testing.T) {
 	registry := prometheus.NewPedanticRegistry()
 	conflicting := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "sith", Subsystem: "policy", Name: "decisions_total",
-		Help: "Total completed Sith policy-read decisions by closed verb and outcome.",
-	}, []string{"verb", "outcome"})
+		Namespace: "sith", Subsystem: "hub", Name: "readiness_checks_total",
+		Help: "Total completed Sith Hub database readiness checks by closed outcome.",
+	}, []string{"outcome"})
 	if err := registry.Register(conflicting); err != nil {
 		t.Fatal(err)
 	}
@@ -122,8 +202,17 @@ func assertSithMetricLabels(t *testing.T, metrics *Metrics) {
 		"sith_build_info":                                 {"commit": true, "version": true},
 		"sith_policy_decisions_total":                     {"outcome": true, "verb": true},
 		"sith_policy_decision_duration_seconds":           {"outcome": true, "verb": true},
+		"sith_policy_audit_attempts_total":                {"outcome": true, "sink": true},
+		"sith_policy_audit_duration_seconds":              {"outcome": true, "sink": true},
 		"sith_federation_spoke_snapshot_attempts_total":   {"outcome": true},
 		"sith_federation_spoke_snapshot_duration_seconds": {"outcome": true},
+		"sith_federation_fleet_read_results_total":        {"outcome": true},
+		"sith_federation_fleet_read_freshness_total":      {"outcome": true},
+		"sith_hub_readiness_checks_total":                 {"outcome": true},
+		"sith_hub_readiness_check_duration_seconds":       {"outcome": true},
+		"sith_auth_attempts_total":                        {"outcome": true},
+		"sith_auth_refusals_total":                        {},
+		"sith_auth_refusal_delivery_drops_total":          {},
 	}
 	for _, family := range families {
 		labels, sithMetric := allowed[family.GetName()]

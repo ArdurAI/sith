@@ -47,7 +47,8 @@ func TestCollectorObservesClosedSnapshotOutcomes(t *testing.T) {
 				spokes: []Spoke{{ID: "spoke-a", ManagedClusterRef: "ocm/spoke-a"}}, snapshots: make(map[string]Snapshot), failures: make(map[string]FailureKind),
 			}
 			collector, err := NewCollector(CollectorConfig{
-				Store: store, Transport: test.transport, PEP: testReadPEP(t), Observer: observer, Now: func() time.Time { return now },
+				LifecycleContext: t.Context(), Store: store, Transport: test.transport,
+				PEP: testReadPEP(t), Observer: observer, Now: func() time.Time { return now },
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -65,6 +66,7 @@ func TestCollectorObservesClosedSnapshotOutcomes(t *testing.T) {
 func TestCollectorRecoversFromPanickingSnapshotObserver(t *testing.T) {
 	now := time.Date(2026, time.July, 12, 20, 0, 0, 0, time.UTC)
 	collector, err := NewCollector(CollectorConfig{
+		LifecycleContext: t.Context(),
 		Store: &memoryStore{
 			spokes: []Spoke{{ID: "spoke-a", ManagedClusterRef: "ocm/spoke-a"}}, snapshots: make(map[string]Snapshot), failures: make(map[string]FailureKind),
 		},

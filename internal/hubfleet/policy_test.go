@@ -20,7 +20,7 @@ func TestHubReadEntrypointsStopBeforeDependenciesWhenPolicyRefuses(t *testing.T)
 
 	store := &memoryStore{snapshots: make(map[string]Snapshot), failures: make(map[string]FailureKind)}
 	collector, err := NewCollector(CollectorConfig{
-		Store: store, PEP: refusal.enforcer(t),
+		LifecycleContext: t.Context(), Store: store, PEP: refusal.enforcer(t),
 		Transport: transportFunc(func(context.Context, tenancy.WorkspaceID, Spoke) (Snapshot, error) {
 			return Snapshot{}, errors.New("transport must not run")
 		}),
@@ -36,7 +36,11 @@ func TestHubReadEntrypointsStopBeforeDependenciesWhenPolicyRefuses(t *testing.T)
 	}
 
 	reader := &recordingFleetReader{}
-	source, err := NewSource(SourceConfig{Reader: reader, Scope: scope, PEP: refusal.enforcer(t)})
+	var readObservations int
+	source, err := NewSource(SourceConfig{
+		Reader: reader, Scope: scope, PEP: refusal.enforcer(t),
+		Observer: fleetReadObserverFunc(func(FleetReadObservation) { readObservations++ }),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,6 +49,9 @@ func TestHubReadEntrypointsStopBeforeDependenciesWhenPolicyRefuses(t *testing.T)
 	}
 	if reader.calls != 0 {
 		t.Fatalf("source reached fleet reader %d times after refusal", reader.calls)
+	}
+	if readObservations != 0 {
+		t.Fatalf("source emitted %d fleet-read observations before authorization", readObservations)
 	}
 
 	querier := &recordingFleetQuerier{}
@@ -71,7 +78,18 @@ func TestHubReadEntrypointsStopBeforeDependenciesWhenPolicyRefuses(t *testing.T)
 	if querier.calls != 0 {
 		t.Fatalf("image search reached fleet query %d times after refusal", querier.calls)
 	}
-	if got, want := refusal.verbs, []pep.Verb{pep.VerbSpokeSnapshotRefresh, pep.VerbFleetRead, pep.VerbFleetCorrelate, pep.VerbFleetImageSearch}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] || got[3] != want[3] {
+
+	inventorySearcher, err := NewInventorySearcher(InventorySearcherConfig{Querier: querier, PEP: refusal.enforcer(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inventorySearcher.Search(context.Background(), scope, InventorySearchRequest{ResourceKind: "Pod"}); err == nil {
+		t.Fatal("Inventory Search() unexpectedly bypassed policy refusal")
+	}
+	if querier.calls != 0 {
+		t.Fatalf("inventory search reached fleet query %d times after refusal", querier.calls)
+	}
+	if got, want := refusal.verbs, []pep.Verb{pep.VerbSpokeSnapshotRefresh, pep.VerbFleetRead, pep.VerbFleetCorrelate, pep.VerbFleetImageSearch, pep.VerbFleetInventorySearch}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] || got[3] != want[3] || got[4] != want[4] {
 		t.Fatalf("policy verbs = %q, want %q", got, want)
 	}
 }
@@ -100,7 +118,7 @@ func (refusal *policyRefusal) enforcer(t *testing.T) *pep.Enforcer {
 
 func TestHubReadConstructorsRequirePolicyEnforcer(t *testing.T) {
 	store := &memoryStore{snapshots: make(map[string]Snapshot), failures: make(map[string]FailureKind)}
-	if _, err := NewCollector(CollectorConfig{Store: store, Transport: transportFunc(func(context.Context, tenancy.WorkspaceID, Spoke) (Snapshot, error) {
+	if _, err := NewCollector(CollectorConfig{LifecycleContext: t.Context(), Store: store, Transport: transportFunc(func(context.Context, tenancy.WorkspaceID, Spoke) (Snapshot, error) {
 		return Snapshot{}, nil
 	})}); err == nil {
 		t.Fatal("NewCollector() accepted no policy enforcer")
@@ -109,6 +127,11 @@ func TestHubReadConstructorsRequirePolicyEnforcer(t *testing.T) {
 		return fleet.QueryResult{}, nil
 	})}); err == nil {
 		t.Fatal("NewCorrelator() accepted no policy enforcer")
+	}
+	if _, err := NewInventorySearcher(InventorySearcherConfig{Querier: fleetQuerierFunc(func(context.Context, tenancy.Scope, fleet.Query, time.Duration, time.Time) (fleet.QueryResult, error) {
+		return fleet.QueryResult{}, nil
+	})}); err == nil {
+		t.Fatal("NewInventorySearcher() accepted no policy enforcer")
 	}
 	if _, err := NewSource(SourceConfig{Reader: fleetReaderFunc(func(context.Context, tenancy.Scope, time.Duration, time.Time) (fleet.FleetResult, error) {
 		return fleet.FleetResult{}, nil

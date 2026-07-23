@@ -403,6 +403,20 @@ hub). Weights are indicative, to be tuned against real incidents.
   advisory* accordingly.
 - **Coverage gate.** LIVE + logs(TELEMETRY) are the crux; DESIRED/TIMELINE disambiguate.
 
+**Implemented Elasticsearch graph seam (#280).** The bounded `search/ecs-v1` projector described
+in #214 can feed this existing signal without exposing raw logs to the brain. `FromGraphFacts`
+accepts only an attached Pod TELEMETRY `FactDerived` whose source kind and provenance adapter are
+both `elasticsearch`, protocol is exact, source/scope/namespace agree, and the SHA-256
+native/resource identity recomputes from the retained workspace, Pod, aggregate, and collection
+fields. The payload contains only `key`, `value`, `count`,
+`first_event_at`, `last_event_at`, and optional `container`. The key must be `logs.cause`; the value
+must be `panic`, `missing-config`, or `dependency-failure`; source projector count, time-window,
+clock-skew, and optional-container bounds are revalidated. Only the Pod identity, cause, last event
+time, source, and stale flag survive as an observation. Count and container metadata are discarded.
+Caller-declared coverage is copied exactly and never inferred from fact presence. Different Pods
+remain different evaluator entities, so log evidence for one Pod cannot strengthen another Pod's
+CrashLoop. This is an in-memory graph bridge, not an Elasticsearch reader or freshness claim.
+
 #### R4 — Config drift (live diverged from desired)
 
 - **Symptom.** Live ≠ desired for a workload/Application (Argo `OutOfSync`, or `diff` verb shows a
@@ -471,9 +485,53 @@ hub). Weights are indicative, to be tuned against real incidents.
 
 ---
 
-**Adjacent rules (same pattern, add as coverage lands):** `ImagePullBackOff / registry-auth`,
-`FailingDependency` (mesh/trace-driven), `Pipeline/SyncFailure` (Argo/CI), `HPA-thrash`,
-`PVC-full / volume-bind`. The schema in §3.3 admits them without change.
+**Future adjacent rules (same pattern, add as coverage lands):** `FailingDependency`
+(mesh/trace-driven), `HPA-thrash`, and `PVC-full / volume-bind`.
+The schema in §3.3 admits them without change.
+
+**Implemented adjacent rule R7 (2026-07-18):** R7 consumes only the existing sanitized LIVE
+`pod.reason` projection and matches exact, case-insensitive `ImagePullBackOff` or `ErrImagePull`.
+Those reasons establish the image-pull symptom, not its underlying cause; R7 does not claim
+registry authentication, bad reference, reachability, rate-limit, platform, or another variant.
+It cites the single Pod observation and emits only a sensitive-marked, read-only
+`kubectl describe pod` advisory. It retains no image reference, registry credential, Secret,
+Event message, or raw payload and performs no probe, connector call, write, governed-plan handoff,
+or fleet-wide correlation. Stale or unavailable LIVE evidence produces an `unconfirmed` verdict
+with the LIVE gap named.
+
+**Implemented adjacent rule R8 (2026-07-18):** R8 completes only the Argo half of the earlier
+`Pipeline/SyncFailure` candidate. It consumes an attached, workspace-valid TIMELINE `FactChange`
+from the bounded Argo CD `1.0.0` projector when `change_kind=sync-failed`, operation phase is
+`Failed` or `Error`, source/provenance/entity identity agrees, and payload event time equals the
+fact observation time. The bridge emits only canonical `change.kind=sync-failed`; it discards the
+revision and all raw payload fields and copies explicit caller coverage without inferring it.
+`OutOfSync`, degraded health, successful/running operations, arbitrary strings, malformed or
+ambiguous facts, and unrelated connector changes do not prove R8. The hypothesis states only that
+Argo reported a failed operation, remains uncertain among rendering, validation, authorization,
+hook, network, Kubernetes API, resource, and other causes, and offers only a sensitive-marked,
+read-only `kubectl describe application.argoproj.io` advisory. R8 performs no Argo fetch, client
+call, storage, alert, SLO, typed intent, PEP handoff, dispatch, mutation, execution, or fleet
+correlation. The cache-backed local CLI cannot produce R8 until a future reader supplies validated
+Argo graph facts and explicit TIMELINE coverage.
+
+**Implemented adjacent rule R9 (2026-07-18):** R9 completes the GitHub Actions half of the earlier
+`Pipeline/SyncFailure` candidate. A bounded `workflow-runs/2026-03-10` projector consumes one
+already-authorized GitHub REST `Get a workflow run` response and emits one unattached TIMELINE fact
+only when trusted host/owner/repository/run identity agrees with the response, IDs and event time are
+valid, status is exact `completed`, and conclusion is `failure`, `timed_out`, or `startup_failure`.
+Incomplete and completed non-failure runs abstain; unknown states, duplicate JSON members,
+identity/time inconsistencies, malformed input, and ambiguous graph facts fail closed. The bridge
+requires exact `github` source/provenance, protocol, WorkflowRun identity, a closed payload,
+consistent run/attempt/native identity, matching event time, and explicit caller-declared TIMELINE
+coverage. It emits only canonical `change.kind=workflow-run-failed`, so workflow ID, conclusion,
+jobs, steps, logs, actors, branches, commits, URLs, unknown source fields, and raw response data are
+discarded before evaluation and output. R9 states only that GitHub reported a completed failed run,
+does not diagnose code/configuration/credential/permission/capacity/dependency or another cause,
+and offers only sensitive human guidance to inspect failed jobs and logs before considering a
+rerun. It performs no client call, token loading, fetch, retention, alerting, SLO evaluation,
+repository-to-workload or fleet correlation, typed intent, PEP handoff, dispatch, mutation, or
+execution. The cache-backed local CLI cannot produce R9 until a future reader supplies validated
+workflow-run graph facts and explicit TIMELINE coverage.
 
 ### 3.5 Rule composition and arbitration
 
@@ -507,6 +565,107 @@ The rules, the schema, the pipeline, and the graph are **identical** across mode
 rendering* and the *gating* differ. This is the "one engine, two modes" thesis applied to reasoning:
 the local wedge ships "k9s for your whole fleet **that also tells you why payments is down**," and the
 same brain, in the hub, proposes a governed remediation.
+
+#### 3.6.1 Staged governed-plan boundary
+
+F14.6 does not translate rendered local advisory strings into writes. Its first contract is an
+inert, rule-owned `RemediationCandidate` containing only one reviewed closed `intent.Verb` and an
+ordered set of closed provenance requirements. It carries no resolved target, handler arguments,
+actor, workspace, credential, signature, dispatch state, or execution capability. Candidate
+presence is not evidence readiness or authorization; the existing advisory remains the verdict's
+operator-facing output.
+
+The initial reviewed mappings are deliberately narrow:
+
+- R1 may name `argocd.rollback` only with requirements for an authoritative Argo Application target
+  and exact revision.
+- R2 and R4 may name `gitops.open-pr` only with requirements for repository, base ref, expected base
+  commit, file path, observed blob identity, and exact bounded desired content.
+- R3, R5, R6, R7, R8, and R9 remain advisory-only.
+
+A later reviewed provenance adapter may materialize a PEP proposal only after every requirement is
+satisfied from authoritative evidence and every handler-owned argument validates. Until then no PEP
+import, proposal, approval, persistence, network, dispatch, mutation, or execution belongs in the
+Brain. This preserves the same deterministic rules across local and hub modes without allowing
+human prose to become an implicit action contract.
+
+The first post-Brain resolver contract is GitOps-only and remains pre-PEP. For a confirmed,
+entity-local R2 or R4 candidate, it requires exactly one immutable `gitops-provenance/v1` bundle
+owned by the pinned GitHub source adapter contract. That bundle binds one workspace and cited
+resource to one repository, a non-symbolic configured base branch, exact base commit, one update
+path, observed blob identity, exact desired content, bounded PR metadata, immutable evidence
+references, and a validity interval of at most five minutes. It also pins the exact
+`gitops.open-pr` handler adapter version and raw argument-schema digest.
+
+Exact desired content is the source adapter's validated UTF-8 byte sequence. Neither the bundle nor
+resolver performs Unicode, line-ending, whitespace, or YAML normalization; the handler embeds those
+bytes as one JSON string in its canonical argument document. The returned `ArgumentsDigest` is
+SHA-256 over that complete canonical JSON byte sequence, so it binds repository preconditions, PR
+metadata, path, blob, and content together. There is intentionally no second standalone content
+digest in this contract.
+
+The bundle carries `ObservedAt` and `ValidUntil`, normalized to UTC at construction. It requires
+`ObservedAt < ValidUntil` and permits an interval of at most five minutes, inclusive. Resolution
+uses an injected trusted server clock normalized to UTC: `now < ObservedAt` is future provenance,
+`now >= ValidUntil` is stale, and only `ObservedAt <= now < ValidUntil` is fresh. This contract has
+no implicit clock-skew allowance; a future adapter needing one must make it an explicit reviewed
+source policy rather than silently widening the resolver window.
+
+The pure resolver fails closed on zero or multiple bundles, stale or future observations,
+cross-workspace or unattached resources, noncanonical candidates or descriptors, handler/schema
+drift, unsafe handler arguments, target mismatch, or any canonical output that changes the source's
+repository, base, commit, path, blob, content, or PR metadata. GitHub argument semantics stay owned
+by the planning handler: the resolver calls its I/O-free canonicalization seam and checks the
+contract, request cancellation, and source validity window again immediately before returning. A
+ready result contains only the normalized repository target, canonical arguments, their SHA-256
+digest, and evidence references. It contains no actor, role, intent ID, credential, signature,
+policy decision, approval, persistence, dispatch, mutation, or execution state.
+
+This contract does not fetch GitHub state. A later authorized canonical read adapter must use exact
+reference, commit, and tree/blob observations to construct the bundle; the offline resolver treats
+that immutable adapter output as the source claim and never substitutes caller data. The later Hub
+composition must separately derive workspace, actor, role, and intent ID from authenticated server
+state, invoke the planner, and call the PEP. Therefore this stage is provenance-complete only;
+F14.6 and the local-versus-hub exit criterion remain open.
+
+The owner-approved follow-on decomposition starts with the observed side only:
+`git-source-snapshot/v1`. A `GitSourceSnapshot` binds one validated workspace and affected resource
+to exactly one `github-git-source-snapshot/2026-03-10` source identity, one repository, one configured
+non-symbolic base ref, its exact resolved commit object ID, one repository-relative path, the exact
+current UTF-8 bytes, and their exact blob object ID. Construction recomputes the Git blob identity
+over `blob <byte-count>\0<content>` and rejects a mismatched claim. Forty-hex SHA-1 identifiers match
+GitHub's current Git database API; 64-hex SHA-256 identifiers are accepted under Git's hash-transition
+format. SHA-1 here is an interoperability identity, not a security digest.
+
+Snapshot input is bounded to 64 KiB of non-NUL UTF-8 content, a five-minute validity interval, and
+2–32 unique stable evidence references. The canonical evidence set must attach both the affected
+resource and the exact repository blob. Mutable resource references and evidence slices are copied,
+evidence is deterministically ordered, timestamps are normalized to UTC, and all validated snapshot
+fields remain private. Its only state-dependent operation is a pure trusted-time classification:
+`now < ObservedAt` is future, `now >= ValidUntil` is stale, and the half-open interval between them is
+fresh. A zero clock or internally invalid snapshot fails closed.
+
+`GitSourceSnapshot` deliberately has no desired bytes, PR title/body, commit message, handler
+contract, actor, role, intent ID, policy or approval decision, credential, endpoint, signature,
+persistence, dispatch, mutation, or execution state.
+
+The separately reviewed output contract is `desired-change/v1`. One opaque `DesiredChange` binds a
+defensive copy of one valid snapshot to one lowercase canonical `<transformer>/<version>` identity,
+exact proposed UTF-8 bytes, and 2–32 unique stable evidence references. Construction preserves the
+output byte sequence exactly, applies the same 64 KiB and non-NUL bounds as the snapshot, rejects an
+exact no-op against current content, canonically sorts copied evidence, and requires both the
+affected resource and exact observed blob to remain attached. The embedded snapshot preserves the
+repository, base ref, commit, path, blob, current bytes, evidence, and validity window as one exact
+later composition precondition.
+
+Desired-change construction is package-private. No concrete R2 memory-limit transformer, R4
+live-to-Git reconciler, YAML/Helm/Kustomize renderer, or file mapper is approved in this contract,
+so callers cannot relabel supplied replacement bytes as trusted output. The change exposes only its
+closed contract version and has no PR metadata, handler binding, actor, role, intent ID, policy or
+approval decision, credential, endpoint, signature, persistence, dispatch, mutation, or execution
+state. Neither half is wired into the existing resolver, Brain, connector runtime, PEP, or Hub.
+R2 and R4 therefore remain operator-facing advisory rules; this split adds no production read or
+write path.
 
 ### 3.7 Where the Brain lives (open decision)
 
@@ -548,10 +707,10 @@ the *reasoning*. Decision deferred to the owner (see §7).
 | Connector | Kind | Verbs | Lenses | Tier | Mode | Notes |
 |---|---|---|---|---|---|---|
 | **Kubernetes** (core) | RA + TA | di, rd, qy, df, (pl/ex/vf via actions) | LIVE, TIMELINE (Events/RS history), DESIRED (last-applied), GRAPH | **T0** | both | The substrate — this *is* F2.1/F11.1. Feeds every rule. |
-| **GitHub** | RA + TA | di, rd, qy, df, **pl/ex** (`gitops.open-pr`), vf | DESIRED (manifests), TIMELINE (commits/PR/deploys) | **T1** | read=local, write=hub | Read (desired/timeline) local via user token; `gitops.open-pr` is the first governed write (P2). |
+| **GitHub** | RA + TA | di, rd, qy, df, **pl/ex** (`gitops.open-pr`), vf | DESIRED (manifests), TIMELINE (commits/PR/deploys) | **T1** | read=local, write=hub | Bounded pure projectors now normalize caller-fetched merged-PR and completed workflow-run failure evidence; the HTTP/token reader remains future. `gitops.open-pr` is the first governed write (P2). |
 | **ArgoCD** | RA + BR + TA | di, rd, qy, **df**, pl/ex (`argocd.sync`,`argocd.rollback`), vf | DESIRED, LIVE, TIMELINE (sync history), drift | **T1** | read=local, sync=hub | Richest single connector — 3 lenses + the exemplar of the `diff` verb. Central to R1, R4. Application CRDs read via kubeconfig. |
 | **Prometheus** | RA + query-through | di, **qy**, rd (alerts) | TELEMETRY | **T1** | local-if-reachable / hub | Query-through, not retained. Central to R2, R5, R6 and R1 validation. |
-| **Elasticsearch** | RA + query-through | di, **qy** | TELEMETRY (logs) | **T2** | hub (local if creds) | Log search for R3. Auth/index-mapping variance → T2. |
+| **Elasticsearch** | RA + query-through | di, **qy** | TELEMETRY (logs) | **T2** | hub (local if creds) | Bounded sanitized `search/ecs-v1` cause facts now bridge into R3; HTTP/auth/index/query execution remains future. Auth/index-mapping variance → T2. |
 | **AWS** | RA (enum/cred) | di, rd, (qy CloudWatch later) | LIVE (nodes/infra), TIMELINE (CloudTrail later) | **T2** | cluster-enum local; deep facts hub | Enumeration + short-lived token minting (no long-lived keys). Feeds R6 (nodegroup/autoscaler). |
 
 #### Wave 2 — the desired-state / diff pipeline
@@ -597,9 +756,10 @@ lenses are covered by an installed connector. Otherwise it **abstains** (§2.6, 
 | R6 node pressure | K8s (Node) | — | K8s Events + cloud autoscaler | **Prometheus** (quantify) | **Kubernetes** (detect) **+ Prometheus** (quantify) + cloud (autoscaler) |
 
 **Reading the map:** with only the **Wave-1 core (Kubernetes + Argo + GitHub + Prometheus + a log
-store)**, all six rules reach at least a *detect* verdict, and R1/R2/R4/R5/R6 reach *confident*. R3's
-confidence needs a log connector. This is why W1 is the daily core — it is precisely the coverage the
-six rules need.
+store)**, all six rules reach at least a *detect* verdict, and R1/R2/R3/R4/R5 reach *confident*.
+R6 reaches detection plus Prometheus-backed quantification; it requires cloud-autoscaler facts for
+a *confident* verdict. This is why W1 is the daily core — it provides the common coverage while
+keeping cloud-specific R6 confidence conditional on the cloud adapter.
 
 ### 4.4 Scope-discipline call-outs (anti-drift, from SCOPE §10)
 
@@ -673,8 +833,9 @@ the plan-renderer forks.
 
 - [ ] Every connector in §4.2 declares its **kind** (RA/BR/TA), its **verb subset**, and the
       **lenses** it feeds; the framework rejects an out-of-taxonomy connector (E12/F12.2).
-- [ ] With **only the Wave-1 core** installed, R1/R2/R4/R5/R6 reach a *confident* verdict and R3
-      reaches at least *detect* — matching the coverage map (§4.3).
+- [ ] With **only the Wave-1 core** installed, R1/R2/R3/R4/R5 reach a *confident* verdict and R6
+      reaches detection plus Prometheus-backed quantification; cloud-autoscaler facts are required
+      for R6 confidence — matching the coverage map (§4.3).
 - [ ] **Scope discipline holds:** Fluentd/FluentBit expose LIVE health only (no log ingestion through
       them); Grafana is deep-link only; Helm/Kustomize expose no action verbs in v1.
 - [ ] Each connector's **mode** (local / hub / both) is honored — a local-only run uses no
@@ -711,9 +872,9 @@ the plan-renderer forks.
    "what changed recently" useful without drifting toward a store. Recommendation: a small fixed
    window (e.g. last N events / last 24–72h), tuned against real incidents; explicitly *not* a series.
 4. **Rule weights and thresholds.** The §3.4 weights are indicative. A versioned, synthetic replay
-   harness in `internal/brain/testdata/replays` now guards the six canonical rules, coverage
-   abstention, cause chaining, and safe fleet correlation. Future tuning should add sanitized incident
-   shapes to that corpus and preserve its exact expected verdict contract.
+   harness in `internal/brain/testdata/replays` now guards the six canonical rules, adjacent R7-R9,
+   coverage abstention, cause chaining, and safe fleet correlation. Future tuning should add
+   sanitized incident shapes to that corpus and preserve its exact expected verdict contract.
 5. **Cross-cluster remediation surface for node/cluster-level causes (R6).** Node/nodegroup/autoscaler
    actions are outside the v1 closed vocabulary — kept advisory now. Whether/when to add a
    cloud-scoped typed verb is a later E4 decision.

@@ -154,6 +154,207 @@ func TestDirectoryImportBoundsAllTraversalEntries(t *testing.T) {
 	}
 }
 
+func TestDirectoryImportRejectsRootReplacementBeforeOpen(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	directory := filepath.Join(parent, "selected")
+	writeDirectoryConfig(t, filepath.Join(directory, "original.yaml"), "original", "https://original.invalid")
+
+	imported, err := loadDirectoryWithHooks(directory, directoryImportHooks{
+		afterRootInspection: func() {
+			if err := os.Rename(directory, filepath.Join(parent, "selected-original")); err != nil {
+				t.Fatal(err)
+			}
+			writeDirectoryConfig(t, filepath.Join(directory, "replacement.yaml"), "replacement", "https://replacement.invalid")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed during import") {
+		t.Fatalf("loadDirectoryWithHooks(root replacement) = %#v, %v, want identity rejection", imported, err)
+	}
+	if strings.Contains(err.Error(), parent) {
+		t.Fatalf("root replacement error exposed absolute path: %q", err)
+	}
+}
+
+func TestDirectoryImportStaysOnOpenedRootAfterPathReplacement(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	directory := filepath.Join(parent, "selected")
+	writeDirectoryConfig(t, filepath.Join(directory, "original.yaml"), "original", "https://original.invalid")
+
+	imported, err := loadDirectoryWithHooks(directory, directoryImportHooks{
+		afterRootOpen: func() {
+			if err := os.Rename(directory, filepath.Join(parent, "selected-original")); err != nil {
+				t.Fatal(err)
+			}
+			writeDirectoryConfig(t, filepath.Join(directory, "replacement.yaml"), "replacement", "https://replacement.invalid")
+		},
+	})
+	if err != nil {
+		t.Fatalf("loadDirectoryWithHooks(open-root replacement) error = %v", err)
+	}
+	if len(imported.raw.Contexts) != 1 || len(imported.metadata) != 1 || len(imported.diagnostics) != 0 {
+		t.Fatalf("opened-root import = %#v, want only original descriptor-backed config", imported)
+	}
+	for _, metadata := range imported.metadata {
+		if metadata.displayName != "original" || metadata.origin != "original.yaml" {
+			t.Fatalf("opened-root metadata = %#v, want original config", metadata)
+		}
+	}
+}
+
+func TestDirectoryImportRejectsRegularFileReplacement(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.yaml")
+	parked := filepath.Join(directory, "config-original.yaml")
+	writeDirectoryConfig(t, path, "original", "https://original.invalid")
+
+	imported, err := loadDirectoryWithHooks(directory, directoryImportHooks{
+		beforeFileOpen: func(relative string) {
+			if relative != "config.yaml" {
+				return
+			}
+			if err := os.Rename(path, parked); err != nil {
+				t.Fatal(err)
+			}
+			writeDirectoryConfig(t, path, "replacement", "https://replacement.invalid")
+		},
+	})
+	if err != nil {
+		t.Fatalf("loadDirectoryWithHooks(file replacement) error = %v", err)
+	}
+	assertRejectedRacyImport(t, imported, "config.yaml", directory)
+}
+
+func TestDirectoryImportRejectsExternalSymlinkSwap(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.yaml")
+	parked := filepath.Join(directory, "config-original.yaml")
+	outside := filepath.Join(t.TempDir(), "outside.yaml")
+	writeDirectoryConfig(t, path, "original", "https://original.invalid")
+	writeDirectoryConfig(t, outside, "outside", "https://outside.invalid")
+
+	imported, err := loadDirectoryWithHooks(directory, directoryImportHooks{
+		beforeFileOpen: func(relative string) {
+			if relative != "config.yaml" {
+				return
+			}
+			if err := os.Rename(path, parked); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, path); err != nil {
+				t.Fatal(err)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("loadDirectoryWithHooks(symlink swap) error = %v", err)
+	}
+	assertRejectedRacyImport(t, imported, "config.yaml", directory, outside)
+}
+
+func TestDirectoryImportRejectsDeferredLocalFileReferences(t *testing.T) {
+	t.Parallel()
+	tests := map[string]func(*clientcmdapi.Config){
+		"certificate authority": func(config *clientcmdapi.Config) {
+			config.Clusters["alpha"].CertificateAuthority = "ca.crt"
+		},
+		"client certificate": func(config *clientcmdapi.Config) {
+			config.AuthInfos["alpha"].ClientCertificate = "client.crt"
+		},
+		"client key": func(config *clientcmdapi.Config) {
+			config.AuthInfos["alpha"].ClientKey = "client.key"
+		},
+		"token file": func(config *clientcmdapi.Config) {
+			config.AuthInfos["alpha"].TokenFile = "token"
+		},
+		"path-based exec": func(config *clientcmdapi.Config) {
+			config.AuthInfos["alpha"].Exec = &clientcmdapi.ExecConfig{Command: "plugins/auth"}
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			directory := t.TempDir()
+			config := directoryTestConfig("alpha", "https://alpha.invalid")
+			mutate(config)
+			if err := clientcmd.WriteToFile(*config, filepath.Join(directory, "config.yaml")); err != nil {
+				t.Fatal(err)
+			}
+			imported, err := loadDirectory(directory)
+			if err != nil {
+				t.Fatalf("loadDirectory() error = %v", err)
+			}
+			assertRejectedRacyImport(t, imported, "config.yaml", directory)
+		})
+	}
+}
+
+func TestDirectoryImportAllowsPathResolvedExecCommand(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	config := directoryTestConfig("alpha", "https://alpha.invalid")
+	config.AuthInfos["alpha"].Exec = &clientcmdapi.ExecConfig{Command: "cloud-auth"}
+	if err := clientcmd.WriteToFile(*config, filepath.Join(directory, "config.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	imported, err := loadDirectory(directory)
+	if err != nil {
+		t.Fatalf("loadDirectory() error = %v", err)
+	}
+	if len(imported.raw.Contexts) != 1 || len(imported.diagnostics) != 0 {
+		t.Fatalf("PATH exec import = %#v, want accepted config", imported)
+	}
+}
+
+func TestDirectoryImportRejectsReplacedAncestorEscape(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	nested := filepath.Join(directory, "nested")
+	parked := filepath.Join(directory, "nested-original")
+	outsideDirectory := t.TempDir()
+	outside := filepath.Join(outsideDirectory, "config.yaml")
+	writeDirectoryConfig(t, filepath.Join(nested, "config.yaml"), "original", "https://original.invalid")
+	writeDirectoryConfig(t, outside, "outside", "https://outside.invalid")
+
+	imported, err := loadDirectoryWithHooks(directory, directoryImportHooks{
+		beforeFileOpen: func(relative string) {
+			if relative != "nested/config.yaml" {
+				return
+			}
+			if err := os.Rename(nested, parked); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outsideDirectory, nested); err != nil {
+				t.Fatal(err)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("loadDirectoryWithHooks(ancestor replacement) error = %v", err)
+	}
+	assertRejectedRacyImport(t, imported, "nested/config.yaml", directory, outsideDirectory, outside)
+}
+
+func assertRejectedRacyImport(t *testing.T, imported importedConfig, source string, forbidden ...string) {
+	t.Helper()
+	if len(imported.raw.Contexts) != 0 || len(imported.diagnostics) != 1 ||
+		imported.diagnostics[0] != importDiagnostic(source, "invalid kubeconfig") {
+		t.Fatalf("racy import = %#v, want one relative rejection diagnostic", imported)
+	}
+	payload, err := json.Marshal(imported.diagnostics)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range forbidden {
+		if strings.Contains(string(payload), value) {
+			t.Fatalf("racy import diagnostic leaked %q: %s", value, payload)
+		}
+	}
+}
+
 func TestDirectoryImportConflictsWithExplicitSource(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
@@ -226,14 +427,19 @@ func TestDirectoryImportSkipsBrokenContextReferences(t *testing.T) {
 
 func writeDirectoryConfig(t *testing.T, path, contextName, host string) {
 	t.Helper()
-	config := clientcmdapi.NewConfig()
-	config.Clusters[contextName] = &clientcmdapi.Cluster{Server: host}
-	config.AuthInfos[contextName] = &clientcmdapi.AuthInfo{}
-	config.Contexts[contextName] = &clientcmdapi.Context{Cluster: contextName, AuthInfo: contextName}
+	config := directoryTestConfig(contextName, host)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := clientcmd.WriteToFile(*config, path); err != nil {
 		t.Fatalf("write kubeconfig %s: %v", path, err)
 	}
+}
+
+func directoryTestConfig(contextName, host string) *clientcmdapi.Config {
+	config := clientcmdapi.NewConfig()
+	config.Clusters[contextName] = &clientcmdapi.Cluster{Server: host}
+	config.AuthInfos[contextName] = &clientcmdapi.AuthInfo{}
+	config.Contexts[contextName] = &clientcmdapi.Context{Cluster: contextName, AuthInfo: contextName}
+	return config
 }

@@ -1,0 +1,145 @@
+# SPDX-License-Identifier: Apache-2.0
+
+groups:
+  - name: sith-hub.failure-signals
+    interval: 1m
+    limit: 9
+    rules:
+      - alert: SithHubPolicyAuditFailure
+        expr: sum(increase(sith_policy_audit_attempts_total{outcome="error"}[5m])) > 0
+        for: 2m
+        labels:
+          component: sith-hub
+          severity: critical
+        annotations:
+          summary: Sith hub is refusing governed reads because policy-audit delivery failed
+          description: At least one durable or process policy-audit sink failed during the last five minutes.
+          runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubpolicyauditfailure
+
+      - alert: SithHubPolicyDecisionErrorRatioHigh
+        expr: |
+          (
+            sum(increase(sith_policy_decisions_total{outcome="error"}[15m]))
+            /
+            clamp_min(sum(increase(sith_policy_decisions_total{outcome=~"allow|deny|require-approval|error"}[15m])), 1)
+          ) > 0.05
+          and
+          sum(increase(sith_policy_decisions_total{outcome=~"allow|deny|require-approval|error"}[15m])) >= 20
+        for: 10m
+        labels:
+          component: sith-hub
+          severity: warning
+        annotations:
+          summary: Sith hub policy decisions are returning sustained errors
+          description: More than five percent of at least twenty aggregate eligible policy decisions ended in error over fifteen minutes.
+          runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubpolicydecisionerrorratiohigh
+
+      - alert: SithHubAuthRefusalDeliveryDrop
+        expr: sum(increase(sith_auth_refusal_delivery_drops_total[10m])) > 0
+        for: 5m
+        labels:
+          component: sith-hub
+          severity: warning
+        annotations:
+          summary: Sith hub dropped structured authentication-refusal evidence
+          description: At least one bounded authentication-refusal record could not be delivered during the last ten minutes.
+          runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubauthrefusaldeliverydrop
+
+      - alert: SithHubAuthenticationRefusalOnly
+        expr: |
+          sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20
+          and
+          sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0
+          and
+          sum(count_over_time(sith_auth_attempts_total{outcome="accepted"}[10m])) > 0
+        for: 10m
+        labels:
+          component: sith-hub
+          severity: warning
+        annotations:
+          summary: Sith hub authentication traffic is persistently refusal-only
+          description: At least twenty aggregate authentication attempts were refused and none were accepted over fifteen minutes; a recent scraped sample from the preinitialized accepted-outcome series was present during the last ten minutes.
+          runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubauthenticationrefusalonly
+
+      - alert: SithHubFederationSnapshotFailureRatioHigh
+        expr: |
+          (
+            sum(increase(sith_federation_spoke_snapshot_attempts_total{outcome!="success"}[15m]))
+            /
+            clamp_min(sum(increase(sith_federation_spoke_snapshot_attempts_total[15m])), 1)
+          ) > 0.05
+          and
+          sum(increase(sith_federation_spoke_snapshot_attempts_total[15m])) >= 20
+        for: 10m
+        labels:
+          component: sith-hub
+          severity: warning
+        annotations:
+          summary: Sith hub federation snapshot failures are sustained
+          description: More than five percent of at least twenty aggregate spoke snapshot attempts failed over fifteen minutes.
+          runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubfederationsnapshotfailureratiohigh
+
+      - alert: SithHubFleetReadCoverageDegradationHigh
+        expr: |
+          (
+            sum(increase(sith_federation_fleet_read_results_total{outcome=~"degraded|error"}[15m]))
+            /
+            clamp_min(sum(increase(sith_federation_fleet_read_results_total{outcome=~"complete|degraded|error"}[15m])), 1)
+          ) > 0.05
+          and
+          sum(increase(sith_federation_fleet_read_results_total{outcome=~"complete|degraded|error"}[15m])) >= 20
+        for: 10m
+        labels:
+          component: sith-hub
+          severity: warning
+        annotations:
+          summary: Sith hub fleet reads are returning sustained coverage degradation
+          description: More than five percent of at least twenty aggregate eligible fleet reads were degraded or failed over fifteen minutes.
+          runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubfleetreadcoveragedegradationhigh
+
+      - alert: SithHubFleetReadStalenessHigh
+        expr: |
+          (
+            sum(increase(sith_federation_fleet_read_freshness_total{outcome="stale"}[15m]))
+            /
+            clamp_min(sum(increase(sith_federation_fleet_read_freshness_total{outcome=~"fresh|stale"}[15m])), 1)
+          ) > 0.05
+          and
+          sum(increase(sith_federation_fleet_read_freshness_total{outcome=~"fresh|stale"}[15m])) >= 20
+        for: 10m
+        labels:
+          component: sith-hub
+          severity: warning
+        annotations:
+          summary: Sith hub fleet reads are returning sustained proven-stale results
+          description: More than five percent of at least twenty aggregate freshness-eligible fleet reads were proven stale over fifteen minutes.
+          runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubfleetreadstalenesshigh
+
+      - alert: SithHubDatabaseReadinessDegradationHigh
+        expr: |
+          (
+            sum(increase(sith_hub_readiness_checks_total{outcome="unavailable"}[15m]))
+            /
+            clamp_min(sum(increase(sith_hub_readiness_checks_total{outcome=~"ready|unavailable"}[15m])), 1)
+          ) > 0.05
+          and
+          sum(increase(sith_hub_readiness_checks_total{outcome=~"ready|unavailable"}[15m])) >= 20
+        for: 10m
+        labels:
+          component: sith-hub
+          severity: warning
+        annotations:
+          summary: Sith hub database-backed readiness is persistently degraded
+          description: More than five percent of at least twenty aggregate database readiness checks were unavailable over fifteen minutes.
+          runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubdatabasereadinessdegradationhigh
+
+      - alert: SithHubTelemetryMissing
+        expr: absent_over_time(sith_build_info[10m])
+        for: 5m
+        labels:
+          component: sith-hub
+          severity: warning
+        annotations:
+          summary: Sith hub telemetry is absent from the rule evaluator
+          description: No Sith build-info sample reached the rule evaluator during the last ten minutes.
+          runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubtelemetrymissing

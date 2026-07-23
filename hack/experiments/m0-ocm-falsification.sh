@@ -11,7 +11,7 @@ readonly CLUSTER_PROXY_SHA256="30128f5f211d3c3d6ab1040929e0d1ca7565869935aa60130
 readonly MANAGED_SERVICEACCOUNT_VERSION="0.10.0"
 readonly MANAGED_SERVICEACCOUNT_SHA256="ddd8b7da55667b534102397abd2e61988f9ead8a0e97b942731f869ed0b06dbf"
 readonly GO_VERSION="go1.26.5"
-readonly HELM_VERSION="v4.1.4"
+readonly HELM_VERSION="v4.2.3"
 readonly FIREWALL_CHAIN="SITH_M0_HUB_DENY"
 
 readonly KIND_BIN="${KIND_BIN:-kind}"
@@ -258,7 +258,7 @@ check_tools() {
     die "clusteradm ${CLUSTERADM_VERSION} is required"
 
   helm_version="$(${HELM_BIN} version --short 2>/dev/null)"
-  [[ "${helm_version}" == "${HELM_VERSION}"* ]] ||
+  helm_version_is_pinned_release "${helm_version}" ||
     die "Helm ${HELM_VERSION} is required; got: ${helm_version}"
 
   go_version="$(${GO_BIN} env GOVERSION)"
@@ -267,6 +267,15 @@ check_tools() {
 
   validate_local_docker_endpoint
   "${DOCKER_BIN}" info >/dev/null 2>&1 || die "Docker engine is unavailable"
+}
+
+helm_version_is_pinned_release() {
+  local actual=$1
+  local pattern
+
+  [[ "${HELM_VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  pattern="^${HELM_VERSION//./\\.}(\\+g[0-9a-f]{7,40})?$"
+  [[ "${actual}" =~ ${pattern} ]]
 }
 
 prepare_scratch() {
@@ -481,16 +490,60 @@ wait_for_addon_creation() {
   local cluster=$1
   local addon=$2
   local deadline=$((SECONDS + 300))
+  local observation
+  local uid
+  local condition
+  local ready_uid=""
+  local remaining
 
-  while ! "${KUBECTL_BIN}" --context "${HUB_CONTEXT}" -n "${cluster}" get \
-    "managedclusteraddon/${addon}" >/dev/null 2>&1; do
-    if (( SECONDS >= deadline )); then
-      die "timed out waiting for ${cluster} managedclusteraddon/${addon} creation"
+  while (( SECONDS < deadline )); do
+    remaining=$((deadline - SECONDS))
+    if ! observation="$("${KUBECTL_BIN}" --context "${HUB_CONTEXT}" -n "${cluster}" get \
+      "managedclusteraddon/${addon}" --ignore-not-found --request-timeout="${remaining}s" \
+      -o=go-template='{{.metadata.uid}}{{"\t"}}{{range .status.conditions}}{{if eq .type "Available"}}{{.status}}{{"|"}}{{end}}{{end}}' \
+      2>/dev/null)"; then
+      if (( SECONDS >= deadline )); then
+        die "timed out waiting for ${cluster} managedclusteraddon/${addon} availability"
+      fi
+      die "cannot read current ${cluster} managedclusteraddon/${addon} state"
     fi
+    if (( SECONDS >= deadline )); then
+      die "timed out waiting for ${cluster} managedclusteraddon/${addon} availability"
+    fi
+
+    if [[ -z "${observation}" ]]; then
+      ready_uid=""
+      sleep 1
+      continue
+    fi
+    if [[ "${observation}" != *$'\t'* ]]; then
+      die "${cluster} managedclusteraddon/${addon} returned malformed status"
+    fi
+    uid="${observation%%$'\t'*}"
+    condition="${observation#*$'\t'}"
+    if [[ ! "${uid}" =~ ^[A-Za-z0-9._:-]{1,128}$ ]]; then
+      die "${cluster} managedclusteraddon/${addon} returned malformed identity"
+    fi
+
+    case "${condition}" in
+      'True|')
+        if [[ "${ready_uid}" == "${uid}" ]]; then
+          log "${cluster} managedclusteraddon/${addon} is Available"
+          return 0
+        fi
+        ready_uid="${uid}"
+        continue
+        ;;
+      '' | 'False|' | 'Unknown|')
+        ready_uid=""
+        ;;
+      *)
+        die "${cluster} managedclusteraddon/${addon} returned malformed Available status"
+        ;;
+    esac
     sleep 1
   done
-  "${KUBECTL_BIN}" --context "${HUB_CONTEXT}" -n "${cluster}" wait \
-    "managedclusteraddon/${addon}" --for=condition=Available --timeout=300s
+  die "timed out waiting for ${cluster} managedclusteraddon/${addon} availability"
 }
 
 install_addons() {

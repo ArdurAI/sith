@@ -1,0 +1,884 @@
+# SPDX-License-Identifier: Apache-2.0
+
+rule_files:
+  - sith-hub.rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: policy audit failure aggregates hostile source labels and honors the hold window
+    interval: 1m
+    input_series:
+      - series: 'sith_policy_audit_attempts_total{sink="durable",outcome="error",job="hub-a",instance="10.0.0.1:9090",workspace="must-not-propagate"}'
+        values: '0 1+0x12'
+      - series: 'sith_policy_audit_attempts_total{sink="process",outcome="error",job="hub-b",instance="10.0.0.2:9090",trace="must-not-propagate"}'
+        values: '0+0x13'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: SithHubPolicyAuditFailure
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: SithHubPolicyAuditFailure
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: critical
+            exp_annotations:
+              summary: Sith hub is refusing governed reads because policy-audit delivery failed
+              description: At least one durable or process policy-audit sink failed during the last five minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubpolicyauditfailure
+
+  - name: policy audit counter reset does not fabricate a failure
+    interval: 1m
+    input_series:
+      - series: 'sith_policy_audit_attempts_total{sink="durable",outcome="error"}'
+        values: '100+0x5 0+0x10'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: SithHubPolicyAuditFailure
+        exp_alerts: []
+
+  - name: missing policy audit series stays quiet
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SithHubPolicyAuditFailure
+        exp_alerts: []
+
+  - name: sustained policy decision errors aggregate hostile labels then resolve
+    interval: 1m
+    input_series:
+      - series: 'sith_policy_decisions_total{verb="fleet.read",outcome="allow",job="hub-a",instance="10.0.0.1:9090"}'
+        values: '0+2x45'
+      - series: 'sith_policy_decisions_total{verb="deployment.restart",outcome="error",workspace="must-not-propagate",trace="must-not-propagate"}'
+        values: '0+0.2x20 4+0x25'
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: SithHubPolicyDecisionErrorRatioHigh
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SithHubPolicyDecisionErrorRatioHigh
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub policy decisions are returning sustained errors
+              description: More than five percent of at least twenty aggregate eligible policy decisions ended in error over fifteen minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubpolicydecisionerrorratiohigh
+      - eval_time: 36m
+        alertname: SithHubPolicyDecisionErrorRatioHigh
+        exp_alerts: []
+
+  - name: missing policy decision series stays quiet
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubPolicyDecisionErrorRatioHigh
+        exp_alerts: []
+
+  - name: policy decision errors stay quiet below minimum volume
+    interval: 1m
+    input_series:
+      - series: 'sith_policy_decisions_total{verb="fleet.read",outcome="allow"}'
+        values: '0+0.4x35'
+      - series: 'sith_policy_decisions_total{verb="fleet.read",outcome="error"}'
+        values: '0+0.1x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubPolicyDecisionErrorRatioHigh
+        exp_alerts: []
+
+  - name: policy decision error ratio exactly at five percent stays quiet
+    interval: 1m
+    input_series:
+      - series: 'sith_policy_decisions_total{verb="fleet.read",outcome="allow"}'
+        values: '0+19x35'
+      - series: 'sith_policy_decisions_total{verb="fleet.read",outcome="error"}'
+        values: '0+1x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubPolicyDecisionErrorRatioHigh
+        exp_alerts: []
+
+  - name: policy decision volume exactly at twenty satisfies the inclusive guard
+    interval: 1m
+    input_series:
+      - series: 'sith_policy_decisions_total{verb="fleet.read",outcome="allow"}'
+        values: '0+0x14 18+0x20'
+      - series: 'sith_policy_decisions_total{verb="fleet.read",outcome="error"}'
+        values: '0+0x14 2+0x20'
+      - series: 'sith_policy_decisions_total{verb="fleet.read",outcome="not-counted"}'
+        values: '0+0x14 1000+0x20'
+    promql_expr_test:
+      - expr: sum(increase(sith_policy_decisions_total{outcome=~"allow|deny|require-approval|error"}[15m]))
+        eval_time: 25m
+        exp_samples:
+          - labels: '{}'
+            value: 20
+    alert_rule_test:
+      - eval_time: 24m
+        alertname: SithHubPolicyDecisionErrorRatioHigh
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: SithHubPolicyDecisionErrorRatioHigh
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub policy decisions are returning sustained errors
+              description: More than five percent of at least twenty aggregate eligible policy decisions ended in error over fifteen minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubpolicydecisionerrorratiohigh
+
+  - name: ordinary policy denies and approval requirements stay quiet
+    interval: 1m
+    input_series:
+      - series: 'sith_policy_decisions_total{verb="fleet.read",outcome="deny"}'
+        values: '0+20x35'
+      - series: 'sith_policy_decisions_total{verb="deployment.restart",outcome="require-approval"}'
+        values: '0+20x35'
+      - series: 'sith_policy_decisions_total{verb="fleet.read",outcome="allow"}'
+        values: '0+9x35'
+      - series: 'sith_policy_decisions_total{verb="fleet.read",outcome="error"}'
+        values: '0+1x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubPolicyDecisionErrorRatioHigh
+        exp_alerts: []
+
+  - name: transient policy decision errors recover before the hold window
+    interval: 1m
+    input_series:
+      - series: 'sith_policy_decisions_total{verb="fleet.read",outcome="allow"}'
+        values: '0+2x35'
+      - series: 'sith_policy_decisions_total{verb="fleet.read",outcome="error"}'
+        values: '0+0.4x4 1.6+0x31'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: SithHubPolicyDecisionErrorRatioHigh
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: SithHubPolicyDecisionErrorRatioHigh
+        exp_alerts: []
+
+  - name: policy decision error counter reset does not fabricate errors
+    interval: 1m
+    input_series:
+      - series: 'sith_policy_decisions_total{verb="fleet.read",outcome="allow"}'
+        values: '0+2x30'
+      - series: 'sith_policy_decisions_total{verb="fleet.read",outcome="error"}'
+        values: '100+0x5 0+0x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SithHubPolicyDecisionErrorRatioHigh
+        exp_alerts: []
+
+  - name: authentication refusal delivery drop aggregates source labels and honors the hold window
+    interval: 1m
+    input_series:
+      - series: 'sith_auth_refusal_delivery_drops_total{job="hub-a",instance="10.0.0.1:9090",actor="must-not-propagate"}'
+        values: '0 1+0x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SithHubAuthRefusalDeliveryDrop
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: SithHubAuthRefusalDeliveryDrop
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub dropped structured authentication-refusal evidence
+              description: At least one bounded authentication-refusal record could not be delivered during the last ten minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubauthrefusaldeliverydrop
+
+  - name: refusal-only authentication aggregates hostile labels and honors exact volume and hold guards
+    interval: 1m
+    input_series:
+      - series: 'sith_auth_attempts_total{outcome="refused",job="hub-a",instance="10.0.0.1:9090",actor="must-not-propagate"}'
+        values: '0+0x14 12+0x20'
+      - series: 'sith_auth_attempts_total{outcome="refused",job="hub-b",instance="10.0.0.2:9090",workspace="must-not-propagate"}'
+        values: '0+0x14 8+0x20'
+      - series: 'sith_auth_attempts_total{outcome="accepted",job="hub-a",instance="10.0.0.1:9090",principal="must-not-propagate"}'
+        values: '0+0x25 1+0x10'
+      - series: 'sith_auth_attempts_total{outcome="accepted",job="hub-b",instance="10.0.0.2:9090"}'
+        values: '0+0x35'
+    promql_expr_test:
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m]))
+        eval_time: 25m
+        exp_samples:
+          - labels: '{}'
+            value: 20
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0 and sum(count_over_time(sith_auth_attempts_total{outcome="accepted"}[10m])) > 0
+        eval_time: 25m
+        exp_samples:
+          - labels: '{}'
+            value: 20
+    alert_rule_test:
+      - eval_time: 24m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub authentication traffic is persistently refusal-only
+              description: At least twenty aggregate authentication attempts were refused and none were accepted over fifteen minutes; a recent scraped sample from the preinitialized accepted-outcome series was present during the last ten minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubauthenticationrefusalonly
+      - eval_time: 26m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+
+  - name: missing authentication attempt series stay quiet
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+
+  - name: missing accepted authentication series stays quiet even with refusals
+    interval: 1m
+    input_series:
+      - series: 'sith_auth_attempts_total{outcome="refused"}'
+        values: '0+2x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+
+  - name: stale accepted authentication samples cannot satisfy the recent telemetry guard
+    interval: 1m
+    input_series:
+      - series: 'sith_auth_attempts_total{outcome="refused"}'
+        values: '0+0x1 20+0x20'
+      - series: 'sith_auth_attempts_total{outcome="accepted"}'
+        values: '0+0x1 _x20'
+    promql_expr_test:
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0
+        eval_time: 12m
+        exp_samples:
+          - labels: '{}'
+            value: 20
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0 and sum(count_over_time(sith_auth_attempts_total{outcome="accepted"}[10m])) > 0
+        eval_time: 12m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+
+  - name: refusal-only authentication stays quiet below minimum volume
+    interval: 1m
+    input_series:
+      - series: 'sith_auth_attempts_total{outcome="refused"}'
+        values: '0+0x14 19+0x20'
+      - series: 'sith_auth_attempts_total{outcome="accepted"}'
+        values: '0+0x35'
+    promql_expr_test:
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m]))
+        eval_time: 25m
+        exp_samples:
+          - labels: '{}'
+            value: 19
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+
+  - name: accepted-only authentication traffic stays quiet
+    interval: 1m
+    input_series:
+      - series: 'sith_auth_attempts_total{outcome="refused"}'
+        values: '0+0x35'
+      - series: 'sith_auth_attempts_total{outcome="accepted"}'
+        values: '0+2x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+
+  - name: one accepted authentication suppresses high refusal traffic
+    interval: 1m
+    input_series:
+      - series: 'sith_auth_attempts_total{outcome="refused"}'
+        values: '0+0x14 20+0x20'
+      - series: 'sith_auth_attempts_total{outcome="accepted"}'
+        values: '0+0x14 1+0x20'
+    promql_expr_test:
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0 and sum(count_over_time(sith_auth_attempts_total{outcome="accepted"}[10m])) > 0
+        eval_time: 25m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+
+  - name: transient refusal-only authentication clears before the hold window
+    interval: 1m
+    input_series:
+      - series: 'sith_auth_attempts_total{outcome="refused"}'
+        values: '0+0x14 20+0x20'
+      - series: 'sith_auth_attempts_total{outcome="accepted"}'
+        values: '0+0x19 1+0x15'
+    promql_expr_test:
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0 and sum(count_over_time(sith_auth_attempts_total{outcome="accepted"}[10m])) > 0
+        eval_time: 19m
+        exp_samples:
+          - labels: '{}'
+            value: 20
+      - expr: sum(increase(sith_auth_attempts_total{outcome="refused"}[15m])) >= 20 and sum(increase(sith_auth_attempts_total{outcome="accepted"}[15m])) == 0 and sum(count_over_time(sith_auth_attempts_total{outcome="accepted"}[10m])) > 0
+        eval_time: 25m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+
+  - name: authentication refusal counter reset does not fabricate traffic
+    interval: 1m
+    input_series:
+      - series: 'sith_auth_attempts_total{outcome="refused"}'
+        values: '100+0x5 0+0x30'
+      - series: 'sith_auth_attempts_total{outcome="accepted"}'
+        values: '0+0x35'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SithHubAuthenticationRefusalOnly
+        exp_alerts: []
+
+  - name: sustained snapshot failures fire only after ratio volume and hold guards
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_spoke_snapshot_attempts_total{outcome="success",job="hub-a",instance="10.0.0.1:9090",spoke="must-not-propagate"}'
+        values: '0+2x35'
+      - series: 'sith_federation_spoke_snapshot_attempts_total{outcome="transport",job="hub-b",instance="10.0.0.2:9090",endpoint="must-not-propagate"}'
+        values: '0+0.2x35'
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: SithHubFederationSnapshotFailureRatioHigh
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SithHubFederationSnapshotFailureRatioHigh
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub federation snapshot failures are sustained
+              description: More than five percent of at least twenty aggregate spoke snapshot attempts failed over fifteen minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubfederationsnapshotfailureratiohigh
+
+  - name: snapshot ratio above threshold stays quiet below minimum volume
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_spoke_snapshot_attempts_total{outcome="success"}'
+        values: '0+0.4x35'
+      - series: 'sith_federation_spoke_snapshot_attempts_total{outcome="deadline"}'
+        values: '0+0.1x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubFederationSnapshotFailureRatioHigh
+        exp_alerts: []
+
+  - name: snapshot volume above minimum stays quiet below failure threshold
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_spoke_snapshot_attempts_total{outcome="success"}'
+        values: '0+2x35'
+      - series: 'sith_federation_spoke_snapshot_attempts_total{outcome="store-error"}'
+        values: '0+0.05x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubFederationSnapshotFailureRatioHigh
+        exp_alerts: []
+
+  - name: snapshot ratio exactly at five percent stays quiet
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_spoke_snapshot_attempts_total{outcome="success"}'
+        values: '0+19x35'
+      - series: 'sith_federation_spoke_snapshot_attempts_total{outcome="invalid-snapshot"}'
+        values: '0+1x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubFederationSnapshotFailureRatioHigh
+        exp_alerts: []
+
+  - name: snapshot volume exactly at twenty satisfies the inclusive guard
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_spoke_snapshot_attempts_total{outcome="canceled"}'
+        values: '0+0x14 20+0x20'
+    promql_expr_test:
+      - expr: sum(increase(sith_federation_spoke_snapshot_attempts_total[15m]))
+        eval_time: 25m
+        exp_samples:
+          - labels: '{}'
+            value: 20
+    alert_rule_test:
+      - eval_time: 24m
+        alertname: SithHubFederationSnapshotFailureRatioHigh
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: SithHubFederationSnapshotFailureRatioHigh
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub federation snapshot failures are sustained
+              description: More than five percent of at least twenty aggregate spoke snapshot attempts failed over fifteen minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubfederationsnapshotfailureratiohigh
+
+  - name: sustained fleet read degradation aggregates hostile labels then resolves
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_fleet_read_results_total{outcome="complete",job="hub-a",instance="10.0.0.1:9090"}'
+        values: '0+2x45'
+      - series: 'sith_federation_fleet_read_results_total{outcome="degraded",workspace="must-not-propagate",spoke="must-not-propagate"}'
+        values: '0+0.1x20 2+0x25'
+      - series: 'sith_federation_fleet_read_results_total{outcome="error",trace="must-not-propagate",endpoint="must-not-propagate"}'
+        values: '0+0.1x20 2+0x25'
+      - series: 'sith_federation_fleet_read_results_total{outcome="empty",actor="must-not-propagate"}'
+        values: '0+100x45'
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: SithHubFleetReadCoverageDegradationHigh
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SithHubFleetReadCoverageDegradationHigh
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub fleet reads are returning sustained coverage degradation
+              description: More than five percent of at least twenty aggregate eligible fleet reads were degraded or failed over fifteen minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubfleetreadcoveragedegradationhigh
+      - eval_time: 36m
+        alertname: SithHubFleetReadCoverageDegradationHigh
+        exp_alerts: []
+
+  - name: legitimate empty fleet reads stay quiet and cannot satisfy volume
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_fleet_read_results_total{outcome="empty"}'
+        values: '0+100x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubFleetReadCoverageDegradationHigh
+        exp_alerts: []
+
+  - name: missing fleet read series stays quiet
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubFleetReadCoverageDegradationHigh
+        exp_alerts: []
+
+  - name: adverse fleet read ratio stays quiet below eligible volume despite empty traffic
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_fleet_read_results_total{outcome="complete"}'
+        values: '0+0.4x35'
+      - series: 'sith_federation_fleet_read_results_total{outcome="error"}'
+        values: '0+0.1x35'
+      - series: 'sith_federation_fleet_read_results_total{outcome="empty"}'
+        values: '0+100x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubFleetReadCoverageDegradationHigh
+        exp_alerts: []
+
+  - name: fleet read adverse ratio exactly at five percent stays quiet
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_fleet_read_results_total{outcome="complete"}'
+        values: '0+19x35'
+      - series: 'sith_federation_fleet_read_results_total{outcome="degraded"}'
+        values: '0+1x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubFleetReadCoverageDegradationHigh
+        exp_alerts: []
+
+  - name: fleet read eligible volume exactly at twenty satisfies the inclusive guard
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_fleet_read_results_total{outcome="complete"}'
+        values: '0+0x14 18+0x20'
+      - series: 'sith_federation_fleet_read_results_total{outcome="error"}'
+        values: '0+0x14 2+0x20'
+      - series: 'sith_federation_fleet_read_results_total{outcome="empty"}'
+        values: '0+100x35'
+    promql_expr_test:
+      - expr: sum(increase(sith_federation_fleet_read_results_total{outcome=~"complete|degraded|error"}[15m]))
+        eval_time: 25m
+        exp_samples:
+          - labels: '{}'
+            value: 20
+    alert_rule_test:
+      - eval_time: 24m
+        alertname: SithHubFleetReadCoverageDegradationHigh
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: SithHubFleetReadCoverageDegradationHigh
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub fleet reads are returning sustained coverage degradation
+              description: More than five percent of at least twenty aggregate eligible fleet reads were degraded or failed over fifteen minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubfleetreadcoveragedegradationhigh
+
+  - name: transient fleet read degradation recovers before the hold window
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_fleet_read_results_total{outcome="complete"}'
+        values: '0+2x35'
+      - series: 'sith_federation_fleet_read_results_total{outcome="degraded"}'
+        values: '0+0.4x3 1.2+0x32'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: SithHubFleetReadCoverageDegradationHigh
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: SithHubFleetReadCoverageDegradationHigh
+        exp_alerts: []
+
+  - name: adverse fleet read counter reset does not fabricate degradation
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_fleet_read_results_total{outcome="complete"}'
+        values: '0+2x30'
+      - series: 'sith_federation_fleet_read_results_total{outcome="error"}'
+        values: '100+0x5 0+0x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SithHubFleetReadCoverageDegradationHigh
+        exp_alerts: []
+
+  - name: sustained proven-stale fleet reads aggregate hostile labels then resolve
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="fresh",job="hub-a",instance="10.0.0.1:9090"}'
+        values: '0+2x45'
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="stale",workspace="must-not-propagate",spoke="must-not-propagate"}'
+        values: '0+0.2x20 4+0x25'
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="unknown",trace="must-not-propagate"}'
+        values: '0+100x45'
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="error",endpoint="must-not-propagate"}'
+        values: '0+100x45'
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="empty",actor="must-not-propagate"}'
+        values: '0+100x45'
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: SithHubFleetReadStalenessHigh
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SithHubFleetReadStalenessHigh
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub fleet reads are returning sustained proven-stale results
+              description: More than five percent of at least twenty aggregate freshness-eligible fleet reads were proven stale over fifteen minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubfleetreadstalenesshigh
+      - eval_time: 36m
+        alertname: SithHubFleetReadStalenessHigh
+        exp_alerts: []
+
+  - name: unknown error and empty freshness outcomes stay quiet and cannot satisfy volume
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="unknown"}'
+        values: '0+100x35'
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="error"}'
+        values: '0+100x35'
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="empty"}'
+        values: '0+100x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubFleetReadStalenessHigh
+        exp_alerts: []
+
+  - name: missing fleet read freshness series stays quiet
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubFleetReadStalenessHigh
+        exp_alerts: []
+
+  - name: stale fleet read ratio stays quiet below eligible volume despite excluded traffic
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="fresh"}'
+        values: '0+0.4x35'
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="stale"}'
+        values: '0+0.1x35'
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="unknown"}'
+        values: '0+100x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubFleetReadStalenessHigh
+        exp_alerts: []
+
+  - name: stale fleet read ratio exactly at five percent stays quiet
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="fresh"}'
+        values: '0+19x35'
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="stale"}'
+        values: '0+1x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubFleetReadStalenessHigh
+        exp_alerts: []
+
+  - name: fleet read freshness volume exactly at twenty satisfies the inclusive guard
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="fresh"}'
+        values: '0+0x14 18+0x20'
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="stale"}'
+        values: '0+0x14 2+0x20'
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="unknown"}'
+        values: '0+100x35'
+    promql_expr_test:
+      - expr: sum(increase(sith_federation_fleet_read_freshness_total{outcome=~"fresh|stale"}[15m]))
+        eval_time: 25m
+        exp_samples:
+          - labels: '{}'
+            value: 20
+    alert_rule_test:
+      - eval_time: 24m
+        alertname: SithHubFleetReadStalenessHigh
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: SithHubFleetReadStalenessHigh
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub fleet reads are returning sustained proven-stale results
+              description: More than five percent of at least twenty aggregate freshness-eligible fleet reads were proven stale over fifteen minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubfleetreadstalenesshigh
+
+  - name: transient proven-stale fleet reads recover before the hold window
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="fresh"}'
+        values: '0+2x35'
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="stale"}'
+        values: '0+0.4x3 1.2+0x32'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: SithHubFleetReadStalenessHigh
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: SithHubFleetReadStalenessHigh
+        exp_alerts: []
+
+  - name: stale fleet read counter reset does not fabricate staleness
+    interval: 1m
+    input_series:
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="fresh"}'
+        values: '0+2x30'
+      - series: 'sith_federation_fleet_read_freshness_total{outcome="stale"}'
+        values: '100+0x5 0+0x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SithHubFleetReadStalenessHigh
+        exp_alerts: []
+
+  - name: sustained database readiness degradation aggregates hostile labels then resolves
+    interval: 1m
+    input_series:
+      - series: 'sith_hub_readiness_checks_total{outcome="ready",job="hub-a",instance="10.0.0.1:9090"}'
+        values: '0+2x45'
+      - series: 'sith_hub_readiness_checks_total{outcome="unavailable",workspace="must-not-propagate",endpoint="must-not-propagate"}'
+        values: '0+0.2x20 4+0x25'
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: SithHubDatabaseReadinessDegradationHigh
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SithHubDatabaseReadinessDegradationHigh
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub database-backed readiness is persistently degraded
+              description: More than five percent of at least twenty aggregate database readiness checks were unavailable over fifteen minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubdatabasereadinessdegradationhigh
+      - eval_time: 36m
+        alertname: SithHubDatabaseReadinessDegradationHigh
+        exp_alerts: []
+
+  - name: missing database readiness series stays quiet
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubDatabaseReadinessDegradationHigh
+        exp_alerts: []
+
+  - name: all-ready database checks stay quiet
+    interval: 1m
+    input_series:
+      - series: 'sith_hub_readiness_checks_total{outcome="ready"}'
+        values: '0+2x35'
+      - series: 'sith_hub_readiness_checks_total{outcome="unavailable"}'
+        values: '0+0x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubDatabaseReadinessDegradationHigh
+        exp_alerts: []
+
+  - name: database readiness degradation stays quiet below minimum volume
+    interval: 1m
+    input_series:
+      - series: 'sith_hub_readiness_checks_total{outcome="ready"}'
+        values: '0+0.4x35'
+      - series: 'sith_hub_readiness_checks_total{outcome="unavailable"}'
+        values: '0+0.1x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubDatabaseReadinessDegradationHigh
+        exp_alerts: []
+
+  - name: database readiness unavailable ratio exactly at five percent stays quiet
+    interval: 1m
+    input_series:
+      - series: 'sith_hub_readiness_checks_total{outcome="ready"}'
+        values: '0+19x35'
+      - series: 'sith_hub_readiness_checks_total{outcome="unavailable"}'
+        values: '0+1x35'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SithHubDatabaseReadinessDegradationHigh
+        exp_alerts: []
+
+  - name: database readiness volume exactly at twenty satisfies the inclusive guard
+    interval: 1m
+    input_series:
+      - series: 'sith_hub_readiness_checks_total{outcome="ready"}'
+        values: '0+0x14 18+0x20'
+      - series: 'sith_hub_readiness_checks_total{outcome="unavailable"}'
+        values: '0+0x14 2+0x20'
+    promql_expr_test:
+      - expr: sum(increase(sith_hub_readiness_checks_total{outcome=~"ready|unavailable"}[15m]))
+        eval_time: 25m
+        exp_samples:
+          - labels: '{}'
+            value: 20
+    alert_rule_test:
+      - eval_time: 24m
+        alertname: SithHubDatabaseReadinessDegradationHigh
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: SithHubDatabaseReadinessDegradationHigh
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub database-backed readiness is persistently degraded
+              description: More than five percent of at least twenty aggregate database readiness checks were unavailable over fifteen minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubdatabasereadinessdegradationhigh
+
+  - name: transient database readiness degradation recovers before the hold window
+    interval: 1m
+    input_series:
+      - series: 'sith_hub_readiness_checks_total{outcome="ready"}'
+        values: '0+2x35'
+      - series: 'sith_hub_readiness_checks_total{outcome="unavailable"}'
+        values: '0+0.4x3 1.2+0x32'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: SithHubDatabaseReadinessDegradationHigh
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: SithHubDatabaseReadinessDegradationHigh
+        exp_alerts: []
+
+  - name: unavailable database readiness counter reset does not fabricate degradation
+    interval: 1m
+    input_series:
+      - series: 'sith_hub_readiness_checks_total{outcome="ready"}'
+        values: '0+2x30'
+      - series: 'sith_hub_readiness_checks_total{outcome="unavailable"}'
+        values: '100+0x5 0+0x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SithHubDatabaseReadinessDegradationHigh
+        exp_alerts: []
+
+  - name: initially missing Hub telemetry honors the hold then fires
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: SithHubTelemetryMissing
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: SithHubTelemetryMissing
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub telemetry is absent from the rule evaluator
+              description: No Sith build-info sample reached the rule evaluator during the last ten minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubtelemetrymissing
+
+  - name: current Hub build info stays quiet and arbitrary source labels do not matter
+    interval: 1m
+    input_series:
+      - series: 'sith_build_info{version="v1.2.3",commit="abcdef0",job="hub-a",instance="10.0.0.1:9090",workspace="must-not-propagate"}'
+        values: '1+0x20'
+      - series: 'sith_build_info{version="v1.2.4",commit="abcdef1",job="hub-b",trace="must-not-propagate"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SithHubTelemetryMissing
+        exp_alerts: []
+
+  - name: bounded Hub telemetry gap stays quiet
+    interval: 1m
+    input_series:
+      - series: 'sith_build_info{version="v1.2.3",commit="abcdef0"}'
+        values: '1+0x5 _x9 1+0x10'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: SithHubTelemetryMissing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SithHubTelemetryMissing
+        exp_alerts: []
+
+  - name: sustained Hub telemetry disappearance fires then recovery resolves
+    interval: 1m
+    input_series:
+      - series: 'sith_build_info{version="v1.2.3",commit="abcdef0",endpoint="must-not-propagate"}'
+        values: '1+0x5 _x15 1+0x10'
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: SithHubTelemetryMissing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SithHubTelemetryMissing
+        exp_alerts:
+          - exp_labels:
+              component: sith-hub
+              severity: warning
+            exp_annotations:
+              summary: Sith hub telemetry is absent from the rule evaluator
+              description: No Sith build-info sample reached the rule evaluator during the last ten minutes.
+              runbook_url: https://github.com/ArdurAI/sith/blob/dev/docs/runbooks/hub-alerts.md#sithhubtelemetrymissing
+      - eval_time: 21m
+        alertname: SithHubTelemetryMissing
+        exp_alerts: []

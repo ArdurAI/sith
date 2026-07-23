@@ -11,13 +11,17 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	"github.com/ArdurAI/sith/internal/auditdelivery"
+	"github.com/ArdurAI/sith/internal/buildinfo"
 	"github.com/ArdurAI/sith/internal/hubauth"
 	"github.com/ArdurAI/sith/internal/hubdb"
 	"github.com/ArdurAI/sith/internal/hubfleet"
@@ -32,6 +36,7 @@ const (
 	maxMountedKeyBytes         = 64 * 1024
 	maxMountedCABundleBytes    = 256 * 1024
 	maxMountedPublicKeyBytes   = 16 * 1024
+	maxMountedPrivateKeyBytes  = 16 * 1024
 )
 
 // Runtime owns the configured application database while the hub server runs.
@@ -69,7 +74,7 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 	if err != nil {
 		return nil, fmt.Errorf("construct hub runtime: session verification configuration is invalid")
 	}
-	auditor, err := pep.NewSlogAuditor(logger)
+	processAuditor, err := pep.NewSlogAuditor(logger)
 	if err != nil {
 		return nil, fmt.Errorf("construct hub runtime: policy audit configuration is invalid")
 	}
@@ -77,15 +82,11 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 	if err != nil {
 		return nil, fmt.Errorf("construct hub runtime: trace configuration is invalid")
 	}
-	authObserver, err := observability.NewSlogAuthObserver(logger)
+	info := buildinfo.Get()
+	metrics, err := observability.New(observability.Config{Version: info.Version, Commit: info.Commit})
 	if err != nil {
-		return nil, fmt.Errorf("construct hub runtime: authentication observability configuration is invalid")
+		return nil, fmt.Errorf("construct hub runtime: metrics configuration is invalid")
 	}
-	enforcer, err := pep.NewEnforcer(pep.Config{Hook: pep.AllowReadHook{}, Auditor: auditor, TraceObserver: tracer})
-	if err != nil {
-		return nil, fmt.Errorf("construct hub runtime: policy configuration is invalid")
-	}
-
 	inClusterConfig, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, fmt.Errorf("construct hub runtime: in-cluster Kubernetes identity is required")
@@ -111,8 +112,48 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 	if err != nil {
 		return nil, fmt.Errorf("construct hub runtime: database is unavailable")
 	}
-	cleanup := database.Close
-	collector, err := hubfleet.NewCollector(hubfleet.CollectorConfig{Store: database, Transport: transport, PEP: enforcer, TraceObserver: tracer})
+	cleanup := func() { database.Close() }
+	observedDatabaseAuditor, err := pep.NewObservedAuditor(pep.AuditSinkDurable, database, metrics)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("construct hub runtime: durable policy audit observation is invalid")
+	}
+	observedProcessAuditor, err := pep.NewObservedAuditor(pep.AuditSinkProcess, processAuditor, metrics)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("construct hub runtime: process policy audit observation is invalid")
+	}
+	durableAuditor, err := newOrderedPolicyAuditor(observedDatabaseAuditor, observedProcessAuditor)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("construct hub runtime: durable policy audit configuration is invalid")
+	}
+	enforcer, err := pep.NewEnforcer(pep.Config{
+		Hook: pep.AllowReadHook{}, Auditor: durableAuditor, Observer: metrics, TraceObserver: tracer,
+	})
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("construct hub runtime: policy configuration is invalid")
+	}
+	processAuthObserver, err := auditdelivery.NewProcessObserver(auditdelivery.Config{Drops: metrics})
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("construct hub runtime: process authentication audit delivery is unavailable")
+	}
+	authObserver, err := hubserver.NewAuthObserverFanout(processAuthObserver, metrics)
+	if err != nil {
+		_ = processAuthObserver.Close()
+		cleanup()
+		return nil, fmt.Errorf("construct hub runtime: authentication observation is invalid")
+	}
+	cleanup = func() {
+		_ = processAuthObserver.Close()
+		database.Close()
+	}
+	collector, err := hubfleet.NewCollector(hubfleet.CollectorConfig{
+		LifecycleContext: ctx, Store: database, Transport: transport, PEP: enforcer,
+		Observer: metrics, TraceObserver: tracer,
+	})
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: collector configuration is invalid")
@@ -127,25 +168,143 @@ func NewFromEnvironment(ctx context.Context, logger *slog.Logger) (*Runtime, err
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: CVE search configuration is invalid")
 	}
-	handler, err := hubserver.NewFleetHandler(hubserver.FleetHandlerConfig{
+	fleetHandler, err := hubserver.NewFleetHandler(hubserver.FleetHandlerConfig{
 		Verifier: verifier, AuthObserver: authObserver, Collector: collector, Reader: database, ImageSearcher: imageSearcher, CVESearcher: cveSearcher, CVEIdentifierSearcher: cveSearcher, PEP: enforcer,
+		ReadObserver: metrics,
 	})
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: HTTP handler configuration is invalid")
+	}
+	auditExportHandler, err := hubserver.NewAuditExportHandler(hubserver.AuditExportHandlerConfig{
+		Verifier: verifier, AuthObserver: authObserver, Exporter: database, PEP: enforcer,
+	})
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("construct hub runtime: audit export handler configuration is invalid")
+	}
+	probeHandler, err := hubserver.NewProbeHandler(hubserver.ProbeHandlerConfig{Checker: database, Observer: metrics})
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("construct hub runtime: probe handler configuration is invalid")
+	}
+	mux, err := newRuntimeMux(fleetHandler, auditExportHandler, probeHandler)
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
+	if config.browserOIDC != nil {
+		privateKey, err := loadSessionPrivateKey(config.browserOIDC.sessionPrivateKeyFile)
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+		defer clear(privateKey)
+		if !publicKey.Equal(privateKey.Public()) {
+			cleanup()
+			return nil, fmt.Errorf("construct hub runtime: session signing key does not match the configured public key")
+		}
+		sessionIssuer, err := hubauth.NewSessionIssuer(hubauth.SessionIssuerConfig{
+			Issuer: config.sessionIssuer, Audience: config.sessionAudience, KeyID: config.sessionKeyID, PrivateKey: privateKey,
+		})
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("construct hub runtime: browser session issuer configuration is invalid")
+		}
+		oidcService, err := hubauth.NewOIDCService(hubauth.OIDCServiceConfig{
+			Providers: []hubauth.OIDCProviderConfig{{Issuer: config.browserOIDC.issuer, Audience: config.browserOIDC.clientID}},
+			Store:     database, Issuer: sessionIssuer,
+		})
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("construct hub runtime: browser OIDC configuration is invalid")
+		}
+		limiter, err := hubserver.NewAttemptLimiter(hubserver.AttemptLimiterConfig{Attempts: 20, Window: time.Minute, MaxKeys: 4096})
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("construct hub runtime: browser OIDC rate limiting is invalid")
+		}
+		browserHandler, err := hubserver.NewBrowserOIDCHandler(hubserver.BrowserOIDCHandlerConfig{
+			Service: oidcService, ProviderIssuer: config.browserOIDC.issuer, ClientID: config.browserOIDC.clientID,
+			RedirectURI: config.browserOIDC.redirectURI, Limiter: limiter,
+		})
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("construct hub runtime: browser OIDC handler configuration is invalid")
+		}
+		consoleCorrelator, err := hubfleet.NewCorrelator(hubfleet.CorrelatorConfig{Querier: database, PEP: enforcer})
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("construct hub runtime: console correlator configuration is invalid")
+		}
+		consoleInventory, err := hubfleet.NewInventorySearcher(hubfleet.InventorySearcherConfig{Querier: database, PEP: enforcer})
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("construct hub runtime: console inventory configuration is invalid")
+		}
+		consoleCVE, err := hubfleet.NewCVESearcher(hubfleet.CVESearcherConfig{Querier: database, PEP: enforcer})
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("construct hub runtime: console CVE search configuration is invalid")
+		}
+		consoleHandler, err := hubserver.NewConsoleHandler(hubserver.ConsoleHandlerConfig{
+			Verifier: verifier, AuthObserver: authObserver, Reader: database, Correlator: consoleCorrelator, Inventory: consoleInventory, CVE: consoleCVE, PEP: enforcer,
+			ReadObserver: metrics,
+		})
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("construct hub runtime: console handler configuration is invalid")
+		}
+		mux.Handle("GET /v1/workspaces/{workspace}/console/login", http.HandlerFunc(browserHandler.Login))
+		mux.Handle("GET "+browserHandler.CallbackPath(), http.HandlerFunc(browserHandler.Callback))
+		mux.Handle("GET /v1/workspaces/{workspace}/console", http.HandlerFunc(consoleHandler.ServePage))
+		mux.Handle("GET /v1/workspaces/{workspace}/console/fleet", http.HandlerFunc(consoleHandler.ServeFleet))
+		mux.Handle("GET /v1/workspaces/{workspace}/console/correlate", http.HandlerFunc(consoleHandler.ServeCorrelation))
+		mux.Handle("GET /v1/workspaces/{workspace}/console/inventory", http.HandlerFunc(consoleHandler.ServeInventory))
+		mux.Handle("GET /v1/workspaces/{workspace}/console/cves", http.HandlerFunc(consoleHandler.ServeCVEIdentifier))
+		mux.Handle("GET /v1/console/assets/console.css", http.HandlerFunc(consoleHandler.ServeCSS))
+		mux.Handle("GET /v1/console/assets/console.js", http.HandlerFunc(consoleHandler.ServeJavaScript))
 	}
 	listener, err := net.Listen("tcp", config.listenAddress)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("construct hub runtime: listener is unavailable")
 	}
-	server, err := NewServer(ServerConfig{Listener: listener, Handler: handler, TLSConfig: serverTLS})
+	server, err := NewServer(ServerConfig{Listener: listener, Handler: mux, TLSConfig: serverTLS})
 	if err != nil {
 		_ = listener.Close()
 		cleanup()
 		return nil, err
 	}
+	metricsServer, err := newOptionalLoopbackMetricsServer(config.metricsListenAddress, metrics.Handler(), net.Listen)
+	if err != nil {
+		_ = listener.Close()
+		cleanup()
+		return nil, err
+	}
+	cleanup = func() {
+		_ = processAuthObserver.Close()
+		if metricsServer != nil {
+			_ = metricsServer.Close()
+		}
+		database.Close()
+	}
 	return &Runtime{server: server, close: cleanup}, nil
+}
+
+func newRuntimeMux(fleetHandler, auditExportHandler http.Handler, probeHandler *hubserver.ProbeHandler) (*http.ServeMux, error) {
+	if fleetHandler == nil || auditExportHandler == nil || probeHandler == nil {
+		return nil, fmt.Errorf("construct hub runtime: fleet, audit export, and probe handlers are required")
+	}
+	mux := http.NewServeMux()
+	// Register without a method qualifier so HEAD and every non-GET method reach the probe's exact
+	// fail-closed request validation instead of ServeMux's implicit GET-to-HEAD behavior.
+	mux.Handle(hubserver.LivenessPath, http.HandlerFunc(probeHandler.ServeLiveness))
+	mux.Handle(hubserver.ReadinessPath, http.HandlerFunc(probeHandler.ServeReadiness))
+	mux.Handle("/v1/workspaces/{workspace}/audit/export", auditExportHandler)
+	mux.Handle("/v1/workspaces/{workspace}/audit/export/pages", auditExportHandler)
+	mux.Handle("/", fleetHandler)
+	return mux, nil
 }
 
 // Run serves the configured hub and releases its application database pool on exit.
@@ -172,6 +331,15 @@ type deploymentConfig struct {
 	proxyCertFile        string
 	proxyKeyFile         string
 	kubeAPIServerName    string
+	metricsListenAddress string
+	browserOIDC          *browserOIDCDeploymentConfig
+}
+
+type browserOIDCDeploymentConfig struct {
+	issuer                string
+	clientID              string
+	redirectURI           string
+	sessionPrivateKeyFile string
 }
 
 func loadDeploymentConfig(lookup func(string) (string, bool)) (deploymentConfig, error) {
@@ -207,6 +375,49 @@ func loadDeploymentConfig(lookup func(string) (string, bool)) (deploymentConfig,
 	if err := validateListenAddress(config.listenAddress); err != nil {
 		return deploymentConfig{}, fmt.Errorf("load hub configuration: listen address is invalid")
 	}
+	config.metricsListenAddress, err = optionalLoopbackMetricsListenAddress(lookup)
+	if err != nil {
+		return deploymentConfig{}, err
+	}
+	browserOIDC, err := loadBrowserOIDCDeploymentConfig(lookup)
+	if err != nil {
+		return deploymentConfig{}, err
+	}
+	config.browserOIDC = browserOIDC
+	return config, nil
+}
+
+func loadBrowserOIDCDeploymentConfig(lookup func(string) (string, bool)) (*browserOIDCDeploymentConfig, error) {
+	config := &browserOIDCDeploymentConfig{}
+	fields := []struct {
+		name   string
+		target *string
+	}{
+		{"SITH_HUB_BROWSER_OIDC_ISSUER", &config.issuer},
+		{"SITH_HUB_BROWSER_OIDC_CLIENT_ID", &config.clientID},
+		{"SITH_HUB_BROWSER_OIDC_REDIRECT_URI", &config.redirectURI},
+		{"SITH_HUB_SESSION_PRIVATE_KEY_FILE", &config.sessionPrivateKeyFile},
+	}
+	configured := 0
+	for _, field := range fields {
+		value, present := lookup(field.name)
+		if present || value != "" {
+			configured++
+		}
+	}
+	if configured == 0 {
+		return nil, nil
+	}
+	if configured != len(fields) {
+		return nil, fmt.Errorf("load hub configuration: browser OIDC inputs must be set together")
+	}
+	for _, field := range fields {
+		value, err := requiredEnvironment(lookup, field.name)
+		if err != nil {
+			return nil, err
+		}
+		*field.target = value
+	}
 	return config, nil
 }
 
@@ -214,6 +425,18 @@ func requiredEnvironment(lookup func(string) (string, bool), name string) (strin
 	value, present := lookup(name)
 	if !present || value == "" || strings.TrimSpace(value) != value || len(value) > 4096 {
 		return "", fmt.Errorf("load hub configuration: %s is required", name)
+	}
+	return value, nil
+}
+
+func optionalLoopbackMetricsListenAddress(lookup func(string) (string, bool)) (string, error) {
+	const name = "SITH_HUB_METRICS_LISTEN_ADDR"
+	value, present := lookup(name)
+	if !present || value == "" {
+		return "", nil
+	}
+	if strings.TrimSpace(value) != value || len(value) > 4096 || validateLoopbackMetricsListenAddress(value) != nil {
+		return "", fmt.Errorf("load hub configuration: loopback metrics listen address is invalid")
 	}
 	return value, nil
 }
@@ -226,6 +449,18 @@ func validateListenAddress(address string) error {
 	value, err := strconv.ParseUint(port, 10, 16)
 	if err != nil || value == 0 {
 		return fmt.Errorf("listen address must use a non-zero port")
+	}
+	return nil
+}
+
+func validateLoopbackMetricsListenAddress(address string) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || (host != "127.0.0.1" && host != "::1") {
+		return fmt.Errorf("metrics listen address must use an exact loopback IP and port")
+	}
+	value, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || value == 0 {
+		return fmt.Errorf("metrics listen address must use a non-zero port")
 	}
 	return nil
 }
@@ -294,6 +529,33 @@ func loadSessionPublicKey(path string) (ed25519.PublicKey, error) {
 		return nil, fmt.Errorf("load hub configuration: session public key is not Ed25519")
 	}
 	return append(ed25519.PublicKey(nil), key...), nil
+}
+
+func loadSessionPrivateKey(path string) (ed25519.PrivateKey, error) {
+	encoded, err := readMountedFile("session private key", path, maxMountedPrivateKeyBytes)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(encoded)
+	block, rest := pem.Decode(encoded)
+	if block == nil || block.Type != "PRIVATE KEY" || len(strings.TrimSpace(string(rest))) != 0 {
+		return nil, fmt.Errorf("load hub configuration: session private key is invalid")
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("load hub configuration: session private key is invalid")
+	}
+	key, ok := parsed.(ed25519.PrivateKey)
+	if !ok || len(key) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("load hub configuration: session private key is not Ed25519")
+	}
+	return copyAndClearSessionPrivateKey(key), nil
+}
+
+func copyAndClearSessionPrivateKey(key ed25519.PrivateKey) ed25519.PrivateKey {
+	copied := append(ed25519.PrivateKey(nil), key...)
+	clear(key)
+	return copied
 }
 
 func readMountedFile(label, path string, maxBytes int) ([]byte, error) {

@@ -270,6 +270,7 @@ erDiagram
     INTENT ||--o{ INTENT_TARGET : "fans out to"
     CLUSTER ||--o{ INTENT_TARGET : "is target of"
     INTENT ||--o{ AUDITLOG : "produces"
+    INTENT ||--o{ APPROVAL : "bound to exact digest"
     POLICY ||--o{ DECISION : "yields"
     INTENT ||--o{ DECISION : "adjudicated by"
 
@@ -323,6 +324,17 @@ erDiagram
         json detail "what-happened"
         timestamp at
     }
+    APPROVAL {
+        id id PK
+        id intent_id
+        id workspace_id
+        string proposer
+        string approver
+        string resolved_digest "args + resolved target"
+        timestamp approved_at
+        timestamp expires_at "DB-derived approved_at + 10 minutes"
+        timestamp consumed_at "nullable, set once"
+    }
     MEMBERSHIP {
         id id PK
         id workspace_id FK
@@ -341,9 +353,19 @@ erDiagram
 Design points:
 - **`Workspace` is the scoped tenancy object** — every query is scoped to a workspace, and
   a **database-level backstop** (RLS) enforces it independently of application code (see
-  [ADR-0003](adr/0003-tenancy-isolation.md)).
+  [ADR-0003](adr/0003-tenancy-isolation.md)). The catalog audit requires exactly one complete
+  `workspace_isolation` policy per table, so an additional permissive policy cannot silently
+  broaden access through PostgreSQL's OR-composition rule.
 - **`DECISION` (why-allowed, Ardur) and `AUDITLOG` (what-happened, Sith) are separate**
   and together form a complete agent-action ledger.
+- **`APPROVAL` is mutable in exactly one direction** — its identity, resolved digest,
+  `approved_at`, and `expires_at` are immutable. PostgreSQL derives
+  `expires_at = approved_at + interval '10 minutes'`; callers cannot supply it, and a database
+  constraint plus column privileges reject later drift. One atomic update spends the row only when
+  `consumed_at IS NULL` and `approved_at <= statement_timestamp() < expires_at`. Missing,
+  mismatched, future, expired, or already-consumed grants affect no row and return the same stable
+  unavailable refusal. FORCE RLS isolates the row; the application role cannot delete it or update
+  any other column.
 - **`CLUSTER.last_seen` / `FLEET_FACT.observed_at`** are what abstention reads.
 
 ## 6. Enforcement pipeline (the PEP)

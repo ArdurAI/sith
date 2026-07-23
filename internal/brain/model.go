@@ -15,7 +15,7 @@ import (
 // RuleID identifies one stable hypothesis rule.
 type RuleID string
 
-// Canonical rule identifiers.
+// Stable rule identifiers.
 const (
 	RuleBadDeploy    RuleID = "R1"
 	RuleOOMKilled    RuleID = "R2"
@@ -23,6 +23,9 @@ const (
 	RuleConfigDrift  RuleID = "R4"
 	RuleCertExpiry   RuleID = "R5"
 	RuleNodePressure RuleID = "R6"
+	RuleImagePull    RuleID = "R7"
+	RuleArgoSyncFail RuleID = "R8"
+	RuleWorkflowFail RuleID = "R9"
 )
 
 // Status is the confidence state of a verdict.
@@ -81,19 +84,20 @@ type Advisory struct {
 
 // Verdict is one ranked and coverage-honest hypothesis.
 type Verdict struct {
-	Rule          RuleID            `json:"rule"`
-	FailureMode   string            `json:"failure_mode"`
-	Status        Status            `json:"status"`
-	Hypothesis    string            `json:"hypothesis"`
-	Scope         string            `json:"scope"`
-	Ref           fleet.ResourceRef `json:"ref"`
-	Score         int               `json:"score"`
-	FleetWide     bool              `json:"fleet_wide"`
-	Clusters      []string          `json:"clusters,omitempty"`
-	CauseOf       []RuleID          `json:"cause_of,omitempty"`
-	MissingLenses []fleet.Lens      `json:"missing_lenses,omitempty"`
-	Citations     []Citation        `json:"citations"`
-	Advisory      Advisory          `json:"advisory"`
+	Rule                 RuleID                `json:"rule"`
+	FailureMode          string                `json:"failure_mode"`
+	Status               Status                `json:"status"`
+	Hypothesis           string                `json:"hypothesis"`
+	Scope                string                `json:"scope"`
+	Ref                  fleet.ResourceRef     `json:"ref"`
+	Score                int                   `json:"score"`
+	FleetWide            bool                  `json:"fleet_wide"`
+	Clusters             []string              `json:"clusters,omitempty"`
+	CauseOf              []RuleID              `json:"cause_of,omitempty"`
+	MissingLenses        []fleet.Lens          `json:"missing_lenses,omitempty"`
+	Citations            []Citation            `json:"citations"`
+	Advisory             Advisory              `json:"advisory"`
+	RemediationCandidate *RemediationCandidate `json:"remediation_candidate,omitempty"`
 }
 
 // Result is a deterministic ranked investigation answer.

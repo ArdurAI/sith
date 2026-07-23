@@ -394,7 +394,7 @@ func populatedWebStore(t *testing.T) *fleetcache.Store {
 	store := fleetcache.New()
 	store.SetDiscovery(fleet.LocalWorkspace, connector.Discovery{Scopes: []connector.Scope{{Name: "alpha", Reachable: true, ObservedAt: now}}})
 	observed := json.RawMessage(`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"api","namespace":"apps"},"status":{"phase":"Running"}}`)
-	err := store.Replace("Pod", fleet.QueryResult{
+	err := store.Replace(fleet.LocalWorkspace, "Pod", fleet.QueryResult{
 		Facts: []fleet.Fact{{Evidence: fleet.Evidence{
 			Ref:  fleet.ResourceRef{SourceKind: "test", Scope: "alpha", Kind: "Pod", Namespace: "apps", Name: "api"},
 			Kind: fleet.FactInventory, Observed: observed, ObservedAt: now,

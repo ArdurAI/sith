@@ -76,14 +76,16 @@ func TestWriteTextAlwaysIncludesCoverage(t *testing.T) {
 		Columns: []string{"CLUSTER", "NAME"},
 		Rows:    [][]string{{"alpha", "api"}},
 		Coverage: fleet.Coverage{
-			Requested: 3, Reachable: 2, Stale: []string{"beta"}, Unreachable: []string{"gamma"},
+			Requested: 3, Reachable: 2, Stale: []string{"beta"}, Unreachable: []string{"gamma"}, Truncated: []string{"alpha"},
 		},
 	}
 	var output bytes.Buffer
 	if err := WriteText(&output, table); err != nil {
 		t.Fatalf("WriteText() error = %v", err)
 	}
-	for _, want := range []string{"CLUSTER", "alpha", "covered 2/3 clusters", "1 stale (beta)", "1 unreachable (gamma)"} {
+	for _, want := range []string{
+		"CLUSTER", "alpha", "covered 2/3 clusters", "1 stale (beta)", "1 unreachable (gamma)", "1 truncated (alpha)",
+	} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("output = %q, want %q", output.String(), want)
 		}

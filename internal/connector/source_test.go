@@ -23,6 +23,7 @@ func TestAsSourcePreservesCoverageAndScopes(t *testing.T) {
 	reader.query.Coverage.Requested = 2
 	reader.query.Coverage.Reachable = 1
 	reader.query.Coverage.Unreachable = []string{"lab", "lab"}
+	reader.query.Coverage.Truncated = []string{"prod", "prod"}
 
 	source := AsSource(reader)
 	result, err := source.Fleet(context.Background())
@@ -39,6 +40,9 @@ func TestAsSourcePreservesCoverageAndScopes(t *testing.T) {
 		t.Fatalf("prod cluster = %#v", result.Clusters[1])
 	}
 	if len(result.Coverage.Unreachable) != 1 || result.Coverage.Unreachable[0] != "lab" {
+		t.Fatalf("Coverage = %#v", result.Coverage)
+	}
+	if len(result.Coverage.Truncated) != 1 || result.Coverage.Truncated[0] != "prod" {
 		t.Fatalf("Coverage = %#v", result.Coverage)
 	}
 }

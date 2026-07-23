@@ -3,6 +3,7 @@
 package brain
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -30,6 +31,55 @@ func TestFromCacheProjectsLiveFactsAndHonestCoverage(t *testing.T) {
 	}
 	if len(result.Verdicts) != 2 || result.Verdicts[0].Rule != RuleOOMKilled || result.Verdicts[1].Rule != RuleCrashLoop {
 		t.Fatalf("verdicts = %#v", result.Verdicts)
+	}
+}
+
+func TestFromCacheProjectsExactImagePullReasons(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	ref := fleet.ResourceRef{SourceKind: "kubeconfig", Scope: "alpha", Kind: "Pod", Namespace: "prod", Name: "payments-0"}
+
+	for _, reason := range []string{"ImagePullBackOff", "ErrImagePull"} {
+		reason := reason
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+			input := FromCache(fleet.LocalWorkspace, fleetcache.Snapshot{
+				Coverage: fleet.Coverage{Requested: 1, Reachable: 1},
+				Records: []fleetcache.Record{{
+					Fact: fleet.Fact{Evidence: fleet.Evidence{
+						Ref:    ref,
+						Source: "alpha",
+					}, Workspace: fleet.LocalWorkspace},
+					Workspace: fleet.LocalWorkspace, Kind: "Pod", Cluster: "alpha", Namespace: "prod", Name: "payments-0",
+					Reasons: []string{reason}, ObservedAt: now,
+				}},
+			})
+			if len(input.Observations) != 1 || input.Observations[0].Key != "pod.reason" || input.Observations[0].Value != reason {
+				t.Fatalf("observations = %#v, want one exact sanitized reason", input.Observations)
+			}
+			observation := input.Observations[0]
+			if !reflect.DeepEqual(observation.Ref, ref) || observation.Lens != fleet.LensLive || observation.Source != "alpha" ||
+				!observation.ObservedAt.Equal(now) {
+				t.Fatalf("observation metadata = %#v, want exact cached Pod citation metadata", observation)
+			}
+			result, err := Evaluate(input)
+			if err != nil {
+				t.Fatalf("Evaluate() error = %v", err)
+			}
+			if len(result.Verdicts) != 1 || result.Verdicts[0].Rule != RuleImagePull {
+				t.Fatalf("verdicts = %#v, want R7", result.Verdicts)
+			}
+		})
+	}
+}
+
+func TestFromCacheExplainsTruncatedLiveCoverage(t *testing.T) {
+	t.Parallel()
+	input := FromCache(fleet.LocalWorkspace, fleetcache.Snapshot{
+		Coverage: fleet.Coverage{Requested: 2, Reachable: 2, Truncated: []string{"beta"}},
+	})
+	if got := input.Coverage[fleet.LensLive]; !got.Available || got.Reason != "one or more kubeconfig contexts returned truncated evidence" {
+		t.Fatalf("live coverage = %#v, want available but explicitly truncated", got)
 	}
 }
 
