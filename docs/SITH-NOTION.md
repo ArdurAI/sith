@@ -2553,10 +2553,11 @@ where trustworthy denominators exist, abstention rates, and PDP latency.
 
 **How it works.**
 1. The hub exposes metrics for scraping (control-plane health, DB, queue depths).
-2. Federation metrics record unlabeled request-time fleet-read result outcomes
-   (`complete|degraded|empty|error`), freshness outcomes
-   (`fresh|stale|unknown|empty|error`), and bounded spoke-snapshot attempt outcomes. They expose
-   no workspace, spoke, endpoint, actor, or trace labels.
+2. Federation metrics use only closed, bounded `outcome` label values for request-time fleet-read
+   results (`complete|degraded|empty|error`), freshness
+   (`fresh|stale|unknown|empty|error`), and spoke-snapshot attempts
+   (`success|transport|deadline|invalid-snapshot|store-error|canceled`). They expose no workspace,
+   spoke, endpoint, actor, trace, or other identity labels.
 3. Governance metrics track intents proposed/allowed/denied, abstention rate, and approval
    latency.
 4. These describe Sith itself; Sith does not retain other systems' metric series.
