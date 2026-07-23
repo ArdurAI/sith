@@ -549,7 +549,13 @@ func loadSessionPrivateKey(path string) (ed25519.PrivateKey, error) {
 	if !ok || len(key) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("load hub configuration: session private key is not Ed25519")
 	}
-	return append(ed25519.PrivateKey(nil), key...), nil
+	return copyAndClearSessionPrivateKey(key), nil
+}
+
+func copyAndClearSessionPrivateKey(key ed25519.PrivateKey) ed25519.PrivateKey {
+	copied := append(ed25519.PrivateKey(nil), key...)
+	clear(key)
+	return copied
 }
 
 func readMountedFile(label, path string, maxBytes int) ([]byte, error) {

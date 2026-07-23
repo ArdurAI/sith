@@ -3,6 +3,7 @@
 package hubruntime
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -303,6 +304,33 @@ func TestLoadSessionPrivateKeyRequiresReadOnlyPKCS8Ed25519(t *testing.T) {
 	}
 	if _, err := loadSessionPrivateKey(path); err == nil {
 		t.Fatal("non-PKCS8 private key accepted")
+	}
+}
+
+func TestCopyAndClearSessionPrivateKeyTransfersOwnership(t *testing.T) {
+	publicKey, parsedKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := append(ed25519.PrivateKey(nil), parsedKey...)
+	returned := copyAndClearSessionPrivateKey(parsedKey)
+	t.Cleanup(func() {
+		clear(expected)
+		clear(returned)
+	})
+
+	if &parsedKey[0] == &returned[0] {
+		t.Fatal("returned private key aliases the parser-owned key")
+	}
+	if !bytes.Equal(parsedKey, make([]byte, ed25519.PrivateKeySize)) {
+		t.Fatal("parser-owned private key was not cleared")
+	}
+	if !bytes.Equal(returned, expected) {
+		t.Fatal("returned private key changed during ownership transfer")
+	}
+	message := []byte("sith session key ownership transfer")
+	if !ed25519.Verify(publicKey, message, ed25519.Sign(returned, message)) {
+		t.Fatal("returned private key cannot produce a valid signature")
 	}
 }
 
